@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Slugtale",
+  "version": "0.1.0",
+  "identifier": "com.slugtale.app",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "settings",
+        "title": "Slugtale Settings",
+        "width": 480,
+        "height": 360,
+        "visible": false,
+        "resizable": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": false,
+    "icon": []
+  }
+}
