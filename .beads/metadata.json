@@ -2,6 +2,6 @@
   "database": "dolt",
   "backend": "dolt",
   "dolt_mode": "embedded",
-  "dolt_database": "slugtail",
+  "dolt_database": "slugtale",
   "project_id": "ce506a16-dfb8-4f0e-ad56-01e49026490b"
 }

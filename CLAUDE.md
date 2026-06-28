@@ -60,18 +60,37 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Build & Test
 
-_Add your build and test commands here_
+Requires Rust stable (install via `rustup`). The Tauri CLI is installed as an npm devDependency.
 
 ```bash
-# Example:
-# npm install
-# npm test
+npm install          # install Tauri CLI
+npm test             # cargo test --lib (Rust unit tests, no app launch needed)
+npm run dev          # cargo tauri dev (starts the tray app with hot reload)
+npm run build        # cargo tauri build (not needed for developer-run builds)
 ```
+
+Prerequisites on macOS: Xcode Command Line Tools (`xcode-select --install`).
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+Slugtale is a Rust/Tauri v2 tray/menu-bar resident app (ADR-0007, ADR-0008).
+
+```
+src/                    Frontend (plain HTML settings window)
+src-tauri/
+  src/
+    lib.rs              App logic and Rust unit tests (no Tauri command macros here)
+    main.rs             Tauri entry point — wires Builder, tray setup, command handlers
+  tauri.conf.json       App config: settings window (hidden by default), bundle off
+  capabilities/         Tauri v2 permission manifests
+  icons/icon.png        Placeholder tray/app icon (32x32 RGBA)
+```
+
+Key design rule: `lib.rs` contains only plain Rust — no `#[tauri::command]` macros. Command wrappers live in `main.rs`. This keeps the library fully unit-testable without a running Tauri runtime.
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+- Domain vocabulary is defined in `CONTEXT.md` — use it in code and test names.
+- Platform-specific OS behavior (hotkeys, permissions, audio) lives behind a **Platform Adapter** boundary (ADR-0021).
+- Unit tests go in `lib.rs` under `#[cfg(test)]` using the public interface only.
+- Tauri commands in `main.rs` are thin wrappers that delegate to `lib.rs` functions.

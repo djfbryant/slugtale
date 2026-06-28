@@ -1,0 +1,13 @@
+{
+  "name": "slugtale",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "PATH=$HOME/.cargo/bin:$PATH tauri dev",
+    "build": "PATH=$HOME/.cargo/bin:$PATH tauri build",
+    "test": "cd src-tauri && $HOME/.cargo/bin/cargo test --lib"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
