@@ -1,4 +1,7 @@
 
+# macOS metadata
+.DS_Store
+
 # Rust / Tauri
 src-tauri/target/
 node_modules/
@@ -8,3 +11,5 @@ node_modules/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+.beads/issues.jsonl
+.beads/interactions.jsonl
