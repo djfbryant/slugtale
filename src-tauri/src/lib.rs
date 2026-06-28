@@ -141,6 +141,14 @@ impl Default for AppState {
     }
 }
 
+/// Whether a window should hide (stay alive) on a close request rather than be
+/// destroyed. Slugtale is a tray resident app (ADR-0008): the settings window is
+/// reopened from the tray, so closing it must hide it — destroying it both kills
+/// the only reopen path and, as the last window, would quit the whole app.
+pub fn hides_on_close(window_label: &str) -> bool {
+    window_label == "settings"
+}
+
 pub fn show_settings(app: tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
         let _ = window.show();
@@ -185,6 +193,16 @@ pub fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_window_hides_instead_of_closing() {
+        assert!(hides_on_close("settings"));
+    }
+
+    #[test]
+    fn unknown_windows_are_allowed_to_close() {
+        assert!(!hides_on_close("dictation-bar"));
+    }
 
     #[test]
     fn fresh_settings_default_to_unconfigured_and_opt_out() {
