@@ -54,6 +54,245 @@ pub fn load_settings(path: &std::path::Path) -> Settings {
         .unwrap_or_default()
 }
 
+pub const DEFAULT_MODEL_ID: &str = "base.en";
+pub const DEFAULT_MODEL_FILENAME: &str = "ggml-base.en.bin";
+pub const DEFAULT_MODEL_DOWNLOAD_URL: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalModelStatus {
+    pub id: String,
+    pub filename: String,
+    pub path: std::path::PathBuf,
+    pub present: bool,
+    pub bytes: Option<u64>,
+}
+
+pub fn default_model_path(model_dir: &std::path::Path) -> std::path::PathBuf {
+    model_dir.join(DEFAULT_MODEL_FILENAME)
+}
+
+pub fn local_model_status(model_dir: &std::path::Path) -> LocalModelStatus {
+    let path = default_model_path(model_dir);
+    let bytes = path.metadata().ok().map(|metadata| metadata.len());
+
+    LocalModelStatus {
+        id: DEFAULT_MODEL_ID.to_string(),
+        filename: DEFAULT_MODEL_FILENAME.to_string(),
+        path,
+        present: bytes.is_some(),
+        bytes,
+    }
+}
+
+#[derive(Debug)]
+pub enum ModelError {
+    Io(std::io::Error),
+    Download(String),
+}
+
+impl std::fmt::Display for ModelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "model file error: {error}"),
+            Self::Download(message) => write!(f, "model download error: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ModelError {}
+
+impl From<std::io::Error> for ModelError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+pub trait ModelDownloader {
+    fn download(&self, url: &str, destination: &std::path::Path) -> Result<(), ModelError>;
+}
+
+pub struct HttpModelDownloader;
+
+impl ModelDownloader for HttpModelDownloader {
+    fn download(&self, url: &str, destination: &std::path::Path) -> Result<(), ModelError> {
+        let mut response = ureq::get(url)
+            .call()
+            .map_err(|error| ModelError::Download(error.to_string()))?;
+        let mut file = std::fs::File::create(destination)?;
+        std::io::copy(&mut response.body_mut().as_reader(), &mut file)?;
+        Ok(())
+    }
+}
+
+pub fn ensure_default_model(
+    model_dir: &std::path::Path,
+    downloader: &dyn ModelDownloader,
+) -> Result<LocalModelStatus, ModelError> {
+    let current = local_model_status(model_dir);
+    if current.present {
+        return Ok(current);
+    }
+
+    std::fs::create_dir_all(model_dir)?;
+    let staged_path = model_dir.join(format!("{DEFAULT_MODEL_FILENAME}.download"));
+    std::fs::remove_file(&staged_path).ok();
+    downloader.download(DEFAULT_MODEL_DOWNLOAD_URL, &staged_path)?;
+
+    if staged_path.metadata()?.len() == 0 {
+        std::fs::remove_file(&staged_path).ok();
+        return Err(ModelError::Download(
+            "downloaded model was empty".to_string(),
+        ));
+    }
+
+    std::fs::rename(staged_path, default_model_path(model_dir))?;
+    Ok(local_model_status(model_dir))
+}
+
+pub fn delete_default_model(model_dir: &std::path::Path) -> Result<LocalModelStatus, ModelError> {
+    let path = default_model_path(model_dir);
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(ModelError::Io(error)),
+    }
+
+    Ok(local_model_status(model_dir))
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CapturedAudio {
+    pub sample_rate_hz: u32,
+    pub samples: Vec<f32>,
+}
+
+impl CapturedAudio {
+    pub fn mono_16khz(samples: Vec<f32>) -> Self {
+        Self {
+            sample_rate_hz: 16_000,
+            samples,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalTranscription {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AsrError {
+    ModelMissing { path: std::path::PathBuf },
+    UnsupportedAudio(String),
+    Runtime(String),
+}
+
+impl std::fmt::Display for AsrError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ModelMissing { path } => {
+                write!(f, "local model is missing at {}", path.display())
+            }
+            Self::UnsupportedAudio(message) => write!(f, "unsupported captured audio: {message}"),
+            Self::Runtime(message) => write!(f, "local transcription failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for AsrError {}
+
+pub trait AsrRuntime {
+    fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError>;
+}
+
+pub fn transcribe_captured_audio(
+    runtime: &dyn AsrRuntime,
+    audio: CapturedAudio,
+) -> Result<FinalTranscription, AsrError> {
+    if audio.sample_rate_hz != 16_000 {
+        return Err(AsrError::UnsupportedAudio(
+            "Whisper transcription expects 16 kHz mono f32 samples".to_string(),
+        ));
+    }
+
+    runtime.transcribe(audio)
+}
+
+pub struct LocalWhisperRuntime {
+    model_path: std::path::PathBuf,
+}
+
+impl LocalWhisperRuntime {
+    pub fn new(model_path: std::path::PathBuf) -> Self {
+        Self { model_path }
+    }
+}
+
+#[cfg(feature = "local-whisper-runtime")]
+impl AsrRuntime for LocalWhisperRuntime {
+    fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+        if !self.model_path.exists() {
+            return Err(AsrError::ModelMissing {
+                path: self.model_path.clone(),
+            });
+        }
+
+        let model_path = self
+            .model_path
+            .to_str()
+            .ok_or_else(|| AsrError::Runtime("model path is not valid UTF-8".to_string()))?;
+        let context = whisper_rs::WhisperContext::new_with_params(
+            model_path,
+            whisper_rs::WhisperContextParameters::default(),
+        )
+        .map_err(|error| AsrError::Runtime(error.to_string()))?;
+        let mut state = context
+            .create_state()
+            .map_err(|error| AsrError::Runtime(error.to_string()))?;
+        let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::BeamSearch {
+            beam_size: 5,
+            patience: -1.0,
+        });
+
+        params.set_language(Some("en"));
+        params.set_translate(false);
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+
+        state
+            .full(params, &audio.samples)
+            .map_err(|error| AsrError::Runtime(error.to_string()))?;
+
+        let text = state
+            .as_iter()
+            .map(|segment| segment.to_string())
+            .collect::<Vec<_>>()
+            .join("")
+            .trim()
+            .to_string();
+
+        Ok(FinalTranscription { text })
+    }
+}
+
+#[cfg(not(feature = "local-whisper-runtime"))]
+impl AsrRuntime for LocalWhisperRuntime {
+    fn transcribe(&self, _audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+        if !self.model_path.exists() {
+            return Err(AsrError::ModelMissing {
+                path: self.model_path.clone(),
+            });
+        }
+
+        Err(AsrError::Runtime(
+            "local Whisper runtime was built without the local-whisper-runtime feature".to_string(),
+        ))
+    }
+}
+
 /// Platform Adapter boundary (ADR-0021) for the OS-specific facts that gate
 /// dictation: microphone permission, text insertion permission, and whether the
 /// local model is present on disk.
@@ -71,6 +310,79 @@ pub fn dictation_ready(settings: &Settings, platform: &dyn PlatformReadiness) ->
         && platform.microphone_granted()
         && platform.insertion_granted()
         && platform.local_model_present()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadinessItem {
+    pub id: String,
+    pub label: String,
+    pub ready: bool,
+    pub required: bool,
+}
+
+impl ReadinessItem {
+    pub fn ready(id: &str, label: &str, required: bool) -> Self {
+        Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            ready: true,
+            required,
+        }
+    }
+
+    pub fn missing(id: &str, label: &str, required: bool) -> Self {
+        Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            ready: false,
+            required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsReadinessReport {
+    pub dictation_available: bool,
+    pub items: Vec<ReadinessItem>,
+}
+
+pub fn settings_readiness_report(
+    settings: &Settings,
+    platform: &dyn PlatformReadiness,
+) -> SettingsReadinessReport {
+    SettingsReadinessReport {
+        dictation_available: dictation_ready(settings, platform),
+        items: vec![
+            readiness_item(
+                "microphone",
+                "Microphone permission",
+                true,
+                platform.microphone_granted(),
+            ),
+            readiness_item(
+                "text_insertion",
+                "Text insertion permission",
+                true,
+                platform.insertion_granted(),
+            ),
+            readiness_item("hotkey", "Hotkey", true, settings.hotkey.is_some()),
+            readiness_item(
+                "local_model",
+                "Local model",
+                true,
+                platform.local_model_present(),
+            ),
+            readiness_item("launch_at_login", "Launch at login", false, true),
+        ],
+    }
+}
+
+fn readiness_item(id: &str, label: &str, required: bool, ready: bool) -> ReadinessItem {
+    if ready {
+        ReadinessItem::ready(id, label, required)
+    } else {
+        ReadinessItem::missing(id, label, required)
+    }
 }
 
 /// A raw hotkey signal delivered by the OS hotkey adapter (ADR-0021). The
@@ -103,7 +415,10 @@ pub struct DictationLifecycle {
 
 impl DictationLifecycle {
     pub fn new(mode: ActivationMode) -> Self {
-        Self { mode, dictating: false }
+        Self {
+            mode,
+            dictating: false,
+        }
     }
 
     pub fn is_dictating(&self) -> bool {
@@ -188,10 +503,7 @@ mod macos {
 }
 
 pub fn build_tray_menu_items() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("settings", "Settings\u{2026}"),
-        ("quit", "Quit Slugtale"),
-    ]
+    vec![("settings", "Settings\u{2026}"), ("quit", "Quit Slugtale")]
 }
 
 pub struct AppState {
@@ -262,7 +574,10 @@ mod tests {
     #[test]
     fn hold_mode_press_starts_dictation() {
         let mut lifecycle = DictationLifecycle::new(ActivationMode::Hold);
-        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Pressed), Some(DictationEvent::Start));
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Pressed),
+            Some(DictationEvent::Start)
+        );
         assert!(lifecycle.is_dictating());
     }
 
@@ -270,7 +585,10 @@ mod tests {
     fn hold_mode_release_stops_dictation() {
         let mut lifecycle = DictationLifecycle::new(ActivationMode::Hold);
         lifecycle.on_hotkey(HotkeyInput::Pressed);
-        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Released), Some(DictationEvent::Stop));
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Released),
+            Some(DictationEvent::Stop)
+        );
         assert!(!lifecycle.is_dictating());
     }
 
@@ -284,8 +602,14 @@ mod tests {
     #[test]
     fn toggle_mode_second_press_stops_dictation() {
         let mut lifecycle = DictationLifecycle::new(ActivationMode::Toggle);
-        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Pressed), Some(DictationEvent::Start));
-        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Pressed), Some(DictationEvent::Stop));
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Pressed),
+            Some(DictationEvent::Start)
+        );
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Pressed),
+            Some(DictationEvent::Stop)
+        );
         assert!(!lifecycle.is_dictating());
     }
 
@@ -294,7 +618,10 @@ mod tests {
         let mut lifecycle = DictationLifecycle::new(ActivationMode::Toggle);
         lifecycle.on_hotkey(HotkeyInput::Pressed);
         assert_eq!(lifecycle.on_hotkey(HotkeyInput::Released), None);
-        assert!(lifecycle.is_dictating(), "holding the key must not stop toggle dictation");
+        assert!(
+            lifecycle.is_dictating(),
+            "holding the key must not stop toggle dictation"
+        );
     }
 
     #[test]
@@ -334,7 +661,8 @@ mod tests {
 
     #[test]
     fn settings_round_trip_through_saved_file() {
-        let path = std::env::temp_dir().join(format!("slugtale-settings-{}.json", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("slugtale-settings-{}.json", std::process::id()));
         let settings = Settings {
             hotkey: Some("cmd+shift+d".to_string()),
             activation_mode: ActivationMode::Hold,
@@ -358,6 +686,99 @@ mod tests {
         assert_eq!(load_settings(&path), Settings::default());
     }
 
+    #[test]
+    fn local_model_status_reports_base_en_path_and_missing_state() {
+        let model_dir = unique_test_dir("model-status");
+        std::fs::remove_dir_all(&model_dir).ok();
+
+        let status = local_model_status(&model_dir);
+
+        assert_eq!(status.id, "base.en");
+        assert_eq!(status.filename, "ggml-base.en.bin");
+        assert_eq!(status.path, model_dir.join("ggml-base.en.bin"));
+        assert!(!status.present);
+        assert_eq!(status.bytes, None);
+    }
+
+    #[test]
+    fn ensure_default_model_downloads_missing_base_en_model() {
+        let model_dir = unique_test_dir("model-download");
+        std::fs::remove_dir_all(&model_dir).ok();
+        let downloader = FakeModelDownloader::new(b"local model bytes");
+
+        let status = ensure_default_model(&model_dir, &downloader).unwrap();
+
+        assert_eq!(
+            downloader.urls.borrow().as_slice(),
+            &[DEFAULT_MODEL_DOWNLOAD_URL]
+        );
+        assert!(status.present);
+        assert_eq!(status.bytes, Some(17));
+        assert_eq!(
+            std::fs::read(default_model_path(&model_dir)).unwrap(),
+            b"local model bytes"
+        );
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[test]
+    fn delete_default_model_removes_downloaded_model() {
+        let model_dir = unique_test_dir("model-delete");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(default_model_path(&model_dir), b"local model bytes").unwrap();
+
+        let status = delete_default_model(&model_dir).unwrap();
+
+        assert!(!status.present);
+        assert_eq!(status.bytes, None);
+        assert!(!default_model_path(&model_dir).exists());
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[test]
+    fn transcribe_captured_audio_returns_final_transcription_from_asr_runtime() {
+        let runtime = FakeAsrRuntime::new("hello from slugtale");
+        let audio = CapturedAudio::mono_16khz(vec![0.0, 0.25, -0.25]);
+
+        let transcription = transcribe_captured_audio(&runtime, audio).unwrap();
+
+        assert_eq!(transcription.text, "hello from slugtale");
+        assert_eq!(runtime.sample_counts.borrow().as_slice(), &[3]);
+    }
+
+    #[test]
+    fn transcribe_captured_audio_rejects_non_16khz_audio_before_runtime() {
+        let runtime = FakeAsrRuntime::new("should not run");
+        let audio = CapturedAudio {
+            sample_rate_hz: 44_100,
+            samples: vec![0.0],
+        };
+
+        let error = transcribe_captured_audio(&runtime, audio).unwrap_err();
+
+        assert_eq!(
+            error,
+            AsrError::UnsupportedAudio(
+                "Whisper transcription expects 16 kHz mono f32 samples".to_string()
+            )
+        );
+        assert!(runtime.sample_counts.borrow().is_empty());
+    }
+
+    #[test]
+    fn local_whisper_runtime_reports_missing_model_before_transcription() {
+        let model_path = unique_test_dir("missing-model").join(DEFAULT_MODEL_FILENAME);
+        let runtime = LocalWhisperRuntime::new(model_path.clone());
+
+        let error = runtime
+            .transcribe(CapturedAudio::mono_16khz(vec![0.0; 16_000]))
+            .unwrap_err();
+
+        assert_eq!(error, AsrError::ModelMissing { path: model_path });
+    }
+
     struct FakePlatform {
         microphone: bool,
         insertion: bool,
@@ -366,7 +787,55 @@ mod tests {
 
     impl FakePlatform {
         fn all_ready() -> Self {
-            Self { microphone: true, insertion: true, model: true }
+            Self {
+                microphone: true,
+                insertion: true,
+                model: true,
+            }
+        }
+    }
+
+    struct FakeModelDownloader {
+        bytes: &'static [u8],
+        urls: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl FakeModelDownloader {
+        fn new(bytes: &'static [u8]) -> Self {
+            Self {
+                bytes,
+                urls: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ModelDownloader for FakeModelDownloader {
+        fn download(&self, url: &str, destination: &std::path::Path) -> Result<(), ModelError> {
+            self.urls.borrow_mut().push(url.to_string());
+            std::fs::write(destination, self.bytes).map_err(ModelError::Io)
+        }
+    }
+
+    struct FakeAsrRuntime {
+        text: &'static str,
+        sample_counts: std::cell::RefCell<Vec<usize>>,
+    }
+
+    impl FakeAsrRuntime {
+        fn new(text: &'static str) -> Self {
+            Self {
+                text,
+                sample_counts: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl AsrRuntime for FakeAsrRuntime {
+        fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+            self.sample_counts.borrow_mut().push(audio.samples.len());
+            Ok(FinalTranscription {
+                text: self.text.to_string(),
+            })
         }
     }
 
@@ -389,50 +858,123 @@ mod tests {
         }
     }
 
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "slugtale-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
     #[test]
     fn dictation_is_not_ready_when_nothing_is_ready() {
-        let platform = FakePlatform { microphone: false, insertion: false, model: false };
+        let platform = FakePlatform {
+            microphone: false,
+            insertion: false,
+            model: false,
+        };
         assert!(!dictation_ready(&Settings::default(), &platform));
     }
 
     #[test]
     fn dictation_is_not_ready_without_microphone_permission() {
-        let platform = FakePlatform { microphone: false, ..FakePlatform::all_ready() };
+        let platform = FakePlatform {
+            microphone: false,
+            ..FakePlatform::all_ready()
+        };
         assert!(!dictation_ready(&configured_settings(), &platform));
     }
 
     #[test]
     fn dictation_is_not_ready_without_insertion_permission() {
-        let platform = FakePlatform { insertion: false, ..FakePlatform::all_ready() };
+        let platform = FakePlatform {
+            insertion: false,
+            ..FakePlatform::all_ready()
+        };
         assert!(!dictation_ready(&configured_settings(), &platform));
     }
 
     #[test]
     fn dictation_is_not_ready_without_configured_hotkey() {
-        let settings = Settings { hotkey: None, ..Settings::default() };
+        let settings = Settings {
+            hotkey: None,
+            ..Settings::default()
+        };
         assert!(!dictation_ready(&settings, &FakePlatform::all_ready()));
     }
 
     #[test]
     fn dictation_is_not_ready_without_local_model() {
-        let platform = FakePlatform { model: false, ..FakePlatform::all_ready() };
+        let platform = FakePlatform {
+            model: false,
+            ..FakePlatform::all_ready()
+        };
         assert!(!dictation_ready(&configured_settings(), &platform));
     }
 
     #[test]
     fn dictation_is_ready_when_all_requirements_are_met() {
-        assert!(dictation_ready(&configured_settings(), &FakePlatform::all_ready()));
+        assert!(dictation_ready(
+            &configured_settings(),
+            &FakePlatform::all_ready()
+        ));
+    }
+
+    #[test]
+    fn settings_readiness_report_shows_missing_required_items() {
+        let platform = FakePlatform {
+            microphone: false,
+            insertion: false,
+            model: false,
+        };
+        let report = settings_readiness_report(&Settings::default(), &platform);
+
+        assert!(!report.dictation_available);
+        assert_eq!(
+            report.items,
+            vec![
+                ReadinessItem::missing("microphone", "Microphone permission", true),
+                ReadinessItem::missing("text_insertion", "Text insertion permission", true),
+                ReadinessItem::missing("hotkey", "Hotkey", true),
+                ReadinessItem::missing("local_model", "Local model", true),
+                ReadinessItem::ready("launch_at_login", "Launch at login", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn settings_readiness_report_allows_dictation_when_required_items_are_ready() {
+        let report = settings_readiness_report(&configured_settings(), &FakePlatform::all_ready());
+
+        assert!(report.dictation_available);
+        assert!(report
+            .items
+            .iter()
+            .filter(|item| item.required)
+            .all(|item| item.ready));
     }
 
     #[test]
     fn activation_mode_persists_as_stable_lowercase_strings() {
-        let settings = Settings { activation_mode: ActivationMode::Hold, ..Settings::default() };
+        let settings = Settings {
+            activation_mode: ActivationMode::Hold,
+            ..Settings::default()
+        };
         let json = serde_json::to_string(&settings).unwrap();
         assert!(json.contains("\"activation_mode\":\"hold\""), "got: {json}");
 
-        let toggled = Settings { activation_mode: ActivationMode::Toggle, ..Settings::default() };
+        let toggled = Settings {
+            activation_mode: ActivationMode::Toggle,
+            ..Settings::default()
+        };
         let json = serde_json::to_string(&toggled).unwrap();
-        assert!(json.contains("\"activation_mode\":\"toggle\""), "got: {json}");
+        assert!(
+            json.contains("\"activation_mode\":\"toggle\""),
+            "got: {json}"
+        );
     }
 
     #[test]

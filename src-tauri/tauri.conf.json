@@ -7,13 +7,13 @@
     "frontendDist": "../src"
   },
   "app": {
-    "withGlobalTauri": false,
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "settings",
         "title": "Slugtale Settings",
         "width": 480,
-        "height": 360,
+        "height": 520,
         "visible": false,
         "resizable": false
       }

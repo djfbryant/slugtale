@@ -5,11 +5,532 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Slugtale Settings</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    :root {
+      color: #202124;
+      background: #f7f7f4;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(247, 247, 244, 0.95)),
+        #f7f7f4;
+    }
+
+    main {
+      width: min(100%, 640px);
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+
+    h1,
+    h2 {
+      margin: 0;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 1.55rem;
+    }
+
+    h2 {
+      font-size: 0.9rem;
+      color: #555a60;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+    }
+
+    p {
+      margin: 4px 0 0;
+      color: #5d646b;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 32px;
+      padding: 6px 10px;
+      border: 1px solid #d2d6d9;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #3f464d;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .status-pill[data-ready="true"] {
+      border-color: #89b99b;
+      color: #1f6b3a;
+    }
+
+    .status-pill[data-ready="false"] {
+      border-color: #d8aa77;
+      color: #8a520f;
+    }
+
+    .section {
+      margin-top: 18px;
+    }
+
+    .checklist {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .item {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      min-height: 54px;
+      padding: 10px 12px;
+      border: 1px solid #d9dddf;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .item[data-ready="false"][data-required="true"] {
+      border-color: #d7a35f;
+      background: #fff9f0;
+    }
+
+    .icon {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      background: #e7ece8;
+      color: #247044;
+      font-size: 0.82rem;
+      font-weight: 800;
+    }
+
+    .item[data-ready="false"] .icon {
+      background: #f5ddbd;
+      color: #8a520f;
+    }
+
+    .item strong {
+      display: block;
+      color: #202124;
+      font-size: 0.98rem;
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+
+    .item small {
+      color: #667078;
+    }
+
+    .tag {
+      justify-self: end;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: #edf0f2;
+      color: #555f68;
+      font-size: 0.78rem;
+      font-weight: 650;
+    }
+
+    .item[data-ready="false"][data-required="true"] .tag {
+      background: #f4d8ad;
+      color: #734005;
+    }
+
+    .controls {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 1fr;
+      margin-top: 18px;
+    }
+
+    .model-panel {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid #d9dddf;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .model-panel strong {
+      color: #202124;
+      font-weight: 650;
+    }
+
+    .model-path {
+      display: block;
+      min-height: 22px;
+      color: #4f5961;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 0.82rem;
+      overflow-wrap: anywhere;
+    }
+
+    .model-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: #30363b;
+      font-weight: 620;
+    }
+
+    input,
+    select {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid #cfd5d8;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #202124;
+      font: inherit;
+      padding: 8px 10px;
+    }
+
+    .toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 44px;
+      color: #30363b;
+      font-weight: 620;
+    }
+
+    .toggle input {
+      width: 42px;
+      min-height: 24px;
+      accent-color: #2674a6;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid #dde1e4;
+    }
+
+    button {
+      min-height: 38px;
+      border: 0;
+      border-radius: 8px;
+      background: #2674a6;
+      color: #ffffff;
+      font: inherit;
+      font-weight: 700;
+      padding: 8px 14px;
+    }
+
+    button.secondary {
+      border: 1px solid #c8d0d5;
+      background: #ffffff;
+      color: #30363b;
+    }
+
+    button.danger {
+      border: 1px solid #d6aaa2;
+      background: #ffffff;
+      color: #9a3726;
+    }
+
+    button:disabled {
+      background: #a9b2b9;
+      color: #f3f5f6;
+      cursor: not-allowed;
+    }
+
+    button.secondary:disabled,
+    button.danger:disabled {
+      border-color: #d8dde0;
+      background: #f1f3f4;
+      color: #87919a;
+    }
+
+    .note {
+      max-width: 320px;
+      color: #68727a;
+      font-size: 0.86rem;
+    }
+
+    .error {
+      color: #9a3726;
+    }
+
+    @media (max-width: 520px) {
+      main {
+        padding: 18px;
+      }
+
+      header,
+      .actions {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .status-pill,
+      button,
+      .note {
+        width: 100%;
+      }
+    }
   </style>
 </head>
 <body>
-  <h1>Slugtale Settings</h1>
-  <p>Settings will appear here.</p>
+  <main>
+    <header>
+      <div>
+        <h1>Slugtale Settings</h1>
+        <p id="summary">Checking dictation readiness...</p>
+      </div>
+      <div id="overall-status" class="status-pill" data-ready="false">Not ready</div>
+    </header>
+
+    <section class="section" aria-labelledby="readiness-title">
+      <h2 id="readiness-title">Dictation Readiness</h2>
+      <ul id="readiness-list" class="checklist" aria-live="polite"></ul>
+    </section>
+
+    <section class="section" aria-labelledby="settings-title">
+      <h2 id="settings-title">Setup</h2>
+      <div class="controls">
+        <label>
+          Hotkey
+          <input type="text" value="" placeholder="Not configured" disabled />
+        </label>
+        <label>
+          Activation mode
+          <select disabled>
+            <option>Toggle to dictate</option>
+            <option>Hold to dictate</option>
+          </select>
+        </label>
+        <div class="model-panel">
+          <div>
+            <strong>Local model</strong>
+            <code id="model-path" class="model-path">Checking model path...</code>
+          </div>
+          <div class="model-actions">
+            <button id="download-model-button" type="button" class="secondary">Download base.en</button>
+            <button id="delete-model-button" type="button" class="danger" disabled>Delete model</button>
+          </div>
+          <div id="model-message" class="note">Captured audio and transcriptions stay on this machine.</div>
+        </div>
+        <label class="toggle">
+          Launch at login
+          <input type="checkbox" disabled />
+        </label>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button id="dictation-button" type="button" disabled>Start Dictation</button>
+      <div id="dictation-note" class="note">Complete required setup before dictation is available.</div>
+    </div>
+  </main>
+
+  <script>
+    const fallbackReport = {
+      dictation_available: false,
+      items: [
+        { id: "microphone", label: "Microphone permission", ready: false, required: true },
+        { id: "text_insertion", label: "Text insertion permission", ready: false, required: true },
+        { id: "hotkey", label: "Hotkey", ready: false, required: true },
+        { id: "local_model", label: "Local model", ready: false, required: true },
+        { id: "launch_at_login", label: "Launch at login", ready: true, required: false }
+      ]
+    };
+
+    const fallbackModelStatus = {
+      id: "base.en",
+      filename: "ggml-base.en.bin",
+      path: "Model path is available in the desktop app.",
+      present: false,
+      bytes: null
+    };
+
+    const guidance = {
+      microphone: "Allow Slugtale to capture audio for dictation.",
+      text_insertion: "Allow Accessibility access so Slugtale can write into the current text target.",
+      hotkey: "Choose the hotkey that starts dictation while another app has focus.",
+      local_model: "Download the local model before transcription can run.",
+      launch_at_login: "Optional. Start Slugtale automatically when you sign in."
+    };
+
+    function statusLabel(item) {
+      if (item.ready) return item.required ? "Ready" : "Optional";
+      return item.required ? "Missing" : "Off";
+    }
+
+    function render(report) {
+      const ready = report.dictation_available;
+      const list = document.getElementById("readiness-list");
+      const status = document.getElementById("overall-status");
+      const summary = document.getElementById("summary");
+      const button = document.getElementById("dictation-button");
+      const note = document.getElementById("dictation-note");
+
+      status.dataset.ready = String(ready);
+      status.textContent = ready ? "Ready" : "Not ready";
+      summary.textContent = ready
+        ? "Dictation can start from the configured hotkey."
+        : "Settings stay available while required setup is incomplete.";
+      button.disabled = !ready;
+      note.textContent = ready
+        ? "Dictation is available."
+        : "Complete required setup before dictation is available.";
+
+      list.replaceChildren(...report.items.map((item) => {
+        const row = document.createElement("li");
+        row.className = "item";
+        row.dataset.ready = String(item.ready);
+        row.dataset.required = String(item.required);
+
+        const icon = document.createElement("span");
+        icon.className = "icon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.textContent = item.ready ? "✓" : "!";
+
+        const copy = document.createElement("div");
+        const label = document.createElement("strong");
+        label.textContent = item.label;
+        const detail = document.createElement("small");
+        detail.textContent = guidance[item.id] || "";
+        copy.append(label, detail);
+
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = statusLabel(item);
+
+        row.append(icon, copy, tag);
+        return row;
+      }));
+    }
+
+    function renderModel(status, message, isError = false) {
+      const path = document.getElementById("model-path");
+      const messageEl = document.getElementById("model-message");
+      const downloadButton = document.getElementById("download-model-button");
+      const deleteButton = document.getElementById("delete-model-button");
+      const size = status.bytes ? ` (${Math.round(status.bytes / 1024 / 1024)} MB)` : "";
+
+      path.textContent = status.path;
+      downloadButton.disabled = status.present;
+      deleteButton.disabled = !status.present;
+      messageEl.classList.toggle("error", isError);
+      messageEl.textContent = message || (status.present
+        ? `${status.id} is ready${size}.`
+        : `${status.id} is not downloaded.`);
+    }
+
+    function tauriInvoke() {
+      return window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+    }
+
+    async function loadReadiness() {
+      const invoke = tauriInvoke();
+      if (!invoke) {
+        render(fallbackReport);
+        return;
+      }
+
+      try {
+        render(await invoke("get_settings_readiness"));
+      } catch (error) {
+        console.error("Could not load readiness", error);
+        render(fallbackReport);
+      }
+    }
+
+    async function loadModelStatus() {
+      const invoke = tauriInvoke();
+      if (!invoke) {
+        renderModel(fallbackModelStatus);
+        return;
+      }
+
+      try {
+        renderModel(await invoke("get_local_model_status"));
+      } catch (error) {
+        console.error("Could not load model status", error);
+        renderModel(fallbackModelStatus, String(error), true);
+      }
+    }
+
+    async function refreshSetup() {
+      await Promise.all([loadReadiness(), loadModelStatus()]);
+    }
+
+    async function downloadModel() {
+      const invoke = tauriInvoke();
+      if (!invoke) return;
+
+      const button = document.getElementById("download-model-button");
+      button.disabled = true;
+      button.textContent = "Downloading...";
+      renderModel(fallbackModelStatus, "Downloading base.en model...");
+
+      try {
+        renderModel(await invoke("download_local_model"), "base.en is ready.");
+        await loadReadiness();
+      } catch (error) {
+        renderModel(fallbackModelStatus, String(error), true);
+      } finally {
+        button.textContent = "Download base.en";
+        await loadModelStatus();
+      }
+    }
+
+    async function deleteModel() {
+      const invoke = tauriInvoke();
+      if (!invoke) return;
+
+      const button = document.getElementById("delete-model-button");
+      button.disabled = true;
+
+      try {
+        renderModel(await invoke("delete_local_model"), "Model deleted.");
+        await loadReadiness();
+      } catch (error) {
+        renderModel(fallbackModelStatus, String(error), true);
+      } finally {
+        await loadModelStatus();
+      }
+    }
+
+    document.getElementById("download-model-button").addEventListener("click", downloadModel);
+    document.getElementById("delete-model-button").addEventListener("click", deleteModel);
+
+    refreshSetup();
+  </script>
 </body>
 </html>
