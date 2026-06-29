@@ -671,6 +671,56 @@ impl DictationLifecycle {
     }
 }
 
+/// Consumer for dictation lifecycle events emitted by a Platform Adapter.
+pub trait DictationEventSink {
+    fn emit(&mut self, event: DictationEvent);
+}
+
+impl<F> DictationEventSink for F
+where
+    F: FnMut(DictationEvent),
+{
+    fn emit(&mut self, event: DictationEvent) {
+        self(event);
+    }
+}
+
+/// Adapter-facing bridge from OS hotkey transitions into the dictation pipeline.
+/// The Platform Adapter owns hotkey registration; this bridge owns the
+/// lifecycle state so hold and toggle modes stay consistent across callbacks.
+pub struct HotkeyDictationAdapter<S> {
+    lifecycle: DictationLifecycle,
+    sink: S,
+}
+
+impl<S> HotkeyDictationAdapter<S>
+where
+    S: DictationEventSink,
+{
+    pub fn new(mode: ActivationMode, sink: S) -> Self {
+        Self {
+            lifecycle: DictationLifecycle::new(mode),
+            sink,
+        }
+    }
+
+    pub fn on_hotkey(&mut self, input: HotkeyInput) {
+        if let Some(event) = self.lifecycle.on_hotkey(input) {
+            self.sink.emit(event);
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        if let Some(event) = self.lifecycle.cancel() {
+            self.sink.emit(event);
+        }
+    }
+
+    pub fn is_dictating(&self) -> bool {
+        self.lifecycle.is_dictating()
+    }
+}
+
 /// An audible cue played at the edges of a dictation (ADR-0014): a start sound
 /// when recording begins and a stop sound when it ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -975,6 +1025,59 @@ mod tests {
         let mut lifecycle = DictationLifecycle::new(ActivationMode::Hold);
         assert_eq!(lifecycle.cancel(), None);
         assert!(!lifecycle.is_dictating());
+    }
+
+    #[test]
+    fn hotkey_adapter_forwards_hold_mode_events_to_dictation_sink() {
+        let events = std::cell::RefCell::new(Vec::new());
+        let mut adapter = HotkeyDictationAdapter::new(ActivationMode::Hold, |event| {
+            events.borrow_mut().push(event);
+        });
+
+        adapter.on_hotkey(HotkeyInput::Pressed);
+        adapter.on_hotkey(HotkeyInput::Released);
+
+        assert_eq!(
+            *events.borrow(),
+            vec![DictationEvent::Start, DictationEvent::Stop]
+        );
+        assert!(!adapter.is_dictating());
+    }
+
+    #[test]
+    fn hotkey_adapter_forwards_toggle_mode_events_to_dictation_sink() {
+        let events = std::cell::RefCell::new(Vec::new());
+        let mut adapter = HotkeyDictationAdapter::new(ActivationMode::Toggle, |event| {
+            events.borrow_mut().push(event);
+        });
+
+        adapter.on_hotkey(HotkeyInput::Pressed);
+        adapter.on_hotkey(HotkeyInput::Released);
+        adapter.on_hotkey(HotkeyInput::Pressed);
+
+        assert_eq!(
+            *events.borrow(),
+            vec![DictationEvent::Start, DictationEvent::Stop]
+        );
+        assert!(!adapter.is_dictating());
+    }
+
+    #[test]
+    fn hotkey_adapter_forwards_cancel_and_returns_to_idle() {
+        let events = std::cell::RefCell::new(Vec::new());
+        let mut adapter = HotkeyDictationAdapter::new(ActivationMode::Hold, |event| {
+            events.borrow_mut().push(event);
+        });
+
+        adapter.on_hotkey(HotkeyInput::Pressed);
+        adapter.cancel();
+        adapter.on_hotkey(HotkeyInput::Released);
+
+        assert_eq!(
+            *events.borrow(),
+            vec![DictationEvent::Start, DictationEvent::Cancel]
+        );
+        assert!(!adapter.is_dictating());
     }
 
     #[test]

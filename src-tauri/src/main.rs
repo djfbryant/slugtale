@@ -7,6 +7,19 @@ use tauri::Manager;
 #[derive(Default)]
 struct RecordingFeedbackState(Mutex<slugtale_lib::RecordingFeedback>);
 
+#[derive(Clone)]
+struct TauriDictationEventSink {
+    app: tauri::AppHandle,
+}
+
+impl slugtale_lib::DictationEventSink for TauriDictationEventSink {
+    fn emit(&mut self, event: slugtale_lib::DictationEvent) {
+        if let Err(error) = handle_dictation_event(&self.app, event) {
+            eprintln!("dictation event failed: {error}");
+        }
+    }
+}
+
 #[tauri::command]
 fn show_settings(app: tauri::AppHandle) {
     slugtale_lib::show_settings(app);
@@ -17,11 +30,7 @@ fn show_settings(app: tauri::AppHandle) {
 /// and Cancel controls and its Escape key all route here; the hotkey lifecycle
 /// (slugtale-h8z.3) will route `start` and `stop` here too once wired.
 #[tauri::command]
-fn dictation_event(
-    app: tauri::AppHandle,
-    feedback: tauri::State<'_, RecordingFeedbackState>,
-    event: String,
-) -> Result<(), String> {
+fn dictation_event(app: tauri::AppHandle, event: String) -> Result<(), String> {
     let event = match event.as_str() {
         "start" => slugtale_lib::DictationEvent::Start,
         "stop" => slugtale_lib::DictationEvent::Stop,
@@ -29,6 +38,14 @@ fn dictation_event(
         other => return Err(format!("unknown dictation event: {other}")),
     };
 
+    handle_dictation_event(&app, event)
+}
+
+fn handle_dictation_event(
+    app: &tauri::AppHandle,
+    event: slugtale_lib::DictationEvent,
+) -> Result<(), String> {
+    let feedback = app.state::<RecordingFeedbackState>();
     let effect = {
         let mut guard = feedback
             .0
@@ -47,6 +64,45 @@ fn dictation_event(
         hide_dictation_bar(&app);
     }
 
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn setup_configured_hotkey(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let settings = load_current_settings(app.handle());
+    let Some(hotkey) = settings.hotkey.clone() else {
+        return Ok(());
+    };
+
+    let sink = TauriDictationEventSink {
+        app: app.handle().clone(),
+    };
+    let adapter = Arc::new(Mutex::new(slugtale_lib::HotkeyDictationAdapter::new(
+        settings.activation_mode,
+        sink,
+    )));
+    let adapter_for_handler = adapter.clone();
+
+    let plugin = tauri_plugin_global_shortcut::Builder::new()
+        .with_shortcut(hotkey.as_str())?
+        .with_handler(move |_app, _shortcut, event| {
+            let input = match event.state {
+                tauri_plugin_global_shortcut::ShortcutState::Pressed => {
+                    slugtale_lib::HotkeyInput::Pressed
+                }
+                tauri_plugin_global_shortcut::ShortcutState::Released => {
+                    slugtale_lib::HotkeyInput::Released
+                }
+            };
+
+            match adapter_for_handler.lock() {
+                Ok(mut adapter) => adapter.on_hotkey(input),
+                Err(_) => eprintln!("hotkey dictation adapter mutex poisoned"),
+            }
+        })
+        .build();
+
+    app.handle().plugin(plugin)?;
     Ok(())
 }
 
@@ -280,6 +336,7 @@ fn main() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             slugtale_lib::setup_tray(app)?;
+            setup_configured_hotkey(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
