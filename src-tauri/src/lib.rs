@@ -430,6 +430,21 @@ pub fn run_microphone_permission_setup(
     request_result
 }
 
+pub trait TextInsertionPermissionSetup {
+    fn request_text_insertion_access(&self) -> Result<bool, String>;
+    fn open_text_insertion_settings(&self) -> Result<(), String>;
+}
+
+pub fn run_text_insertion_permission_setup(
+    system: &dyn TextInsertionPermissionSetup,
+) -> Result<bool, String> {
+    let trusted = system.request_text_insertion_access()?;
+    if !trusted {
+        system.open_text_insertion_settings()?;
+    }
+    Ok(trusted)
+}
+
 #[derive(Default)]
 pub struct CpalAudioRecorder {
     stream: Option<cpal::Stream>,
@@ -1362,6 +1377,7 @@ fn play_sound(_sound: DictationSound) -> std::io::Result<()> {
 pub use macos::{
     accessibility_trusted, activate_app, frontmost_app_pid, notify, open_accessibility_settings,
     MacosInsertionRescue, MacosMicrophonePermissionSetup, MacosPlatform, MacosTextInsertion,
+    MacosTextInsertionPermissionSetup,
 };
 
 /// macOS implementation of the [`PlatformReadiness`] adapter (ADR-0021). Resolves
@@ -1374,7 +1390,8 @@ mod macos {
     use super::{
         ClipboardInsertionRescue, FinalTranscription, InsertionRescue, InsertionRescueError,
         InsertionRescueOutcome, InsertionRescueSystem, PlatformReadiness, TextInsertion,
-        TextInsertionError, TextInsertionOutcome, TextInsertionPipeline, TextInsertionSystem,
+        TextInsertionError, TextInsertionOutcome, TextInsertionPermissionSetup,
+        TextInsertionPipeline, TextInsertionSystem,
     };
     use block2::RcBlock;
     use objc2::runtime::Bool;
@@ -1390,6 +1407,7 @@ mod macos {
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         fn AXIsProcessTrusted() -> bool;
+        fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
         fn CGEventCreateKeyboardEvent(
             source: *const c_void,
             virtual_key: u16,
@@ -1403,6 +1421,20 @@ mod macos {
         fn CGEventSetFlags(event: *mut c_void, flags: u64);
         fn CGEventPost(tap: u32, event: *mut c_void);
         fn CFRelease(object: *const c_void);
+        static kAXTrustedCheckOptionPrompt: *const c_void;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFDictionaryCreate(
+            allocator: *const c_void,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            num_values: isize,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> *const c_void;
+        static kCFBooleanTrue: *const c_void;
     }
 
     const K_CG_HID_EVENT_TAP: u32 = 0;
@@ -1504,6 +1536,41 @@ mod macos {
     /// re-granted (slugtale-avo).
     pub fn accessibility_trusted() -> bool {
         unsafe { AXIsProcessTrusted() }
+    }
+
+    fn request_accessibility_trust_prompt() -> bool {
+        unsafe {
+            let keys = [kAXTrustedCheckOptionPrompt];
+            let values = [kCFBooleanTrue];
+            let options = CFDictionaryCreate(
+                ptr::null(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                1,
+                ptr::null(),
+                ptr::null(),
+            );
+
+            if options.is_null() {
+                return AXIsProcessTrusted();
+            }
+
+            let trusted = AXIsProcessTrustedWithOptions(options);
+            CFRelease(options);
+            trusted
+        }
+    }
+
+    pub struct MacosTextInsertionPermissionSetup;
+
+    impl TextInsertionPermissionSetup for MacosTextInsertionPermissionSetup {
+        fn request_text_insertion_access(&self) -> Result<bool, String> {
+            Ok(request_accessibility_trust_prompt())
+        }
+
+        fn open_text_insertion_settings(&self) -> Result<(), String> {
+            open_accessibility_settings()
+        }
     }
 
     pub struct MacosInsertionRescue {
@@ -2442,6 +2509,9 @@ mod tests {
         assert!(dev_runner.contains("\"--bundles\""));
         assert!(dev_runner.contains("\"app\""));
         assert!(dev_runner.contains("Slugtale.app"));
+        assert!(dev_runner.contains("\"codesign\""));
+        assert!(dev_runner.contains("\"--identifier\""));
+        assert!(dev_runner.contains("com.slugtale.desktop"));
     }
 
     #[test]
@@ -2453,6 +2523,35 @@ mod tests {
         assert_eq!(
             system.events.borrow().as_slice(),
             &["request_microphone_access", "open_microphone_settings"]
+        );
+    }
+
+    #[test]
+    fn text_insertion_permission_setup_opens_settings_only_when_not_trusted() {
+        let system = FakeTextInsertionPermissionSetup::untrusted();
+
+        let trusted = run_text_insertion_permission_setup(&system).unwrap();
+
+        assert!(!trusted);
+        assert_eq!(
+            system.events.borrow().as_slice(),
+            &[
+                "request_text_insertion_access",
+                "open_text_insertion_settings"
+            ]
+        );
+    }
+
+    #[test]
+    fn text_insertion_permission_setup_does_not_reopen_settings_when_trusted() {
+        let system = FakeTextInsertionPermissionSetup::trusted();
+
+        let trusted = run_text_insertion_permission_setup(&system).unwrap();
+
+        assert!(trusted);
+        assert_eq!(
+            system.events.borrow().as_slice(),
+            &["request_text_insertion_access"]
         );
     }
 
@@ -2610,6 +2709,43 @@ mod tests {
 
         fn open_microphone_settings(&self) -> Result<(), String> {
             self.events.borrow_mut().push("open_microphone_settings");
+            Ok(())
+        }
+    }
+
+    struct FakeTextInsertionPermissionSetup {
+        events: std::cell::RefCell<Vec<&'static str>>,
+        trusted: bool,
+    }
+
+    impl FakeTextInsertionPermissionSetup {
+        fn trusted() -> Self {
+            Self {
+                events: std::cell::RefCell::new(Vec::new()),
+                trusted: true,
+            }
+        }
+
+        fn untrusted() -> Self {
+            Self {
+                events: std::cell::RefCell::new(Vec::new()),
+                trusted: false,
+            }
+        }
+    }
+
+    impl TextInsertionPermissionSetup for FakeTextInsertionPermissionSetup {
+        fn request_text_insertion_access(&self) -> Result<bool, String> {
+            self.events
+                .borrow_mut()
+                .push("request_text_insertion_access");
+            Ok(self.trusted)
+        }
+
+        fn open_text_insertion_settings(&self) -> Result<(), String> {
+            self.events
+                .borrow_mut()
+                .push("open_text_insertion_settings");
             Ok(())
         }
     }
