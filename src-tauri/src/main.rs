@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 #[tauri::command]
@@ -21,10 +22,29 @@ fn get_local_model_status(app: tauri::AppHandle) -> Result<slugtale_lib::LocalMo
 }
 
 #[tauri::command]
-fn download_local_model(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelStatus, String> {
-    let status =
-        slugtale_lib::ensure_default_model(&model_dir(&app)?, &slugtale_lib::HttpModelDownloader)
-            .map_err(|error| error.to_string())?;
+async fn download_local_model(
+    app: tauri::AppHandle,
+    on_progress: tauri::ipc::Channel<slugtale_lib::DownloadProgress>,
+) -> Result<slugtale_lib::LocalModelStatus, String> {
+    let dir = model_dir(&app)?;
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        // Throttle IPC traffic: forward progress after ~1 MB of new data, plus
+        // the initial and final updates, so the bar stays smooth without
+        // flooding the channel with thousands of tiny messages.
+        let mut last_sent = 0u64;
+        let mut forward = move |progress: slugtale_lib::DownloadProgress| {
+            let complete = progress.total.is_some_and(|total| progress.downloaded >= total);
+            if progress.downloaded == 0 || complete || progress.downloaded - last_sent >= 1_048_576
+            {
+                last_sent = progress.downloaded;
+                let _ = on_progress.send(progress);
+            }
+        };
+        slugtale_lib::ensure_default_model(&dir, &slugtale_lib::HttpModelDownloader, &mut forward)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     save_model_setting(&app, status.present.then(|| status.path.clone()))?;
     Ok(status)
 }
@@ -38,8 +58,15 @@ fn delete_local_model(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelS
 }
 
 #[tauri::command]
-fn transcribe_captured_audio(
+fn reveal_model_location(app: tauri::AppHandle) -> Result<(), String> {
+    let location = slugtale_lib::reveal_location(&model_dir(&app)?);
+    slugtale_lib::open_in_file_manager(&location).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn transcribe_captured_audio(
     app: tauri::AppHandle,
+    cache: tauri::State<'_, WhisperRuntimeCache>,
     sample_rate_hz: u32,
     samples: Vec<f32>,
 ) -> Result<slugtale_lib::FinalTranscription, String> {
@@ -48,13 +75,40 @@ fn transcribe_captured_audio(
         .model
         .map(PathBuf::from)
         .unwrap_or(slugtale_lib::default_model_path(&model_dir(&app)?));
-    let runtime = slugtale_lib::LocalWhisperRuntime::new(model_path);
+    let runtime = cache.runtime_for(&model_path);
     let audio = slugtale_lib::CapturedAudio {
         sample_rate_hz,
         samples,
     };
 
-    slugtale_lib::transcribe_captured_audio(&runtime, audio).map_err(|error| error.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        slugtale_lib::transcribe_captured_audio(&*runtime, audio).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Caches the loaded Whisper runtime across transcriptions so the model file is
+/// read from disk once rather than on every call. The runtime is rebuilt only
+/// when the configured model path changes.
+#[derive(Default)]
+struct WhisperRuntimeCache(Mutex<Option<Arc<slugtale_lib::LocalWhisperRuntime>>>);
+
+impl WhisperRuntimeCache {
+    fn runtime_for(&self, model_path: &Path) -> Arc<slugtale_lib::LocalWhisperRuntime> {
+        let mut guard = self.0.lock().expect("whisper runtime cache mutex poisoned");
+        if let Some(existing) = guard.as_ref() {
+            if existing.model_path() == model_path {
+                return existing.clone();
+            }
+        }
+
+        let runtime = Arc::new(slugtale_lib::LocalWhisperRuntime::new(
+            model_path.to_path_buf(),
+        ));
+        *guard = Some(runtime.clone());
+        runtime
+    }
 }
 
 #[derive(Default)]
@@ -136,6 +190,7 @@ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
 
 fn main() {
     tauri::Builder::default()
+        .manage(WhisperRuntimeCache::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -156,6 +211,7 @@ fn main() {
             get_local_model_status,
             download_local_model,
             delete_local_model,
+            reveal_model_location,
             transcribe_captured_audio
         ])
         .run(tauri::generate_context!())
