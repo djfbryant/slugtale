@@ -8,6 +8,10 @@ Slugtale is a local-first desktop dictation product. Its core job is to turn a u
 A recording session where the user speaks and expects resulting text to be written into a text target.
 _Avoid_: Speech job, voice note
 
+**Dictation Workflow**:
+The full path from a started dictation through final transcription, transcript cleanup, immediate insertion, and insertion rescue when insertion fails.
+_Avoid_: Speech pipeline, transcription flow
+
 **Transcription**:
 The text produced from captured speech before it is inserted into a text target.
 _Avoid_: Output, result

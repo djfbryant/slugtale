@@ -6,8 +6,8 @@
   <title>Slugtale Settings</title>
   <style>
     :root {
-      color: #202124;
-      background: #f7f7f4;
+      color: #1f2933;
+      background: #f6f7f5;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 14px;
       line-height: 1.45;
@@ -20,79 +20,102 @@
     body {
       margin: 0;
       min-height: 100vh;
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(247, 247, 244, 0.95)),
-        #f7f7f4;
+      background: #f6f7f5;
     }
 
     main {
-      width: min(100%, 640px);
+      width: min(100%, 560px);
       margin: 0 auto;
       padding: 24px;
     }
 
-    header {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 22px;
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
 
-    h1,
-    h2 {
-      margin: 0;
-      font-weight: 650;
-      letter-spacing: 0;
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 24px;
     }
 
     h1 {
-      font-size: 1.55rem;
+      margin: 0;
+      font-size: 1.45rem;
+      font-weight: 650;
     }
 
     h2 {
-      font-size: 0.9rem;
-      color: #555a60;
-      margin-bottom: 10px;
+      margin: 0 0 10px;
+      font-size: 0.78rem;
+      font-weight: 650;
+      letter-spacing: 0.04em;
       text-transform: uppercase;
+      color: #8a929a;
     }
 
-    p {
+    .summary {
       margin: 4px 0 0;
-      color: #5d646b;
+      color: #5b6770;
     }
 
     .status-pill {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      min-height: 32px;
-      padding: 6px 10px;
-      border: 1px solid #d2d6d9;
-      border-radius: 8px;
+      gap: 7px;
+      padding: 5px 12px;
+      border: 1px solid #d6dadd;
+      border-radius: 999px;
       background: #ffffff;
-      color: #3f464d;
+      color: #5b6770;
       font-weight: 600;
+      font-size: 0.85rem;
       white-space: nowrap;
     }
 
+    .status-pill::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #b3bbc2;
+    }
+
     .status-pill[data-ready="true"] {
-      border-color: #89b99b;
-      color: #1f6b3a;
+      border-color: #cfe6d8;
+      color: #1f7a44;
+    }
+
+    .status-pill[data-ready="true"]::before {
+      background: #2f9e5f;
     }
 
     .status-pill[data-ready="false"] {
-      border-color: #d8aa77;
-      color: #8a520f;
+      border-color: #efd3a3;
+      color: #946212;
+    }
+
+    .status-pill[data-ready="false"]::before {
+      background: #e08c2e;
     }
 
     .section {
-      margin-top: 18px;
+      margin-top: 26px;
     }
 
     .checklist {
       display: grid;
-      gap: 8px;
+      gap: 6px;
       margin: 0;
       padding: 0;
       list-style: none;
@@ -100,93 +123,171 @@
 
     .item {
       display: grid;
-      grid-template-columns: 28px minmax(0, 1fr) auto;
+      grid-template-columns: 22px minmax(0, 1fr);
       align-items: center;
-      gap: 10px;
-      min-height: 54px;
-      padding: 10px 12px;
-      border: 1px solid #d9dddf;
-      border-radius: 8px;
+      gap: 12px;
+      padding: 11px 14px;
+      border: 1px solid #e7eaec;
+      border-radius: 10px;
       background: #ffffff;
     }
 
+    /* Completed: calm green so the eye can skip past it. */
+    .item[data-ready="true"] {
+      border-color: #d3e7da;
+      background: #f2f8f4;
+    }
+
+    /* Required and outstanding: amber, the only rows that ask for action. */
     .item[data-ready="false"][data-required="true"] {
-      border-color: #d7a35f;
-      background: #fff9f0;
+      border-color: #efd3a3;
+      background: #fdf6ec;
     }
 
     .icon {
       display: grid;
       place-items: center;
-      width: 24px;
-      height: 24px;
+      width: 22px;
+      height: 22px;
       border-radius: 999px;
-      background: #e7ece8;
-      color: #247044;
-      font-size: 0.82rem;
-      font-weight: 800;
+      background: #e7eaec;
+      color: #7b828a;
     }
 
-    .item[data-ready="false"] .icon {
-      background: #f5ddbd;
-      color: #8a520f;
+    .icon svg {
+      width: 14px;
+      height: 14px;
     }
 
-    .item strong {
+    .item[data-ready="true"] .icon {
+      background: #2f9e5f;
+      color: #ffffff;
+    }
+
+    .item[data-ready="false"][data-required="true"] .icon {
+      background: #e08c2e;
+      color: #ffffff;
+    }
+
+    .copy {
+      min-width: 0;
+    }
+
+    .copy strong {
       display: block;
-      color: #202124;
-      font-size: 0.98rem;
-      font-weight: 650;
-      overflow-wrap: anywhere;
+      color: #1f2933;
+      font-size: 0.95rem;
+      font-weight: 600;
     }
 
-    .item small {
-      color: #667078;
-    }
-
-    .tag {
-      justify-self: end;
-      padding: 4px 8px;
-      border-radius: 6px;
-      background: #edf0f2;
-      color: #555f68;
-      font-size: 0.78rem;
-      font-weight: 650;
-    }
-
-    .item[data-ready="false"][data-required="true"] .tag {
-      background: #f4d8ad;
-      color: #734005;
+    .copy small {
+      display: block;
+      margin-top: 2px;
+      color: #6c757d;
+      font-size: 0.83rem;
     }
 
     .controls {
       display: grid;
-      gap: 12px;
-      grid-template-columns: 1fr;
-      margin-top: 18px;
+      gap: 14px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      color: #3a424a;
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+
+    input,
+    select {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid #d4d9dc;
+      border-radius: 9px;
+      background: #ffffff;
+      color: #1f2933;
+      font: inherit;
+      padding: 8px 10px;
+    }
+
+    input:disabled,
+    select:disabled {
+      background: #f4f5f4;
+      color: #8a929a;
     }
 
     .model-panel {
       display: grid;
-      gap: 10px;
-      padding: 12px;
-      border: 1px solid #d9dddf;
-      border-radius: 8px;
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid #e7eaec;
+      border-radius: 10px;
       background: #ffffff;
     }
 
-    .model-panel strong {
-      color: #202124;
-      font-weight: 650;
+    .model-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .model-head strong {
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    .model-state {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #6c757d;
+    }
+
+    .model-state[data-present="true"] {
+      color: #1f7a44;
     }
 
     .model-path {
       display: block;
-      min-height: 22px;
-      color: #4f5961;
+      color: #6c757d;
       font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
-      font-size: 0.82rem;
+      font-size: 0.8rem;
       overflow-wrap: anywhere;
+    }
+
+    .progress {
+      height: 6px;
+      border-radius: 999px;
+      background: #e7eaec;
+      overflow: hidden;
+    }
+
+    .progress[hidden] {
+      display: none;
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 0;
+      border-radius: inherit;
+      background: #2674a6;
+      transition: width 0.15s ease;
+    }
+
+    .progress.indeterminate .progress-bar {
+      width: 35%;
+      animation: progress-slide 1.1s ease-in-out infinite;
+    }
+
+    @keyframes progress-slide {
+      0% {
+        transform: translateX(-100%);
+      }
+      100% {
+        transform: translateX(285%);
+      }
     }
 
     .model-actions {
@@ -195,38 +296,19 @@
       gap: 8px;
     }
 
-    label {
-      display: grid;
-      gap: 6px;
-      color: #30363b;
-      font-weight: 620;
-    }
-
-    input,
-    select {
-      width: 100%;
-      min-height: 38px;
-      border: 1px solid #cfd5d8;
-      border-radius: 8px;
-      background: #ffffff;
-      color: #202124;
-      font: inherit;
-      padding: 8px 10px;
-    }
-
     .toggle {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      min-height: 44px;
-      color: #30363b;
-      font-weight: 620;
+      color: #3a424a;
+      font-weight: 600;
+      font-size: 0.9rem;
     }
 
     .toggle input {
-      width: 42px;
-      min-height: 24px;
+      width: 40px;
+      min-height: 22px;
       accent-color: #2674a6;
     }
 
@@ -235,54 +317,65 @@
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      margin-top: 20px;
-      padding-top: 16px;
-      border-top: 1px solid #dde1e4;
+      margin-top: 26px;
+      padding-top: 18px;
+      border-top: 1px solid #e3e6e8;
     }
 
     button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
       min-height: 38px;
       border: 0;
-      border-radius: 8px;
+      border-radius: 9px;
       background: #2674a6;
       color: #ffffff;
       font: inherit;
-      font-weight: 700;
-      padding: 8px 14px;
+      font-weight: 650;
+      padding: 8px 16px;
+      cursor: pointer;
+    }
+
+    button svg {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 auto;
     }
 
     button.secondary {
-      border: 1px solid #c8d0d5;
+      border: 1px solid #cdd3d7;
       background: #ffffff;
-      color: #30363b;
+      color: #3a424a;
     }
 
     button.danger {
-      border: 1px solid #d6aaa2;
+      border: 1px solid #e0c0bb;
       background: #ffffff;
       color: #9a3726;
     }
 
     button:disabled {
-      background: #a9b2b9;
-      color: #f3f5f6;
       cursor: not-allowed;
+      background: #aeb6bc;
+      color: #f3f5f6;
     }
 
     button.secondary:disabled,
     button.danger:disabled {
-      border-color: #d8dde0;
-      background: #f1f3f4;
-      color: #87919a;
+      border-color: #e1e5e7;
+      background: #f4f5f4;
+      color: #9aa1a8;
     }
 
     .note {
-      max-width: 320px;
-      color: #68727a;
-      font-size: 0.86rem;
+      max-width: 280px;
+      color: #6c757d;
+      font-size: 0.84rem;
     }
 
-    .error {
+    .note.error {
       color: #9a3726;
     }
 
@@ -298,7 +391,7 @@
       }
 
       .status-pill,
-      button,
+      .actions button,
       .note {
         width: 100%;
       }
@@ -309,42 +402,47 @@
   <main>
     <header>
       <div>
-        <h1>Slugtale Settings</h1>
-        <p id="summary">Checking dictation readiness...</p>
+        <h1>Slugtale</h1>
+        <p id="summary" class="summary">Checking dictation readiness…</p>
       </div>
       <div id="overall-status" class="status-pill" data-ready="false">Not ready</div>
     </header>
 
     <section class="section" aria-labelledby="readiness-title">
-      <h2 id="readiness-title">Dictation Readiness</h2>
+      <h2 id="readiness-title">Readiness</h2>
       <ul id="readiness-list" class="checklist" aria-live="polite"></ul>
     </section>
 
     <section class="section" aria-labelledby="settings-title">
       <h2 id="settings-title">Setup</h2>
       <div class="controls">
-        <label>
+        <div class="model-panel">
+          <div class="model-head">
+            <strong>Local model</strong>
+            <span id="model-state" class="model-state" data-present="false">Checking…</span>
+          </div>
+          <code id="model-path" class="model-path">Checking model path…</code>
+          <div id="model-progress" class="progress" hidden>
+            <div class="progress-bar"></div>
+          </div>
+          <div class="model-actions">
+            <button id="download-model-button" type="button" class="secondary"></button>
+            <button id="reveal-model-button" type="button" class="secondary"></button>
+            <button id="delete-model-button" type="button" class="danger" disabled></button>
+          </div>
+          <div id="model-message" class="note">Captured audio and transcriptions stay on this machine.</div>
+        </div>
+        <label class="field">
           Hotkey
           <input type="text" value="" placeholder="Not configured" disabled />
         </label>
-        <label>
+        <label class="field">
           Activation mode
           <select disabled>
             <option>Toggle to dictate</option>
             <option>Hold to dictate</option>
           </select>
         </label>
-        <div class="model-panel">
-          <div>
-            <strong>Local model</strong>
-            <code id="model-path" class="model-path">Checking model path...</code>
-          </div>
-          <div class="model-actions">
-            <button id="download-model-button" type="button" class="secondary">Download base.en</button>
-            <button id="delete-model-button" type="button" class="danger" disabled>Delete model</button>
-          </div>
-          <div id="model-message" class="note">Captured audio and transcriptions stay on this machine.</div>
-        </div>
         <label class="toggle">
           Launch at login
           <input type="checkbox" disabled />
@@ -359,6 +457,26 @@
   </main>
 
   <script>
+    // Iconography uses Lucide (https://lucide.dev, ISC licensed) so glyphs render
+    // identically across platforms. The app is local-first with no bundler, so we
+    // inline the SVG path data rather than depend on a CDN or build step.
+    const LUCIDE = {
+      check: '<path d="M20 6 9 17l-5-5"/>',
+      alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+      minus: '<path d="M5 12h14"/>',
+      download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
+      trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
+      folder: '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/>'
+    };
+
+    function iconSvg(name, size = 16) {
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${LUCIDE[name] || ""}</svg>`;
+    }
+
+    function setButton(button, iconName, label) {
+      button.innerHTML = `${iconSvg(iconName)}<span>${label}</span>`;
+    }
+
     const fallbackReport = {
       dictation_available: false,
       items: [
@@ -386,9 +504,15 @@
       launch_at_login: "Optional. Start Slugtale automatically when you sign in."
     };
 
-    function statusLabel(item) {
-      if (item.ready) return item.required ? "Ready" : "Optional";
-      return item.required ? "Missing" : "Off";
+    let downloading = false;
+
+    function stateWord(item) {
+      if (item.ready) return "ready";
+      return item.required ? "action needed" : "optional";
+    }
+
+    function formatMb(bytes) {
+      return (bytes / 1024 / 1024).toFixed(0);
     }
 
     function render(report) {
@@ -403,7 +527,7 @@
       status.textContent = ready ? "Ready" : "Not ready";
       summary.textContent = ready
         ? "Dictation can start from the configured hotkey."
-        : "Settings stay available while required setup is incomplete.";
+        : "Finish the highlighted steps to enable dictation.";
       button.disabled = !ready;
       note.textContent = ready
         ? "Dictation is available."
@@ -417,43 +541,97 @@
 
         const icon = document.createElement("span");
         icon.className = "icon";
-        icon.setAttribute("aria-hidden", "true");
-        icon.textContent = item.ready ? "✓" : "!";
+        icon.innerHTML = iconSvg(item.ready ? "check" : item.required ? "alert" : "minus", 14);
 
         const copy = document.createElement("div");
+        copy.className = "copy";
+
         const label = document.createElement("strong");
         label.textContent = item.label;
-        const detail = document.createElement("small");
-        detail.textContent = guidance[item.id] || "";
-        copy.append(label, detail);
 
-        const tag = document.createElement("span");
-        tag.className = "tag";
-        tag.textContent = statusLabel(item);
+        const srState = document.createElement("span");
+        srState.className = "sr-only";
+        srState.textContent = ` — ${stateWord(item)}`;
+        label.append(srState);
+        copy.append(label);
 
-        row.append(icon, copy, tag);
+        // Completed rows stay compact; guidance only appears where action is
+        // still required, so the eye lands on what is left to do.
+        if (!item.ready) {
+          const detail = guidance[item.id];
+          if (detail) {
+            const small = document.createElement("small");
+            small.textContent = detail;
+            copy.append(small);
+          }
+        }
+
+        row.append(icon, copy);
         return row;
       }));
     }
 
     function renderModel(status, message, isError = false) {
       const path = document.getElementById("model-path");
+      const state = document.getElementById("model-state");
       const messageEl = document.getElementById("model-message");
       const downloadButton = document.getElementById("download-model-button");
       const deleteButton = document.getElementById("delete-model-button");
-      const size = status.bytes ? ` (${Math.round(status.bytes / 1024 / 1024)} MB)` : "";
+      const size = status.bytes ? ` · ${formatMb(status.bytes)} MB` : "";
 
       path.textContent = status.path;
-      downloadButton.disabled = status.present;
-      deleteButton.disabled = !status.present;
+      state.dataset.present = String(status.present);
+      state.textContent = status.present ? `Ready${size}` : "Not downloaded";
+      downloadButton.disabled = status.present || downloading;
+      deleteButton.disabled = !status.present || downloading;
       messageEl.classList.toggle("error", isError);
       messageEl.textContent = message || (status.present
-        ? `${status.id} is ready${size}.`
-        : `${status.id} is not downloaded.`);
+        ? "Captured audio and transcriptions stay on this machine."
+        : `Download ${status.id} before transcription can run.`);
+    }
+
+    function showProgress(progress) {
+      const wrap = document.getElementById("model-progress");
+      const bar = wrap.querySelector(".progress-bar");
+      const messageEl = document.getElementById("model-message");
+      wrap.hidden = false;
+      messageEl.classList.remove("error");
+
+      if (progress.total) {
+        const pct = Math.min(100, Math.round((progress.downloaded / progress.total) * 100));
+        wrap.classList.remove("indeterminate");
+        bar.style.width = `${pct}%`;
+        messageEl.textContent =
+          `Downloading base.en… ${pct}% · ${formatMb(progress.downloaded)} / ${formatMb(progress.total)} MB`;
+      } else {
+        wrap.classList.add("indeterminate");
+        bar.style.removeProperty("width");
+        messageEl.textContent = `Downloading base.en… ${formatMb(progress.downloaded)} MB`;
+      }
+    }
+
+    function hideProgress() {
+      const wrap = document.getElementById("model-progress");
+      wrap.hidden = true;
+      wrap.classList.remove("indeterminate");
+      wrap.querySelector(".progress-bar").style.width = "0";
+    }
+
+    function tauriCore() {
+      return window.__TAURI__ && window.__TAURI__.core;
     }
 
     function tauriInvoke() {
-      return window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+      const core = tauriCore();
+      return core && core.invoke;
+    }
+
+    function makeChannel(onMessage) {
+      const core = tauriCore();
+      if (!core || typeof core.Channel !== "function") return null;
+      const channel = new core.Channel();
+      channel.onmessage = onMessage;
+      return channel;
     }
 
     async function loadReadiness() {
@@ -490,47 +668,82 @@
       await Promise.all([loadReadiness(), loadModelStatus()]);
     }
 
+    function showMessageError(text) {
+      const messageEl = document.getElementById("model-message");
+      messageEl.classList.add("error");
+      messageEl.textContent = text;
+    }
+
     async function downloadModel() {
       const invoke = tauriInvoke();
-      if (!invoke) return;
+      if (!invoke || downloading) return;
 
+      downloading = true;
       const button = document.getElementById("download-model-button");
       button.disabled = true;
-      button.textContent = "Downloading...";
-      renderModel(fallbackModelStatus, "Downloading base.en model...");
+      document.getElementById("delete-model-button").disabled = true;
+      setButton(button, "download", "Downloading…");
+      showProgress({ downloaded: 0, total: null });
+
+      const channel = makeChannel((progress) => showProgress(progress));
 
       try {
-        renderModel(await invoke("download_local_model"), "base.en is ready.");
+        const status = await invoke("download_local_model", channel ? { onProgress: channel } : {});
+        downloading = false;
+        hideProgress();
+        setButton(button, "download", "Download base.en");
+        renderModel(status, "base.en is ready.");
         await loadReadiness();
       } catch (error) {
-        renderModel(fallbackModelStatus, String(error), true);
-      } finally {
-        button.textContent = "Download base.en";
+        downloading = false;
+        hideProgress();
+        setButton(button, "download", "Download base.en");
         await loadModelStatus();
+        showMessageError(String(error));
       }
     }
 
     async function deleteModel() {
       const invoke = tauriInvoke();
-      if (!invoke) return;
+      if (!invoke || downloading) return;
 
-      const button = document.getElementById("delete-model-button");
-      button.disabled = true;
+      document.getElementById("delete-model-button").disabled = true;
 
       try {
         renderModel(await invoke("delete_local_model"), "Model deleted.");
         await loadReadiness();
       } catch (error) {
-        renderModel(fallbackModelStatus, String(error), true);
-      } finally {
         await loadModelStatus();
+        showMessageError(String(error));
       }
     }
 
-    document.getElementById("download-model-button").addEventListener("click", downloadModel);
-    document.getElementById("delete-model-button").addEventListener("click", deleteModel);
+    async function revealModel() {
+      const invoke = tauriInvoke();
+      if (!invoke) return;
 
-    refreshSetup();
+      try {
+        await invoke("reveal_model_location");
+      } catch (error) {
+        const messageEl = document.getElementById("model-message");
+        messageEl.classList.add("error");
+        messageEl.textContent = String(error);
+      }
+    }
+
+    function init() {
+      setButton(document.getElementById("download-model-button"), "download", "Download base.en");
+      setButton(document.getElementById("reveal-model-button"), "folder", "Show in Finder");
+      setButton(document.getElementById("delete-model-button"), "trash", "Delete model");
+
+      document.getElementById("download-model-button").addEventListener("click", downloadModel);
+      document.getElementById("reveal-model-button").addEventListener("click", revealModel);
+      document.getElementById("delete-model-button").addEventListener("click", deleteModel);
+
+      refreshSetup();
+    }
+
+    init();
   </script>
 </body>
 </html>

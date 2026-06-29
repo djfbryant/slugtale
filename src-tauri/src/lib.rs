@@ -108,26 +108,77 @@ impl From<std::io::Error> for ModelError {
     }
 }
 
+/// Progress reported while streaming a model download. `total` is `None` when
+/// the server does not advertise a Content-Length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
+}
+
 pub trait ModelDownloader {
-    fn download(&self, url: &str, destination: &std::path::Path) -> Result<(), ModelError>;
+    fn download(
+        &self,
+        url: &str,
+        destination: &std::path::Path,
+        on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<(), ModelError>;
 }
 
 pub struct HttpModelDownloader;
 
 impl ModelDownloader for HttpModelDownloader {
-    fn download(&self, url: &str, destination: &std::path::Path) -> Result<(), ModelError> {
+    fn download(
+        &self,
+        url: &str,
+        destination: &std::path::Path,
+        on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<(), ModelError> {
         let mut response = ureq::get(url)
             .call()
             .map_err(|error| ModelError::Download(error.to_string()))?;
+        let total = response
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        let mut reader = response.body_mut().as_reader();
         let mut file = std::fs::File::create(destination)?;
-        std::io::copy(&mut response.body_mut().as_reader(), &mut file)?;
+        copy_with_progress(&mut reader, &mut file, total, on_progress)?;
         Ok(())
     }
+}
+
+/// Stream `reader` into `writer`, reporting cumulative bytes after each chunk so
+/// callers can surface download progress. Emits an initial zero-byte update so
+/// the UI can show an active state before the first chunk arrives.
+fn copy_with_progress(
+    reader: &mut dyn std::io::Read,
+    writer: &mut dyn std::io::Write,
+    total: Option<u64>,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> std::io::Result<u64> {
+    let mut buffer = [0u8; 64 * 1024];
+    let mut downloaded = 0u64;
+    on_progress(DownloadProgress { downloaded, total });
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..read])?;
+        downloaded += read as u64;
+        on_progress(DownloadProgress { downloaded, total });
+    }
+
+    Ok(downloaded)
 }
 
 pub fn ensure_default_model(
     model_dir: &std::path::Path,
     downloader: &dyn ModelDownloader,
+    on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<LocalModelStatus, ModelError> {
     let current = local_model_status(model_dir);
     if current.present {
@@ -137,7 +188,7 @@ pub fn ensure_default_model(
     std::fs::create_dir_all(model_dir)?;
     let staged_path = model_dir.join(format!("{DEFAULT_MODEL_FILENAME}.download"));
     std::fs::remove_file(&staged_path).ok();
-    downloader.download(DEFAULT_MODEL_DOWNLOAD_URL, &staged_path)?;
+    downloader.download(DEFAULT_MODEL_DOWNLOAD_URL, &staged_path, on_progress)?;
 
     if staged_path.metadata()?.len() == 0 {
         std::fs::remove_file(&staged_path).ok();
@@ -159,6 +210,68 @@ pub fn delete_default_model(model_dir: &std::path::Path) -> Result<LocalModelSta
     }
 
     Ok(local_model_status(model_dir))
+}
+
+/// Where the "show in file manager" action should point: reveal-and-select the
+/// downloaded model when it exists, otherwise open the containing models folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevealLocation {
+    SelectFile(std::path::PathBuf),
+    OpenDir(std::path::PathBuf),
+}
+
+pub fn reveal_location(model_dir: &std::path::Path) -> RevealLocation {
+    let file = default_model_path(model_dir);
+    if file.exists() {
+        RevealLocation::SelectFile(file)
+    } else {
+        RevealLocation::OpenDir(model_dir.to_path_buf())
+    }
+}
+
+/// Open the model location in the native file manager (Finder/Explorer). The
+/// spawned helper returns immediately, so this never blocks the caller.
+pub fn open_in_file_manager(location: &RevealLocation) -> std::io::Result<()> {
+    match location {
+        RevealLocation::SelectFile(file) => open_path(file, true),
+        RevealLocation::OpenDir(dir) => {
+            std::fs::create_dir_all(dir)?;
+            open_path(dir, false)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_path(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    let mut command = std::process::Command::new("open");
+    if select {
+        command.arg("-R");
+    }
+    command.arg(path).spawn()?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn open_path(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    let mut command = std::process::Command::new("explorer");
+    if select {
+        command.arg(format!("/select,{}", path.display()));
+    } else {
+        command.arg(path);
+    }
+    command.spawn()?;
+    Ok(())
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn open_path(path: &std::path::Path, _select: bool) -> std::io::Result<()> {
+    let target = if path.is_file() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+    std::process::Command::new("xdg-open").arg(target).spawn()?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -219,19 +332,111 @@ pub fn transcribe_captured_audio(
     runtime.transcribe(audio)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextInsertionError;
+
+pub trait TextInsertion {
+    fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InsertionRescueError;
+
+pub trait InsertionRescue {
+    fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictationWorkflowError {
+    Transcription(AsrError),
+    InsertionRescue(InsertionRescueError),
+}
+
+pub struct DictationWorkflow<'a> {
+    runtime: &'a dyn AsrRuntime,
+    text_insertion: &'a dyn TextInsertion,
+    insertion_rescue: &'a dyn InsertionRescue,
+}
+
+impl<'a> DictationWorkflow<'a> {
+    pub fn new(
+        runtime: &'a dyn AsrRuntime,
+        text_insertion: &'a dyn TextInsertion,
+        insertion_rescue: &'a dyn InsertionRescue,
+    ) -> Self {
+        Self {
+            runtime,
+            text_insertion,
+            insertion_rescue,
+        }
+    }
+
+    pub fn complete(
+        &self,
+        audio: CapturedAudio,
+    ) -> Result<FinalTranscription, DictationWorkflowError> {
+        let transcription = transcribe_captured_audio(self.runtime, audio)
+            .map_err(DictationWorkflowError::Transcription)?;
+        let transcription = clean_for_insertion(transcription);
+        if self.text_insertion.insert(&transcription).is_err() {
+            self.insertion_rescue
+                .rescue(&transcription)
+                .map_err(DictationWorkflowError::InsertionRescue)?;
+        }
+        Ok(transcription)
+    }
+}
+
+fn clean_for_insertion(transcription: FinalTranscription) -> FinalTranscription {
+    let normalized = transcription
+        .text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut chars = normalized.chars();
+    let Some(first) = chars.next() else {
+        return FinalTranscription { text: normalized };
+    };
+    let text = if first.is_lowercase() {
+        format!("{}{}", first.to_uppercase(), chars.as_str())
+    } else {
+        normalized
+    };
+
+    FinalTranscription { text }
+}
+
 pub struct LocalWhisperRuntime {
     model_path: std::path::PathBuf,
+    // The loaded model is expensive to read and parse, so it is initialized once
+    // and reused across transcriptions rather than rebuilt on every call.
+    #[cfg(feature = "local-whisper-runtime")]
+    context: std::sync::OnceLock<whisper_rs::WhisperContext>,
 }
 
 impl LocalWhisperRuntime {
     pub fn new(model_path: std::path::PathBuf) -> Self {
-        Self { model_path }
+        Self {
+            model_path,
+            #[cfg(feature = "local-whisper-runtime")]
+            context: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub fn model_path(&self) -> &std::path::Path {
+        &self.model_path
     }
 }
 
 #[cfg(feature = "local-whisper-runtime")]
-impl AsrRuntime for LocalWhisperRuntime {
-    fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+impl LocalWhisperRuntime {
+    /// Return the loaded Whisper context, reading the model file from disk only
+    /// on the first call and caching it for subsequent transcriptions.
+    fn context(&self) -> Result<&whisper_rs::WhisperContext, AsrError> {
+        if let Some(context) = self.context.get() {
+            return Ok(context);
+        }
+
         if !self.model_path.exists() {
             return Err(AsrError::ModelMissing {
                 path: self.model_path.clone(),
@@ -247,6 +452,17 @@ impl AsrRuntime for LocalWhisperRuntime {
             whisper_rs::WhisperContextParameters::default(),
         )
         .map_err(|error| AsrError::Runtime(error.to_string()))?;
+
+        // If another thread won the race to initialize, keep the stored context.
+        let _ = self.context.set(context);
+        Ok(self.context.get().expect("context was just initialized"))
+    }
+}
+
+#[cfg(feature = "local-whisper-runtime")]
+impl AsrRuntime for LocalWhisperRuntime {
+    fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+        let context = self.context()?;
         let mut state = context
             .create_state()
             .map_err(|error| AsrError::Runtime(error.to_string()))?;
@@ -706,7 +922,10 @@ mod tests {
         std::fs::remove_dir_all(&model_dir).ok();
         let downloader = FakeModelDownloader::new(b"local model bytes");
 
-        let status = ensure_default_model(&model_dir, &downloader).unwrap();
+        let mut progress = Vec::new();
+        let status =
+            ensure_default_model(&model_dir, &downloader, &mut |update| progress.push(update))
+                .unwrap();
 
         assert_eq!(
             downloader.urls.borrow().as_slice(),
@@ -718,8 +937,81 @@ mod tests {
             std::fs::read(default_model_path(&model_dir)).unwrap(),
             b"local model bytes"
         );
+        assert_eq!(
+            progress.first().copied(),
+            Some(DownloadProgress {
+                downloaded: 0,
+                total: Some(17)
+            })
+        );
+        assert_eq!(
+            progress.last().copied(),
+            Some(DownloadProgress {
+                downloaded: 17,
+                total: Some(17)
+            })
+        );
 
         std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[test]
+    fn copy_with_progress_reports_zero_then_each_chunk() {
+        let data = vec![7u8; 200_000];
+        let mut reader = std::io::Cursor::new(data.clone());
+        let mut writer: Vec<u8> = Vec::new();
+        let total = Some(data.len() as u64);
+        let mut updates = Vec::new();
+
+        let copied = copy_with_progress(&mut reader, &mut writer, total, &mut |update| {
+            updates.push(update)
+        })
+        .unwrap();
+
+        assert_eq!(copied, data.len() as u64);
+        assert_eq!(writer, data);
+        assert_eq!(
+            updates.first().copied(),
+            Some(DownloadProgress {
+                downloaded: 0,
+                total
+            })
+        );
+        assert_eq!(
+            updates.last().copied(),
+            Some(DownloadProgress {
+                downloaded: data.len() as u64,
+                total
+            })
+        );
+        // 200_000 bytes over 64 KiB chunks reports the initial update plus one
+        // per chunk, so the bar advances rather than jumping straight to done.
+        assert!(updates.len() >= 4);
+    }
+
+    #[test]
+    fn reveal_location_selects_existing_model_file() {
+        let model_dir = unique_test_dir("reveal-present");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(default_model_path(&model_dir), b"model").unwrap();
+
+        assert_eq!(
+            reveal_location(&model_dir),
+            RevealLocation::SelectFile(default_model_path(&model_dir))
+        );
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[test]
+    fn reveal_location_opens_dir_when_model_missing() {
+        let model_dir = unique_test_dir("reveal-missing");
+        std::fs::remove_dir_all(&model_dir).ok();
+
+        assert_eq!(
+            reveal_location(&model_dir),
+            RevealLocation::OpenDir(model_dir.clone())
+        );
     }
 
     #[test]
@@ -768,6 +1060,42 @@ mod tests {
     }
 
     #[test]
+    fn dictation_workflow_cleans_final_transcription_before_immediate_insertion() {
+        let runtime = FakeAsrRuntime::new("  hello   from slugtale  ");
+        let insertion = FakeTextInsertion::default();
+        let rescue = FakeInsertionRescue::default();
+        let workflow = DictationWorkflow::new(&runtime, &insertion, &rescue);
+
+        let transcription = workflow
+            .complete(CapturedAudio::mono_16khz(vec![0.0, 0.25]))
+            .unwrap();
+
+        assert_eq!(transcription.text, "Hello from slugtale");
+        assert_eq!(
+            insertion.inserted.borrow().as_slice(),
+            &["Hello from slugtale"]
+        );
+    }
+
+    #[test]
+    fn dictation_workflow_rescues_cleaned_transcription_when_insertion_fails() {
+        let runtime = FakeAsrRuntime::new("  rescue   this transcription ");
+        let insertion = FakeTextInsertion::fails();
+        let rescue = FakeInsertionRescue::default();
+        let workflow = DictationWorkflow::new(&runtime, &insertion, &rescue);
+
+        let transcription = workflow
+            .complete(CapturedAudio::mono_16khz(vec![0.0]))
+            .unwrap();
+
+        assert_eq!(transcription.text, "Rescue this transcription");
+        assert_eq!(
+            rescue.rescued.borrow().as_slice(),
+            &["Rescue this transcription"]
+        );
+    }
+
+    #[test]
     fn local_whisper_runtime_reports_missing_model_before_transcription() {
         let model_path = unique_test_dir("missing-model").join(DEFAULT_MODEL_FILENAME);
         let runtime = LocalWhisperRuntime::new(model_path.clone());
@@ -810,9 +1138,24 @@ mod tests {
     }
 
     impl ModelDownloader for FakeModelDownloader {
-        fn download(&self, url: &str, destination: &std::path::Path) -> Result<(), ModelError> {
+        fn download(
+            &self,
+            url: &str,
+            destination: &std::path::Path,
+            on_progress: &mut dyn FnMut(DownloadProgress),
+        ) -> Result<(), ModelError> {
             self.urls.borrow_mut().push(url.to_string());
-            std::fs::write(destination, self.bytes).map_err(ModelError::Io)
+            let total = Some(self.bytes.len() as u64);
+            on_progress(DownloadProgress {
+                downloaded: 0,
+                total,
+            });
+            std::fs::write(destination, self.bytes).map_err(ModelError::Io)?;
+            on_progress(DownloadProgress {
+                downloaded: self.bytes.len() as u64,
+                total,
+            });
+            Ok(())
         }
     }
 
@@ -836,6 +1179,44 @@ mod tests {
             Ok(FinalTranscription {
                 text: self.text.to_string(),
             })
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeTextInsertion {
+        inserted: std::cell::RefCell<Vec<String>>,
+        fails: bool,
+    }
+
+    impl FakeTextInsertion {
+        fn fails() -> Self {
+            Self {
+                inserted: std::cell::RefCell::new(Vec::new()),
+                fails: true,
+            }
+        }
+    }
+
+    impl TextInsertion for FakeTextInsertion {
+        fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError> {
+            self.inserted.borrow_mut().push(transcription.text.clone());
+            if self.fails {
+                Err(TextInsertionError)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeInsertionRescue {
+        rescued: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl InsertionRescue for FakeInsertionRescue {
+        fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError> {
+            self.rescued.borrow_mut().push(transcription.text.clone());
+            Ok(())
         }
     }
 
