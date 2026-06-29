@@ -109,3 +109,12 @@ bd close <id>
 ```
 
 Run `bd prime` for the full local workflow context.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for supported versions, vulnerability reporting,
+and the current local-only data-handling policy.
+
+## License
+
+Slugtale is open source under the [MIT License](LICENSE).

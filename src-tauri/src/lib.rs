@@ -372,6 +372,20 @@ pub fn audio_level_from_samples(samples: &[f32]) -> f32 {
     mean_square.sqrt().clamp(0.0, 1.0)
 }
 
+/// Map a raw microphone RMS level into the 0..1 range the dictation waveform
+/// renders. Raw speech RMS is tiny (~0.06) and barely moves the bars, so the
+/// waveform looked like it drifted on its own rather than reacting to the voice
+/// (slugtale-hla). A noise floor keeps quiet rooms in the idle state, a ceiling
+/// saturates loud speech, and a square-root curve lifts ordinary speech into a
+/// clearly active, bouncing range.
+pub fn voice_level_from_rms(rms: f32) -> f32 {
+    const NOISE_FLOOR: f32 = 0.012;
+    const SPEECH_CEILING: f32 = 0.18;
+
+    let normalized = ((rms - NOISE_FLOOR) / (SPEECH_CEILING - NOISE_FLOOR)).clamp(0.0, 1.0);
+    normalized.sqrt()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioCaptureError {
     message: String,
@@ -460,7 +474,7 @@ impl CpalAudioRecorder {
                         samples.extend(converted.iter().copied());
                     }
                     if let Some(callback) = &level_callback {
-                        callback(audio_level_from_samples(&converted));
+                        callback(voice_level_from_rms(audio_level_from_samples(&converted)));
                     }
                 },
                 move |error| {
@@ -2236,6 +2250,27 @@ mod tests {
         assert_eq!(audio_level_from_samples(&[]), 0.0);
         assert_eq!(audio_level_from_samples(&[2.0]), 1.0);
         assert!((audio_level_from_samples(&[0.0, 0.5, -0.5]) - 0.408).abs() < 0.001);
+    }
+
+    #[test]
+    fn voice_level_maps_speech_rms_into_a_visibly_responsive_range() {
+        // Silence and quiet room noise stay below the idle threshold so the bar
+        // shows only its subtle listening state, not a false "active" flex.
+        assert_eq!(voice_level_from_rms(0.0), 0.0);
+        assert_eq!(voice_level_from_rms(0.005), 0.0);
+
+        // Ordinary speech (raw RMS ~0.06) is faint on its own but must drive a
+        // clearly active waveform — comfortably past the frontend's 0.08 gate.
+        let speech = voice_level_from_rms(0.06);
+        assert!(speech > 0.4, "speech should flex the wave, got {speech}");
+        assert!(speech < 1.0);
+
+        // Loud speech saturates and stays clamped rather than overshooting.
+        assert_eq!(voice_level_from_rms(0.18), 1.0);
+        assert_eq!(voice_level_from_rms(0.9), 1.0);
+
+        // The mapping is monotonic: louder input never renders as a smaller bar.
+        assert!(voice_level_from_rms(0.03) < voice_level_from_rms(0.06));
     }
 
     #[test]
