@@ -123,7 +123,7 @@
 
     .item {
       display: grid;
-      grid-template-columns: 22px minmax(0, 1fr);
+      grid-template-columns: 22px minmax(0, 1fr) auto;
       align-items: center;
       gap: 12px;
       padding: 11px 14px;
@@ -185,6 +185,12 @@
       margin-top: 2px;
       color: #6c757d;
       font-size: 0.83rem;
+    }
+
+    .item-action {
+      min-height: 30px;
+      padding: 5px 10px;
+      white-space: nowrap;
     }
 
     .controls {
@@ -296,6 +302,13 @@
       gap: 8px;
     }
 
+    .settings-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
     .toggle {
       display: flex;
       align-items: center;
@@ -385,13 +398,16 @@
       }
 
       header,
-      .actions {
+      .actions,
+      .settings-actions {
         align-items: stretch;
         flex-direction: column;
       }
 
       .status-pill,
+      .item-action,
       .actions button,
+      .settings-actions button,
       .note {
         width: 100%;
       }
@@ -434,15 +450,19 @@
         </div>
         <label class="field">
           Hotkey
-          <input type="text" value="" placeholder="Not configured" disabled />
+          <input id="hotkey-input" type="text" value="" placeholder="Click and press a shortcut" autocomplete="off" spellcheck="false" />
         </label>
         <label class="field">
           Activation mode
-          <select disabled>
-            <option>Toggle to dictate</option>
-            <option>Hold to dictate</option>
+          <select id="activation-mode-select">
+            <option value="toggle">Toggle to dictate</option>
+            <option value="hold">Hold to dictate</option>
           </select>
         </label>
+        <div class="settings-actions">
+          <button id="clear-hotkey-button" type="button" class="secondary">Clear hotkey</button>
+          <div id="settings-message" class="note" aria-live="polite"></div>
+        </div>
         <label class="toggle">
           Launch at login
           <input type="checkbox" disabled />
@@ -466,7 +486,9 @@
       minus: '<path d="M5 12h14"/>',
       download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
       trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
-      folder: '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/>'
+      folder: '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/>',
+      x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+      external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
     };
 
     function iconSvg(name, size = 16) {
@@ -496,15 +518,30 @@
       bytes: null
     };
 
+    const fallbackSettings = {
+      hotkey: null,
+      activation_mode: "toggle",
+      launch_at_login: false,
+      diagnostic_logging: false,
+      model: null
+    };
+
     const guidance = {
-      microphone: "Allow Slugtale to capture audio for dictation.",
-      text_insertion: "Allow Accessibility access so Slugtale can write into the current text target.",
+      microphone: "Open macOS Privacy & Security and allow Slugtale to capture audio.",
+      text_insertion: "Open macOS Accessibility and allow Slugtale to write into the current text target.",
       hotkey: "Choose the hotkey that starts dictation while another app has focus.",
       local_model: "Download the local model before transcription can run.",
       launch_at_login: "Optional. Start Slugtale automatically when you sign in."
     };
 
+    const readinessActions = {
+      microphone: { command: "open_microphone_settings", label: "Open Privacy" },
+      text_insertion: { command: "open_text_insertion_settings", label: "Open Accessibility" }
+    };
+
     let downloading = false;
+    let savingSettings = false;
+    let currentSettings = { ...fallbackSettings };
 
     function stateWord(item) {
       if (item.ready) return "ready";
@@ -566,7 +603,17 @@
           }
         }
 
-        row.append(icon, copy);
+        const action = readinessActions[item.id];
+        if (!item.ready && action) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "secondary item-action";
+          button.innerHTML = `${iconSvg("external", 14)}<span>${action.label}</span>`;
+          button.addEventListener("click", () => openReadinessAction(item.id));
+          row.append(icon, copy, button);
+        } else {
+          row.append(icon, copy);
+        }
         return row;
       }));
     }
@@ -617,6 +664,91 @@
       wrap.querySelector(".progress-bar").style.width = "0";
     }
 
+    function renderSettings(settings, message = "", isError = false) {
+      currentSettings = { ...fallbackSettings, ...settings };
+      const hotkeyInput = document.getElementById("hotkey-input");
+      const modeSelect = document.getElementById("activation-mode-select");
+      const clearButton = document.getElementById("clear-hotkey-button");
+      const messageEl = document.getElementById("settings-message");
+
+      hotkeyInput.value = currentSettings.hotkey || "";
+      modeSelect.value = currentSettings.activation_mode || "toggle";
+      hotkeyInput.disabled = savingSettings;
+      modeSelect.disabled = savingSettings;
+      clearButton.disabled = savingSettings || !currentSettings.hotkey;
+      messageEl.classList.toggle("error", isError);
+      messageEl.textContent = message;
+    }
+
+    function hotkeyKeyToken(event) {
+      if (event.code.startsWith("Key")) return event.code.slice(3).toUpperCase();
+      if (event.code.startsWith("Digit")) return event.code.slice(5);
+      return event.code || event.key;
+    }
+
+    function hotkeyFromKeyboardEvent(event) {
+      const modifierKeys = new Set(["Alt", "Control", "Meta", "Shift"]);
+      if (modifierKeys.has(event.key)) return null;
+
+      const modifiers = [];
+      if (event.metaKey) modifiers.push("Cmd");
+      if (event.ctrlKey) modifiers.push("Ctrl");
+      if (event.altKey) modifiers.push("Alt");
+      if (event.shiftKey) modifiers.push("Shift");
+
+      if (modifiers.length === 0) {
+        return { error: "Use a modifier key." };
+      }
+
+      return { hotkey: [...modifiers, hotkeyKeyToken(event)].join("+") };
+    }
+
+    async function loadSettings() {
+      const invoke = tauriInvoke();
+      if (!invoke) {
+        renderSettings(fallbackSettings);
+        return;
+      }
+
+      try {
+        renderSettings(await invoke("get_settings"));
+      } catch (error) {
+        console.error("Could not load settings", error);
+        renderSettings(fallbackSettings, String(error), true);
+      }
+    }
+
+    async function saveHotkeySettings(hotkey) {
+      const invoke = tauriInvoke();
+      const previousSettings = { ...currentSettings };
+      const nextSettings = {
+        ...currentSettings,
+        hotkey: hotkey || null,
+        activation_mode: document.getElementById("activation-mode-select").value
+      };
+
+      if (!invoke) {
+        renderSettings(nextSettings);
+        return;
+      }
+
+      savingSettings = true;
+      renderSettings(nextSettings, "Saving…");
+
+      try {
+        const saved = await invoke("save_hotkey_settings", {
+          hotkey: nextSettings.hotkey,
+          activationMode: nextSettings.activation_mode
+        });
+        savingSettings = false;
+        renderSettings(saved, "Saved.");
+        await loadReadiness();
+      } catch (error) {
+        savingSettings = false;
+        renderSettings(previousSettings, String(error), true);
+      }
+    }
+
     function tauriCore() {
       return window.__TAURI__ && window.__TAURI__.core;
     }
@@ -649,6 +781,23 @@
       }
     }
 
+    async function openReadinessAction(itemId) {
+      const invoke = tauriInvoke();
+      const action = readinessActions[itemId];
+      if (!invoke || !action) return;
+
+      try {
+        await invoke(action.command);
+        renderSettings(
+          currentSettings,
+          "Opened macOS Privacy & Security. Grant access there, then return here."
+        );
+        setTimeout(loadReadiness, 1000);
+      } catch (error) {
+        renderSettings(currentSettings, String(error), true);
+      }
+    }
+
     async function loadModelStatus() {
       const invoke = tauriInvoke();
       if (!invoke) {
@@ -665,7 +814,7 @@
     }
 
     async function refreshSetup() {
-      await Promise.all([loadReadiness(), loadModelStatus()]);
+      await Promise.all([loadReadiness(), loadModelStatus(), loadSettings()]);
     }
 
     function showMessageError(text) {
@@ -735,10 +884,27 @@
       setButton(document.getElementById("download-model-button"), "download", "Download base.en");
       setButton(document.getElementById("reveal-model-button"), "folder", "Show in Finder");
       setButton(document.getElementById("delete-model-button"), "trash", "Delete model");
+      setButton(document.getElementById("clear-hotkey-button"), "x", "Clear hotkey");
 
       document.getElementById("download-model-button").addEventListener("click", downloadModel);
       document.getElementById("reveal-model-button").addEventListener("click", revealModel);
       document.getElementById("delete-model-button").addEventListener("click", deleteModel);
+      document.getElementById("activation-mode-select").addEventListener("change", () => {
+        saveHotkeySettings(currentSettings.hotkey);
+      });
+      document.getElementById("clear-hotkey-button").addEventListener("click", () => {
+        saveHotkeySettings(null);
+      });
+      document.getElementById("hotkey-input").addEventListener("keydown", (event) => {
+        event.preventDefault();
+        const captured = hotkeyFromKeyboardEvent(event);
+        if (!captured) return;
+        if (captured.error) {
+          renderSettings(currentSettings, captured.error, true);
+          return;
+        }
+        saveHotkeySettings(captured.hotkey);
+      });
 
       refreshSetup();
     }

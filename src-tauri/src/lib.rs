@@ -38,11 +38,43 @@ impl Default for Settings {
     }
 }
 
+/// Update the user-configurable hotkey preferences that live in the Settings
+/// File. Empty input clears the hotkey so Dictation Readiness reflects that the
+/// user has not configured one.
+pub fn apply_hotkey_settings(
+    settings: &mut Settings,
+    hotkey: Option<String>,
+    activation_mode: ActivationMode,
+) {
+    settings.hotkey = hotkey.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    settings.activation_mode = activation_mode;
+}
+
 /// Write the Settings File as human-readable JSON so it can be inspected
 /// during development (ADR-0018).
 pub fn save_settings(path: &std::path::Path, settings: &Settings) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(settings)?;
-    std::fs::write(path, json)
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("settings.json");
+    let temp_path = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+
+    std::fs::write(&temp_path, json)?;
+    match std::fs::rename(&temp_path, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp_path);
+            Err(error)
+        }
+    }
 }
 
 /// Load the Settings File, falling back to defaults when it is missing or
@@ -289,6 +321,321 @@ impl CapturedAudio {
     }
 }
 
+pub fn captured_audio_from_interleaved_input(
+    sample_rate_hz: u32,
+    channels: u16,
+    samples: &[f32],
+) -> Result<CapturedAudio, AudioCaptureError> {
+    if sample_rate_hz == 0 {
+        return Err(AudioCaptureError::new("input sample rate must be non-zero"));
+    }
+    if channels == 0 {
+        return Err(AudioCaptureError::new(
+            "input channel count must be non-zero",
+        ));
+    }
+
+    let channels = channels as usize;
+    let mut mono = Vec::with_capacity(samples.len() / channels);
+    for frame in samples.chunks_exact(channels) {
+        mono.push(frame.iter().copied().sum::<f32>() / channels as f32);
+    }
+
+    if sample_rate_hz == 16_000 {
+        return Ok(CapturedAudio::mono_16khz(mono));
+    }
+
+    let target_len = ((mono.len() as f64) * 16_000.0 / sample_rate_hz as f64).round() as usize;
+    let mut resampled = Vec::with_capacity(target_len);
+    for index in 0..target_len {
+        let source_position = index as f64 * sample_rate_hz as f64 / 16_000.0;
+        let left = source_position.floor() as usize;
+        let right = (left + 1).min(mono.len().saturating_sub(1));
+        let fraction = (source_position - left as f64) as f32;
+        let sample = mono[left] + (mono[right] - mono[left]) * fraction;
+        resampled.push(sample);
+    }
+
+    Ok(CapturedAudio::mono_16khz(resampled))
+}
+
+pub fn audio_level_from_samples(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+
+    let mean_square = samples
+        .iter()
+        .map(|sample| sample.clamp(-1.0, 1.0).powi(2))
+        .sum::<f32>()
+        / samples.len() as f32;
+    mean_square.sqrt().clamp(0.0, 1.0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioCaptureError {
+    message: String,
+}
+
+impl AudioCaptureError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for AudioCaptureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "audio capture failed: {}", self.message)
+    }
+}
+
+impl std::error::Error for AudioCaptureError {}
+
+pub trait AudioRecorder {
+    fn start(&mut self) -> Result<(), AudioCaptureError>;
+    fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError>;
+    fn cancel(&mut self) -> Result<(), AudioCaptureError>;
+}
+
+pub type AudioLevelCallback = std::sync::Arc<dyn Fn(f32) + Send + Sync + 'static>;
+
+pub trait MicrophonePermissionSetup {
+    fn request_microphone_access(&self) -> Result<(), String>;
+    fn open_microphone_settings(&self) -> Result<(), String>;
+}
+
+pub fn run_microphone_permission_setup(
+    system: &dyn MicrophonePermissionSetup,
+) -> Result<(), String> {
+    let request_result = system.request_microphone_access();
+    let open_result = system.open_microphone_settings();
+
+    open_result?;
+    request_result
+}
+
+#[derive(Default)]
+pub struct CpalAudioRecorder {
+    stream: Option<cpal::Stream>,
+    buffer: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+    sample_rate_hz: u32,
+    channels: u16,
+    level_callback: Option<AudioLevelCallback>,
+}
+
+impl CpalAudioRecorder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_level_callback(&mut self, callback: Option<AudioLevelCallback>) {
+        self.level_callback = callback;
+    }
+
+    fn build_stream<T>(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        buffer: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+        level_callback: Option<AudioLevelCallback>,
+    ) -> Result<cpal::Stream, AudioCaptureError>
+    where
+        T: cpal::SizedSample,
+        f32: cpal::FromSample<T>,
+    {
+        use cpal::traits::DeviceTrait;
+        use cpal::Sample;
+
+        let stream = device
+            .build_input_stream(
+                config.clone(),
+                move |data: &[T], _: &cpal::InputCallbackInfo| {
+                    let converted = data
+                        .iter()
+                        .copied()
+                        .map(f32::from_sample)
+                        .collect::<Vec<_>>();
+                    if let Ok(mut samples) = buffer.try_lock() {
+                        samples.extend(converted.iter().copied());
+                    }
+                    if let Some(callback) = &level_callback {
+                        callback(audio_level_from_samples(&converted));
+                    }
+                },
+                move |error| {
+                    eprintln!("audio input stream error: {error}");
+                },
+                None,
+            )
+            .map_err(|error| AudioCaptureError::new(error.to_string()))?;
+
+        Ok(stream)
+    }
+}
+
+impl AudioRecorder for CpalAudioRecorder {
+    fn start(&mut self) -> Result<(), AudioCaptureError> {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+        self.cancel().ok();
+        let host = cpal::default_host();
+        let device = host
+            .default_input_device()
+            .ok_or_else(|| AudioCaptureError::new("no default input device is available"))?;
+        let supported_config = device
+            .default_input_config()
+            .map_err(|error| AudioCaptureError::new(error.to_string()))?;
+        let sample_format = supported_config.sample_format();
+        let config: cpal::StreamConfig = supported_config.into();
+
+        self.sample_rate_hz = config.sample_rate;
+        self.channels = config.channels;
+        self.buffer
+            .lock()
+            .map_err(|_| AudioCaptureError::new("audio buffer mutex poisoned"))?
+            .clear();
+
+        let stream = match sample_format {
+            cpal::SampleFormat::I8 => Self::build_stream::<i8>(
+                &device,
+                &config,
+                self.buffer.clone(),
+                self.level_callback.clone(),
+            ),
+            cpal::SampleFormat::I16 => Self::build_stream::<i16>(
+                &device,
+                &config,
+                self.buffer.clone(),
+                self.level_callback.clone(),
+            ),
+            cpal::SampleFormat::I32 => Self::build_stream::<i32>(
+                &device,
+                &config,
+                self.buffer.clone(),
+                self.level_callback.clone(),
+            ),
+            cpal::SampleFormat::U8 => Self::build_stream::<u8>(
+                &device,
+                &config,
+                self.buffer.clone(),
+                self.level_callback.clone(),
+            ),
+            cpal::SampleFormat::U16 => Self::build_stream::<u16>(
+                &device,
+                &config,
+                self.buffer.clone(),
+                self.level_callback.clone(),
+            ),
+            cpal::SampleFormat::U32 => Self::build_stream::<u32>(
+                &device,
+                &config,
+                self.buffer.clone(),
+                self.level_callback.clone(),
+            ),
+            cpal::SampleFormat::F32 => Self::build_stream::<f32>(
+                &device,
+                &config,
+                self.buffer.clone(),
+                self.level_callback.clone(),
+            ),
+            cpal::SampleFormat::F64 => Self::build_stream::<f64>(
+                &device,
+                &config,
+                self.buffer.clone(),
+                self.level_callback.clone(),
+            ),
+            other => {
+                return Err(AudioCaptureError::new(format!(
+                    "unsupported input sample format: {other}"
+                )))
+            }
+        }?;
+
+        stream
+            .play()
+            .map_err(|error| AudioCaptureError::new(error.to_string()))?;
+        self.stream = Some(stream);
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
+        self.stream.take();
+        let samples = {
+            let mut guard = self
+                .buffer
+                .lock()
+                .map_err(|_| AudioCaptureError::new("audio buffer mutex poisoned"))?;
+            std::mem::take(&mut *guard)
+        };
+
+        captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
+    }
+
+    fn cancel(&mut self) -> Result<(), AudioCaptureError> {
+        self.stream.take();
+        self.buffer
+            .lock()
+            .map_err(|_| AudioCaptureError::new("audio buffer mutex poisoned"))?
+            .clear();
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AudioCaptureOutcome {
+    Completed(CapturedAudio),
+    Discarded,
+}
+
+pub struct AudioCaptureSession<R> {
+    recorder: R,
+    active: bool,
+}
+
+impl<R> AudioCaptureSession<R>
+where
+    R: AudioRecorder,
+{
+    pub fn new(recorder: R) -> Self {
+        Self {
+            recorder,
+            active: false,
+        }
+    }
+
+    pub fn on_event(
+        &mut self,
+        event: DictationEvent,
+    ) -> Result<Option<AudioCaptureOutcome>, AudioCaptureError> {
+        match event {
+            DictationEvent::Start => {
+                self.recorder.start()?;
+                self.active = true;
+                Ok(None)
+            }
+            DictationEvent::Stop if self.active => {
+                self.active = false;
+                Ok(Some(AudioCaptureOutcome::Completed(self.recorder.stop()?)))
+            }
+            DictationEvent::Cancel if self.active => {
+                self.active = false;
+                self.recorder.cancel()?;
+                Ok(Some(AudioCaptureOutcome::Discarded))
+            }
+            DictationEvent::Stop | DictationEvent::Cancel => Ok(None),
+        }
+    }
+
+    pub fn recorder(&self) -> &R {
+        &self.recorder
+    }
+
+    pub fn recorder_mut(&mut self) -> &mut R {
+        &mut self.recorder
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalTranscription {
     pub text: String,
@@ -333,17 +680,152 @@ pub fn transcribe_captured_audio(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextInsertionError;
+pub struct TextInsertionError {
+    message: String,
+}
+
+impl TextInsertionError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for TextInsertionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "text insertion failed: {}", self.message)
+    }
+}
+
+impl std::error::Error for TextInsertionError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextInsertionOutcome {
+    ClipboardFree,
+    ClipboardFallback,
+}
 
 pub trait TextInsertion {
-    fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError>;
+    fn insert(
+        &self,
+        transcription: &FinalTranscription,
+    ) -> Result<TextInsertionOutcome, TextInsertionError>;
+}
+
+pub trait TextInsertionSystem {
+    fn insert_clipboard_free(&self, text: &str) -> Result<(), TextInsertionError>;
+    fn insert_from_clipboard(&self, text: &str) -> Result<(), TextInsertionError>;
+}
+
+pub struct TextInsertionPipeline<S> {
+    system: S,
+}
+
+impl<S> TextInsertionPipeline<S>
+where
+    S: TextInsertionSystem,
+{
+    pub fn new(system: S) -> Self {
+        Self { system }
+    }
+
+    pub fn system(&self) -> &S {
+        &self.system
+    }
+}
+
+impl<S> TextInsertion for TextInsertionPipeline<S>
+where
+    S: TextInsertionSystem,
+{
+    fn insert(
+        &self,
+        transcription: &FinalTranscription,
+    ) -> Result<TextInsertionOutcome, TextInsertionError> {
+        if self
+            .system
+            .insert_clipboard_free(&transcription.text)
+            .is_ok()
+        {
+            return Ok(TextInsertionOutcome::ClipboardFree);
+        }
+
+        self.system.insert_from_clipboard(&transcription.text)?;
+        Ok(TextInsertionOutcome::ClipboardFallback)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InsertionRescueError;
+pub struct InsertionRescueError {
+    message: String,
+}
+
+impl InsertionRescueError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for InsertionRescueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "insertion rescue failed: {}", self.message)
+    }
+}
+
+impl std::error::Error for InsertionRescueError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertionRescueOutcome {
+    CopiedToClipboardAndNotified,
+}
 
 pub trait InsertionRescue {
-    fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError>;
+    fn rescue(
+        &self,
+        transcription: &FinalTranscription,
+    ) -> Result<InsertionRescueOutcome, InsertionRescueError>;
+}
+
+pub trait InsertionRescueSystem {
+    fn copy_to_clipboard(&self, text: &str) -> Result<(), InsertionRescueError>;
+    fn notify_user(&self, title: &str, body: &str) -> Result<(), InsertionRescueError>;
+}
+
+pub struct ClipboardInsertionRescue<S> {
+    system: S,
+}
+
+impl<S> ClipboardInsertionRescue<S>
+where
+    S: InsertionRescueSystem,
+{
+    pub fn new(system: S) -> Self {
+        Self { system }
+    }
+
+    pub fn system(&self) -> &S {
+        &self.system
+    }
+}
+
+impl<S> InsertionRescue for ClipboardInsertionRescue<S>
+where
+    S: InsertionRescueSystem,
+{
+    fn rescue(
+        &self,
+        transcription: &FinalTranscription,
+    ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+        self.system.copy_to_clipboard(&transcription.text)?;
+        self.system.notify_user(
+            "Text insertion failed",
+            "Your transcription was copied to the clipboard.",
+        )?;
+        Ok(InsertionRescueOutcome::CopiedToClipboardAndNotified)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,6 +833,17 @@ pub enum DictationWorkflowError {
     Transcription(AsrError),
     InsertionRescue(InsertionRescueError),
 }
+
+impl std::fmt::Display for DictationWorkflowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transcription(error) => write!(f, "{error}"),
+            Self::InsertionRescue(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for DictationWorkflowError {}
 
 pub struct DictationWorkflow<'a> {
     runtime: &'a dyn AsrRuntime,
@@ -629,6 +1122,7 @@ pub enum DictationEvent {
 pub struct DictationLifecycle {
     mode: ActivationMode,
     dictating: bool,
+    hotkey_down: bool,
 }
 
 impl DictationLifecycle {
@@ -636,6 +1130,7 @@ impl DictationLifecycle {
         Self {
             mode,
             dictating: false,
+            hotkey_down: false,
         }
     }
 
@@ -645,24 +1140,32 @@ impl DictationLifecycle {
 
     pub fn on_hotkey(&mut self, input: HotkeyInput) -> Option<DictationEvent> {
         match input {
+            HotkeyInput::Pressed if self.hotkey_down => None,
             HotkeyInput::Pressed if self.mode == ActivationMode::Toggle && self.dictating => {
+                self.hotkey_down = true;
                 self.dictating = false;
                 Some(DictationEvent::Stop)
             }
             HotkeyInput::Pressed => {
+                self.hotkey_down = true;
                 self.dictating = true;
                 Some(DictationEvent::Start)
             }
             HotkeyInput::Released if self.mode == ActivationMode::Hold && self.dictating => {
+                self.hotkey_down = false;
                 self.dictating = false;
                 Some(DictationEvent::Stop)
             }
-            HotkeyInput::Released => None,
+            HotkeyInput::Released => {
+                self.hotkey_down = false;
+                None
+            }
         }
     }
 
     pub fn cancel(&mut self) -> Option<DictationEvent> {
         if self.dictating {
+            self.hotkey_down = false;
             self.dictating = false;
             Some(DictationEvent::Cancel)
         } else {
@@ -842,7 +1345,10 @@ fn play_sound(_sound: DictationSound) -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::MacosPlatform;
+pub use macos::{
+    accessibility_trusted, activate_app, frontmost_app_pid, notify, open_accessibility_settings,
+    MacosInsertionRescue, MacosMicrophonePermissionSetup, MacosPlatform, MacosTextInsertion,
+};
 
 /// macOS implementation of the [`PlatformReadiness`] adapter (ADR-0021). Resolves
 /// the OS-specific dictation gates from live system state: microphone permission
@@ -850,14 +1356,44 @@ pub use macos::MacosPlatform;
 /// local model by checking the model file on disk.
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::PlatformReadiness;
+    use super::MicrophonePermissionSetup;
+    use super::{
+        ClipboardInsertionRescue, FinalTranscription, InsertionRescue, InsertionRescueError,
+        InsertionRescueOutcome, InsertionRescueSystem, PlatformReadiness, TextInsertion,
+        TextInsertionError, TextInsertionOutcome, TextInsertionPipeline, TextInsertionSystem,
+    };
+    use block2::RcBlock;
+    use objc2::runtime::Bool;
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
     use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
+    use std::ffi::c_void;
+    use std::io::Write;
     use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+    use std::ptr;
+    use std::time::Duration;
 
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         fn AXIsProcessTrusted() -> bool;
+        fn CGEventCreateKeyboardEvent(
+            source: *const c_void,
+            virtual_key: u16,
+            key_down: bool,
+        ) -> *mut c_void;
+        fn CGEventKeyboardSetUnicodeString(
+            event: *mut c_void,
+            string_length: usize,
+            unicode_string: *const u16,
+        );
+        fn CGEventSetFlags(event: *mut c_void, flags: u64);
+        fn CGEventPost(tap: u32, event: *mut c_void);
+        fn CFRelease(object: *const c_void);
     }
+
+    const K_CG_HID_EVENT_TAP: u32 = 0;
+    const K_CG_EVENT_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
+    const MACOS_V_KEY_CODE: u16 = 9;
 
     pub struct MacosPlatform {
         model_path: PathBuf,
@@ -888,6 +1424,292 @@ mod macos {
             self.model_path.exists()
         }
     }
+
+    pub struct MacosTextInsertion {
+        pipeline: TextInsertionPipeline<MacosTextInsertionSystem>,
+    }
+
+    impl Default for MacosTextInsertion {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl MacosTextInsertion {
+        pub fn new() -> Self {
+            Self {
+                pipeline: TextInsertionPipeline::new(MacosTextInsertionSystem),
+            }
+        }
+    }
+
+    impl TextInsertion for MacosTextInsertion {
+        fn insert(
+            &self,
+            transcription: &FinalTranscription,
+        ) -> Result<TextInsertionOutcome, TextInsertionError> {
+            self.pipeline.insert(transcription)
+        }
+    }
+
+    struct MacosTextInsertionSystem;
+
+    impl TextInsertionSystem for MacosTextInsertionSystem {
+        fn insert_clipboard_free(&self, text: &str) -> Result<(), TextInsertionError> {
+            // CGEventPost is silently dropped when the process is not trusted for
+            // Accessibility, and the call itself returns no delivery status. Without
+            // this gate `post_unicode_text` would report success for events that
+            // never reached any app, so the clipboard fallback and rescue would be
+            // skipped (slugtale-iy2, slugtale-avo). Refusing here lets the pipeline
+            // fall through to clipboard paste and, failing that, the rescue.
+            if !accessibility_trusted() {
+                return Err(TextInsertionError::new(ACCESSIBILITY_NOT_TRUSTED));
+            }
+            post_unicode_text(text).map_err(TextInsertionError::new)
+        }
+
+        fn insert_from_clipboard(&self, text: &str) -> Result<(), TextInsertionError> {
+            // The Cmd+V paste is also a synthesized event, so it needs the same
+            // Accessibility trust; bail early to reach the clipboard rescue.
+            if !accessibility_trusted() {
+                return Err(TextInsertionError::new(ACCESSIBILITY_NOT_TRUSTED));
+            }
+            copy_text_to_clipboard(text).map_err(TextInsertionError::new)?;
+            std::thread::sleep(Duration::from_millis(30));
+            post_command_v().map_err(TextInsertionError::new)
+        }
+    }
+
+    const ACCESSIBILITY_NOT_TRUSTED: &str =
+        "Slugtale is not trusted for Accessibility, so synthesized keystrokes are dropped";
+
+    /// Whether this process may post synthesized keyboard events. macOS gates this
+    /// behind the Accessibility privacy list; an untrusted process can still create
+    /// a `CGEvent` but `CGEventPost` silently discards it. The dev binary path
+    /// changes between builds, so a previously granted entry goes stale and must be
+    /// re-granted (slugtale-avo).
+    pub fn accessibility_trusted() -> bool {
+        unsafe { AXIsProcessTrusted() }
+    }
+
+    pub struct MacosInsertionRescue {
+        rescue: ClipboardInsertionRescue<MacosInsertionRescueSystem>,
+    }
+
+    impl Default for MacosInsertionRescue {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl MacosInsertionRescue {
+        pub fn new() -> Self {
+            Self {
+                rescue: ClipboardInsertionRescue::new(MacosInsertionRescueSystem),
+            }
+        }
+    }
+
+    impl InsertionRescue for MacosInsertionRescue {
+        fn rescue(
+            &self,
+            transcription: &FinalTranscription,
+        ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+            self.rescue.rescue(transcription)
+        }
+    }
+
+    struct MacosInsertionRescueSystem;
+
+    impl InsertionRescueSystem for MacosInsertionRescueSystem {
+        fn copy_to_clipboard(&self, text: &str) -> Result<(), InsertionRescueError> {
+            copy_text_to_clipboard(text).map_err(InsertionRescueError::new)
+        }
+
+        fn notify_user(&self, title: &str, body: &str) -> Result<(), InsertionRescueError> {
+            notify_user(title, body).map_err(InsertionRescueError::new)
+        }
+    }
+
+    fn post_unicode_text(text: &str) -> Result<(), String> {
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        let units = text.encode_utf16().collect::<Vec<_>>();
+        let key_down = create_keyboard_event(0, true)?;
+        unsafe {
+            CGEventKeyboardSetUnicodeString(key_down, units.len(), units.as_ptr());
+            CGEventPost(K_CG_HID_EVENT_TAP, key_down);
+            CFRelease(key_down.cast_const());
+        }
+
+        let key_up = create_keyboard_event(0, false)?;
+        unsafe {
+            CGEventKeyboardSetUnicodeString(key_up, units.len(), units.as_ptr());
+            CGEventPost(K_CG_HID_EVENT_TAP, key_up);
+            CFRelease(key_up.cast_const());
+        }
+
+        Ok(())
+    }
+
+    fn post_command_v() -> Result<(), String> {
+        post_key_with_flags(MACOS_V_KEY_CODE, K_CG_EVENT_FLAG_MASK_COMMAND)
+    }
+
+    fn post_key_with_flags(virtual_key: u16, flags: u64) -> Result<(), String> {
+        let key_down = create_keyboard_event(virtual_key, true)?;
+        unsafe {
+            CGEventSetFlags(key_down, flags);
+            CGEventPost(K_CG_HID_EVENT_TAP, key_down);
+            CFRelease(key_down.cast_const());
+        }
+
+        let key_up = create_keyboard_event(virtual_key, false)?;
+        unsafe {
+            CGEventSetFlags(key_up, flags);
+            CGEventPost(K_CG_HID_EVENT_TAP, key_up);
+            CFRelease(key_up.cast_const());
+        }
+
+        Ok(())
+    }
+
+    fn create_keyboard_event(virtual_key: u16, key_down: bool) -> Result<*mut c_void, String> {
+        let event = unsafe { CGEventCreateKeyboardEvent(ptr::null(), virtual_key, key_down) };
+        if event.is_null() {
+            Err("could not create macOS keyboard event; check Accessibility permission".to_string())
+        } else {
+            Ok(event)
+        }
+    }
+
+    fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+        let mut child = Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("could not start pbcopy: {error}"))?;
+
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "could not open pbcopy stdin".to_string())?;
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|error| format!("could not write transcription to clipboard: {error}"))?;
+        drop(stdin);
+
+        let status = child
+            .wait()
+            .map_err(|error| format!("could not finish pbcopy: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("pbcopy exited with status {status}"))
+        }
+    }
+
+    fn notify_user(title: &str, body: &str) -> Result<(), String> {
+        let script = format!(
+            "display notification {} with title {}",
+            applescript_string(body),
+            applescript_string(title)
+        );
+        let status = Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .status()
+            .map_err(|error| format!("could not show insertion failure notification: {error}"))?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("osascript exited with status {status}"))
+        }
+    }
+
+    fn applescript_string(value: &str) -> String {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+
+    /// Show a user-facing notification (used to guide the user to grant
+    /// Accessibility when insertion can't reach the focused app). Exposed for the
+    /// Tauri layer; failures are non-fatal and surfaced to the caller.
+    pub fn notify(title: &str, body: &str) -> Result<(), String> {
+        notify_user(title, body)
+    }
+
+    fn open_system_settings_url(url: &str) -> Result<(), String> {
+        Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|error| format!("could not open System Settings: {error}"))?;
+        Ok(())
+    }
+
+    pub fn open_accessibility_settings() -> Result<(), String> {
+        open_system_settings_url(
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        )
+    }
+
+    pub fn open_microphone_settings() -> Result<(), String> {
+        open_system_settings_url(
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        )
+    }
+
+    pub struct MacosMicrophonePermissionSetup;
+
+    impl MicrophonePermissionSetup for MacosMicrophonePermissionSetup {
+        fn request_microphone_access(&self) -> Result<(), String> {
+            request_microphone_access()
+        }
+
+        fn open_microphone_settings(&self) -> Result<(), String> {
+            open_microphone_settings()
+        }
+    }
+
+    fn request_microphone_access() -> Result<(), String> {
+        unsafe {
+            let audio = AVMediaTypeAudio.expect("AVMediaTypeAudio constant is always present");
+            match AVCaptureDevice::authorizationStatusForMediaType(audio) {
+                AVAuthorizationStatus::Authorized
+                | AVAuthorizationStatus::Denied
+                | AVAuthorizationStatus::Restricted => return Ok(()),
+                AVAuthorizationStatus::NotDetermined => {}
+                _ => {}
+            }
+
+            let block: RcBlock<dyn Fn(Bool)> = RcBlock::new(|_granted: Bool| {});
+            AVCaptureDevice::requestAccessForMediaType_completionHandler(audio, &block);
+        }
+
+        Ok(())
+    }
+
+    /// The process id of the frontmost application — the app that owns the text
+    /// field the user is dictating into. Captured at recording start so insertion
+    /// can re-target it even if focus drifts to Slugtale's own UI (slugtale-squ).
+    pub fn frontmost_app_pid() -> Option<i32> {
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|app| app.processIdentifier())
+    }
+
+    /// Bring the app with `pid` back to the front so synthesized keystrokes land in
+    /// its focused field. Mirrors FluidVoice's `activateApp(pid:)` reactivation step
+    /// before pasting. Returns whether a running app was found to activate.
+    pub fn activate_app(pid: i32) -> bool {
+        match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+            Some(app) => {
+                app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows)
+            }
+            None => false,
+        }
+    }
 }
 
 pub fn build_tray_menu_items() -> Vec<(&'static str, &'static str)> {
@@ -912,6 +1734,10 @@ impl Default for AppState {
 /// the only reopen path and, as the last window, would quit the whole app.
 pub fn hides_on_close(window_label: &str) -> bool {
     window_label == "settings"
+}
+
+pub fn dictation_bar_should_take_focus() -> bool {
+    false
 }
 
 pub fn show_settings(app: tauri::AppHandle) {
@@ -994,11 +1820,23 @@ mod tests {
             lifecycle.on_hotkey(HotkeyInput::Pressed),
             Some(DictationEvent::Start)
         );
+        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Released), None);
         assert_eq!(
             lifecycle.on_hotkey(HotkeyInput::Pressed),
             Some(DictationEvent::Stop)
         );
         assert!(!lifecycle.is_dictating());
+    }
+
+    #[test]
+    fn toggle_mode_ignores_repeated_press_until_key_release() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Toggle);
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Pressed),
+            Some(DictationEvent::Start)
+        );
+        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Pressed), None);
+        assert!(lifecycle.is_dictating());
     }
 
     #[test]
@@ -1143,6 +1981,11 @@ mod tests {
     }
 
     #[test]
+    fn dictation_bar_preserves_the_active_text_target_focus() {
+        assert!(!dictation_bar_should_take_focus());
+    }
+
+    #[test]
     fn fresh_settings_default_to_unconfigured_and_opt_out() {
         let settings = Settings::default();
         assert_eq!(settings.hotkey, None);
@@ -1177,6 +2020,38 @@ mod tests {
         std::fs::remove_file(&path).ok();
 
         assert_eq!(load_settings(&path), Settings::default());
+    }
+
+    #[test]
+    fn hotkey_settings_store_trimmed_hotkey_and_activation_mode() {
+        let mut settings = Settings::default();
+
+        apply_hotkey_settings(
+            &mut settings,
+            Some("  Cmd+Shift+D  ".to_string()),
+            ActivationMode::Hold,
+        );
+
+        assert_eq!(settings.hotkey, Some("Cmd+Shift+D".to_string()));
+        assert_eq!(settings.activation_mode, ActivationMode::Hold);
+    }
+
+    #[test]
+    fn blank_hotkey_setting_clears_configured_hotkey() {
+        let mut settings = Settings {
+            hotkey: Some("Cmd+Shift+D".to_string()),
+            activation_mode: ActivationMode::Hold,
+            ..Settings::default()
+        };
+
+        apply_hotkey_settings(
+            &mut settings,
+            Some("   ".to_string()),
+            ActivationMode::Toggle,
+        );
+
+        assert_eq!(settings.hotkey, None);
+        assert_eq!(settings.activation_mode, ActivationMode::Toggle);
     }
 
     #[test]
@@ -1337,6 +2212,33 @@ mod tests {
     }
 
     #[test]
+    fn input_audio_is_normalized_to_mono_16khz_samples() {
+        let audio = captured_audio_from_interleaved_input(
+            48_000,
+            2,
+            &[
+                0.0, 0.0, // mono frame 0.0
+                0.2, 0.4, // mono frame 0.3
+                0.4, 0.8, // mono frame 0.6
+                0.8, 1.0, // mono frame 0.9
+                1.0, 1.0, // mono frame 1.0
+                0.6, 0.8, // mono frame 0.7
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(audio.sample_rate_hz, 16_000);
+        assert_eq!(audio.samples, vec![0.0, 0.9]);
+    }
+
+    #[test]
+    fn audio_level_reports_clamped_rms_for_voice_feedback() {
+        assert_eq!(audio_level_from_samples(&[]), 0.0);
+        assert_eq!(audio_level_from_samples(&[2.0]), 1.0);
+        assert!((audio_level_from_samples(&[0.0, 0.5, -0.5]) - 0.408).abs() < 0.001);
+    }
+
+    #[test]
     fn dictation_workflow_cleans_final_transcription_before_immediate_insertion() {
         let runtime = FakeAsrRuntime::new("  hello   from slugtale  ");
         let insertion = FakeTextInsertion::default();
@@ -1369,6 +2271,72 @@ mod tests {
         assert_eq!(
             rescue.rescued.borrow().as_slice(),
             &["Rescue this transcription"]
+        );
+    }
+
+    #[test]
+    fn text_insertion_uses_clipboard_free_path_before_clipboard_fallback() {
+        let system = FakeTextInsertionSystem::default();
+        let insertion = TextInsertionPipeline::new(system);
+
+        let outcome = insertion
+            .insert(&FinalTranscription {
+                text: "Inserted without clipboard".to_string(),
+            })
+            .unwrap();
+
+        assert_eq!(outcome, TextInsertionOutcome::ClipboardFree);
+        assert_eq!(
+            insertion.system().events.borrow().as_slice(),
+            &["clipboard_free:Inserted without clipboard"]
+        );
+    }
+
+    #[test]
+    fn text_insertion_falls_back_to_clipboard_when_clipboard_free_path_fails() {
+        let system = FakeTextInsertionSystem {
+            clipboard_free_fails: true,
+            ..FakeTextInsertionSystem::default()
+        };
+        let insertion = TextInsertionPipeline::new(system);
+
+        let outcome = insertion
+            .insert(&FinalTranscription {
+                text: "Inserted through fallback".to_string(),
+            })
+            .unwrap();
+
+        assert_eq!(outcome, TextInsertionOutcome::ClipboardFallback);
+        assert_eq!(
+            insertion.system().events.borrow().as_slice(),
+            &[
+                "clipboard_free:Inserted through fallback",
+                "clipboard_fallback:Inserted through fallback"
+            ]
+        );
+    }
+
+    #[test]
+    fn insertion_rescue_copies_transcription_to_clipboard_and_notifies_user() {
+        let system = FakeInsertionRescueSystem::default();
+        let rescue = ClipboardInsertionRescue::new(system);
+
+        let outcome = rescue
+            .rescue(&FinalTranscription {
+                text: "Preserve this transcription".to_string(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            InsertionRescueOutcome::CopiedToClipboardAndNotified
+        );
+        assert_eq!(
+            rescue.system().events.borrow().as_slice(),
+            &[
+                "copy_to_clipboard:Preserve this transcription",
+                "notify:Text insertion failed:Your transcription was copied to the clipboard."
+            ]
         );
     }
 
@@ -1409,6 +2377,83 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, AsrError::ModelMissing { path: model_path });
+    }
+
+    #[test]
+    fn developer_run_app_declares_why_it_needs_microphone_access() {
+        let plist = std::fs::read_to_string("Info.plist").expect("src-tauri/Info.plist exists");
+
+        assert!(plist.contains("<key>NSMicrophoneUsageDescription</key>"));
+        assert!(plist.contains("dictation"));
+    }
+
+    #[test]
+    fn developer_run_app_builds_a_macos_bundle_for_privacy_identity() {
+        let config = std::fs::read_to_string("tauri.conf.json").expect("tauri.conf.json exists");
+        let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+
+        assert_eq!(config["identifier"], "com.slugtale.desktop");
+        assert_eq!(config["bundle"]["active"], true);
+        assert_eq!(config["bundle"]["macOS"]["infoPlist"], "Info.plist");
+
+        let package_json =
+            std::fs::read_to_string("../package.json").expect("package.json exists");
+        let package_json: serde_json::Value = serde_json::from_str(&package_json).unwrap();
+
+        assert_eq!(package_json["scripts"]["dev"], "node scripts/run-dev.js");
+
+        let dev_runner =
+            std::fs::read_to_string("../scripts/run-dev.js").expect("dev runner exists");
+        assert!(dev_runner.contains("\"--bundles\""));
+        assert!(dev_runner.contains("\"app\""));
+        assert!(dev_runner.contains("Slugtale.app"));
+    }
+
+    #[test]
+    fn microphone_permission_setup_requests_access_before_opening_settings() {
+        let system = FakeMicrophonePermissionSetup::default();
+
+        run_microphone_permission_setup(&system).unwrap();
+
+        assert_eq!(
+            system.events.borrow().as_slice(),
+            &["request_microphone_access", "open_microphone_settings"]
+        );
+    }
+
+    #[test]
+    fn audio_capture_session_stops_with_captured_samples_for_transcription() {
+        let recorder = FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.0, 0.2, -0.2]));
+        let mut session = AudioCaptureSession::new(recorder);
+
+        assert_eq!(session.on_event(DictationEvent::Start).unwrap(), None);
+        let completed = session.on_event(DictationEvent::Stop).unwrap();
+
+        assert_eq!(
+            completed,
+            Some(AudioCaptureOutcome::Completed(CapturedAudio::mono_16khz(
+                vec![0.0, 0.2, -0.2]
+            )))
+        );
+        assert_eq!(
+            session.recorder().events.borrow().as_slice(),
+            &["start", "stop"]
+        );
+    }
+
+    #[test]
+    fn audio_capture_session_cancel_discards_without_returning_audio() {
+        let recorder = FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.4, 0.5]));
+        let mut session = AudioCaptureSession::new(recorder);
+
+        session.on_event(DictationEvent::Start).unwrap();
+        let discarded = session.on_event(DictationEvent::Cancel).unwrap();
+
+        assert_eq!(discarded, Some(AudioCaptureOutcome::Discarded));
+        assert_eq!(
+            session.recorder().events.borrow().as_slice(),
+            &["start", "cancel"]
+        );
     }
 
     struct FakePlatform {
@@ -1486,6 +2531,54 @@ mod tests {
         }
     }
 
+    struct FakeAudioRecorder {
+        audio: CapturedAudio,
+        events: std::cell::RefCell<Vec<&'static str>>,
+    }
+
+    impl FakeAudioRecorder {
+        fn new(audio: CapturedAudio) -> Self {
+            Self {
+                audio,
+                events: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl AudioRecorder for FakeAudioRecorder {
+        fn start(&mut self) -> Result<(), AudioCaptureError> {
+            self.events.borrow_mut().push("start");
+            Ok(())
+        }
+
+        fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
+            self.events.borrow_mut().push("stop");
+            Ok(self.audio.clone())
+        }
+
+        fn cancel(&mut self) -> Result<(), AudioCaptureError> {
+            self.events.borrow_mut().push("cancel");
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeMicrophonePermissionSetup {
+        events: std::cell::RefCell<Vec<&'static str>>,
+    }
+
+    impl MicrophonePermissionSetup for FakeMicrophonePermissionSetup {
+        fn request_microphone_access(&self) -> Result<(), String> {
+            self.events.borrow_mut().push("request_microphone_access");
+            Ok(())
+        }
+
+        fn open_microphone_settings(&self) -> Result<(), String> {
+            self.events.borrow_mut().push("open_microphone_settings");
+            Ok(())
+        }
+    }
+
     #[derive(Default)]
     struct FakeTextInsertion {
         inserted: std::cell::RefCell<Vec<String>>,
@@ -1502,10 +2595,44 @@ mod tests {
     }
 
     impl TextInsertion for FakeTextInsertion {
-        fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError> {
+        fn insert(
+            &self,
+            transcription: &FinalTranscription,
+        ) -> Result<TextInsertionOutcome, TextInsertionError> {
             self.inserted.borrow_mut().push(transcription.text.clone());
             if self.fails {
-                Err(TextInsertionError)
+                Err(TextInsertionError::new("fake insertion failure"))
+            } else {
+                Ok(TextInsertionOutcome::ClipboardFree)
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeTextInsertionSystem {
+        events: std::cell::RefCell<Vec<String>>,
+        clipboard_free_fails: bool,
+        clipboard_fallback_fails: bool,
+    }
+
+    impl TextInsertionSystem for FakeTextInsertionSystem {
+        fn insert_clipboard_free(&self, text: &str) -> Result<(), TextInsertionError> {
+            self.events
+                .borrow_mut()
+                .push(format!("clipboard_free:{text}"));
+            if self.clipboard_free_fails {
+                Err(TextInsertionError::new("fake clipboard-free failure"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn insert_from_clipboard(&self, text: &str) -> Result<(), TextInsertionError> {
+            self.events
+                .borrow_mut()
+                .push(format!("clipboard_fallback:{text}"));
+            if self.clipboard_fallback_fails {
+                Err(TextInsertionError::new("fake clipboard fallback failure"))
             } else {
                 Ok(())
             }
@@ -1518,8 +2645,32 @@ mod tests {
     }
 
     impl InsertionRescue for FakeInsertionRescue {
-        fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError> {
+        fn rescue(
+            &self,
+            transcription: &FinalTranscription,
+        ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
             self.rescued.borrow_mut().push(transcription.text.clone());
+            Ok(InsertionRescueOutcome::CopiedToClipboardAndNotified)
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeInsertionRescueSystem {
+        events: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl InsertionRescueSystem for FakeInsertionRescueSystem {
+        fn copy_to_clipboard(&self, text: &str) -> Result<(), InsertionRescueError> {
+            self.events
+                .borrow_mut()
+                .push(format!("copy_to_clipboard:{text}"));
+            Ok(())
+        }
+
+        fn notify_user(&self, title: &str, body: &str) -> Result<(), InsertionRescueError> {
+            self.events
+                .borrow_mut()
+                .push(format!("notify:{title}:{body}"));
             Ok(())
         }
     }
