@@ -4,9 +4,91 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
+#[derive(Default)]
+struct RecordingFeedbackState(Mutex<slugtale_lib::RecordingFeedback>);
+
 #[tauri::command]
 fn show_settings(app: tauri::AppHandle) {
     slugtale_lib::show_settings(app);
+}
+
+/// Drive the recording surface (ADR-0014) from a dictation lifecycle event:
+/// play the start/stop sound and show or hide the Dictation Bar. The bar's Stop
+/// and Cancel controls and its Escape key all route here; the hotkey lifecycle
+/// (slugtale-h8z.3) will route `start` and `stop` here too once wired.
+#[tauri::command]
+fn dictation_event(
+    app: tauri::AppHandle,
+    feedback: tauri::State<'_, RecordingFeedbackState>,
+    event: String,
+) -> Result<(), String> {
+    let event = match event.as_str() {
+        "start" => slugtale_lib::DictationEvent::Start,
+        "stop" => slugtale_lib::DictationEvent::Stop,
+        "cancel" => slugtale_lib::DictationEvent::Cancel,
+        other => return Err(format!("unknown dictation event: {other}")),
+    };
+
+    let effect = {
+        let mut guard = feedback
+            .0
+            .lock()
+            .map_err(|_| "recording feedback mutex poisoned".to_string())?;
+        guard.on_event(event)
+    };
+
+    if let Some(sound) = effect.sound {
+        let _ = slugtale_lib::play_dictation_sound(sound);
+    }
+
+    if effect.bar_visible {
+        show_dictation_bar(&app);
+    } else {
+        hide_dictation_bar(&app);
+    }
+
+    Ok(())
+}
+
+fn show_dictation_bar(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("dictation-bar") {
+        position_bottom_center(&window);
+        let _ = window.show();
+        // Focus so the Dictation Bar can receive Escape-to-cancel while another
+        // app holds the text target.
+        let _ = window.set_focus();
+    }
+}
+
+fn hide_dictation_bar(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("dictation-bar") {
+        let _ = window.hide();
+    }
+}
+
+/// Place the Dictation Bar near the bottom-center of the active display, above
+/// the Dock, matching the resident dictation pills users know from FluidVoice
+/// and Wispr Flow.
+fn position_bottom_center(window: &tauri::WebviewWindow) {
+    let monitor = match window.current_monitor() {
+        Ok(Some(monitor)) => monitor,
+        _ => match window.primary_monitor() {
+            Ok(Some(monitor)) => monitor,
+            _ => return,
+        },
+    };
+
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+
+    let screen = monitor.size();
+    let origin = monitor.position();
+    // ~96pt of breathing room above the bottom edge, scaled to the display.
+    let margin = (96.0 * monitor.scale_factor()) as i32;
+    let x = origin.x + (screen.width as i32 - size.width as i32) / 2;
+    let y = origin.y + screen.height as i32 - size.height as i32 - margin;
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
 #[tauri::command]
@@ -33,7 +115,9 @@ async fn download_local_model(
         // flooding the channel with thousands of tiny messages.
         let mut last_sent = 0u64;
         let mut forward = move |progress: slugtale_lib::DownloadProgress| {
-            let complete = progress.total.is_some_and(|total| progress.downloaded >= total);
+            let complete = progress
+                .total
+                .is_some_and(|total| progress.downloaded >= total);
             if progress.downloaded == 0 || complete || progress.downloaded - last_sent >= 1_048_576
             {
                 last_sent = progress.downloaded;
@@ -191,6 +275,7 @@ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
 fn main() {
     tauri::Builder::default()
         .manage(WhisperRuntimeCache::default())
+        .manage(RecordingFeedbackState::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -212,7 +297,8 @@ fn main() {
             download_local_model,
             delete_local_model,
             reveal_model_location,
-            transcribe_captured_audio
+            transcribe_captured_audio,
+            dictation_event
         ])
         .run(tauri::generate_context!())
         .expect("error while running Slugtale");

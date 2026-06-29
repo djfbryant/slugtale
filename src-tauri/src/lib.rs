@@ -377,7 +377,7 @@ impl<'a> DictationWorkflow<'a> {
     ) -> Result<FinalTranscription, DictationWorkflowError> {
         let transcription = transcribe_captured_audio(self.runtime, audio)
             .map_err(DictationWorkflowError::Transcription)?;
-        let transcription = clean_for_insertion(transcription);
+        let transcription = clean_final_transcription(transcription);
         if self.text_insertion.insert(&transcription).is_err() {
             self.insertion_rescue
                 .rescue(&transcription)
@@ -387,7 +387,9 @@ impl<'a> DictationWorkflow<'a> {
     }
 }
 
-fn clean_for_insertion(transcription: FinalTranscription) -> FinalTranscription {
+/// Apply deterministic Transcript Cleanup before insertion without rewriting
+/// meaning or adding generated text.
+pub fn clean_final_transcription(transcription: FinalTranscription) -> FinalTranscription {
     let normalized = transcription
         .text
         .split_whitespace()
@@ -669,6 +671,126 @@ impl DictationLifecycle {
     }
 }
 
+/// An audible cue played at the edges of a dictation (ADR-0014): a start sound
+/// when recording begins and a stop sound when it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictationSound {
+    Start,
+    Stop,
+}
+
+/// What a dictation produces when it ends: a stopped dictation is `Completed` so
+/// it can be transcribed; a cancelled dictation is `Discarded` (CONTEXT.md:
+/// Dictation Bar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictationOutcome {
+    Completed,
+    Discarded,
+}
+
+/// The observable response of the recording surface to a [`DictationEvent`]: the
+/// audible cue to play (if any), whether the Dictation Bar is now shown, and the
+/// session outcome once the dictation has ended. It deliberately carries no
+/// transcription text — v1 shows no live transcript (ADR-0014, ADR-0005).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordingFeedbackEffect {
+    pub sound: Option<DictationSound>,
+    pub bar_visible: bool,
+    pub outcome: Option<DictationOutcome>,
+}
+
+/// The recording surface state (ADR-0014). Translates dictation lifecycle
+/// [`DictationEvent`]s into the audible and visible feedback the user sees:
+/// playing start/stop sounds and showing or hiding the Dictation Bar. It is the
+/// single source of truth for how Stop and Cancel differ — both hide the bar,
+/// but Stop keeps the dictation while Cancel discards it.
+pub struct RecordingFeedback {
+    bar_visible: bool,
+}
+
+impl Default for RecordingFeedback {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RecordingFeedback {
+    pub fn new() -> Self {
+        Self { bar_visible: false }
+    }
+
+    pub fn bar_visible(&self) -> bool {
+        self.bar_visible
+    }
+
+    pub fn on_event(&mut self, event: DictationEvent) -> RecordingFeedbackEffect {
+        // Stop and Cancel only matter while a dictation is on screen. Ignoring
+        // them once the bar is hidden keeps a stray terminal event (e.g. a
+        // hold-mode key release arriving after Escape) from replaying a sound or
+        // re-ending the session.
+        if matches!(event, DictationEvent::Stop | DictationEvent::Cancel) && !self.bar_visible {
+            return RecordingFeedbackEffect {
+                sound: None,
+                bar_visible: false,
+                outcome: None,
+            };
+        }
+
+        match event {
+            DictationEvent::Start => {
+                self.bar_visible = true;
+                RecordingFeedbackEffect {
+                    sound: Some(DictationSound::Start),
+                    bar_visible: true,
+                    outcome: None,
+                }
+            }
+            DictationEvent::Stop => {
+                self.bar_visible = false;
+                RecordingFeedbackEffect {
+                    sound: Some(DictationSound::Stop),
+                    bar_visible: false,
+                    outcome: Some(DictationOutcome::Completed),
+                }
+            }
+            DictationEvent::Cancel => {
+                self.bar_visible = false;
+                RecordingFeedbackEffect {
+                    sound: None,
+                    bar_visible: false,
+                    outcome: Some(DictationOutcome::Discarded),
+                }
+            }
+        }
+    }
+}
+
+/// Play the audible cue for a dictation edge (ADR-0014) through the OS sound
+/// service. Like [`open_in_file_manager`], the spawned helper returns
+/// immediately so the recording lifecycle is never blocked waiting on audio.
+pub fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
+    play_sound(sound)
+}
+
+#[cfg(target_os = "macos")]
+fn play_sound(sound: DictationSound) -> std::io::Result<()> {
+    // Reuse the built-in system sounds so v1 ships no bundled audio assets. Tink
+    // marks the start of recording; Pop marks the end.
+    let file = match sound {
+        DictationSound::Start => "/System/Library/Sounds/Tink.aiff",
+        DictationSound::Stop => "/System/Library/Sounds/Pop.aiff",
+    };
+    std::process::Command::new("afplay").arg(file).spawn()?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn play_sound(_sound: DictationSound) -> std::io::Result<()> {
+    // Other platforms get audible feedback once their Platform Adapter lands
+    // (ADR-0021); the recording lifecycle stays platform-agnostic until then.
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 pub use macos::MacosPlatform;
 
@@ -853,6 +975,58 @@ mod tests {
         let mut lifecycle = DictationLifecycle::new(ActivationMode::Hold);
         assert_eq!(lifecycle.cancel(), None);
         assert!(!lifecycle.is_dictating());
+    }
+
+    #[test]
+    fn starting_dictation_plays_start_sound_and_shows_bar() {
+        let mut feedback = RecordingFeedback::new();
+
+        let effect = feedback.on_event(DictationEvent::Start);
+
+        assert_eq!(effect.sound, Some(DictationSound::Start));
+        assert!(effect.bar_visible);
+        assert!(feedback.bar_visible());
+    }
+
+    #[test]
+    fn stopping_dictation_plays_stop_sound_hides_bar_and_completes() {
+        let mut feedback = RecordingFeedback::new();
+        feedback.on_event(DictationEvent::Start);
+
+        let effect = feedback.on_event(DictationEvent::Stop);
+
+        assert_eq!(effect.sound, Some(DictationSound::Stop));
+        assert!(!effect.bar_visible);
+        assert_eq!(effect.outcome, Some(DictationOutcome::Completed));
+        assert!(!feedback.bar_visible());
+    }
+
+    #[test]
+    fn cancelling_dictation_hides_bar_and_discards_without_a_sound() {
+        let mut feedback = RecordingFeedback::new();
+        feedback.on_event(DictationEvent::Start);
+
+        let effect = feedback.on_event(DictationEvent::Cancel);
+
+        assert_eq!(effect.sound, None);
+        assert!(!effect.bar_visible);
+        assert_eq!(effect.outcome, Some(DictationOutcome::Discarded));
+        assert!(!feedback.bar_visible());
+    }
+
+    #[test]
+    fn a_terminal_event_after_the_bar_is_hidden_is_ignored() {
+        // Cancel (e.g. Escape) followed by a stray Stop from a hold-mode key
+        // release must not replay the stop sound or re-complete the session.
+        let mut feedback = RecordingFeedback::new();
+        feedback.on_event(DictationEvent::Start);
+        feedback.on_event(DictationEvent::Cancel);
+
+        let effect = feedback.on_event(DictationEvent::Stop);
+
+        assert_eq!(effect.sound, None);
+        assert!(!effect.bar_visible);
+        assert_eq!(effect.outcome, None);
     }
 
     #[test]
@@ -1093,6 +1267,33 @@ mod tests {
             rescue.rescued.borrow().as_slice(),
             &["Rescue this transcription"]
         );
+    }
+
+    #[test]
+    fn clean_final_transcription_trims_and_normalizes_repeated_spaces() {
+        let transcription = clean_final_transcription(FinalTranscription {
+            text: "  hello   from    slugtale  ".to_string(),
+        });
+
+        assert_eq!(transcription.text, "Hello from slugtale");
+    }
+
+    #[test]
+    fn clean_final_transcription_handles_empty_and_non_lowercase_starts() {
+        let cases = [
+            ("   ", ""),
+            ("Already clean", "Already clean"),
+            ("123 start recording", "123 start recording"),
+            ("? question", "? question"),
+        ];
+
+        for (input, expected) in cases {
+            let transcription = clean_final_transcription(FinalTranscription {
+                text: input.to_string(),
+            });
+
+            assert_eq!(transcription.text, expected);
+        }
     }
 
     #[test]
