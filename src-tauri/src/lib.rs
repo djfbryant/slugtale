@@ -220,13 +220,28 @@ pub fn ensure_default_model(
     std::fs::create_dir_all(model_dir)?;
     let staged_path = model_dir.join(format!("{DEFAULT_MODEL_FILENAME}.download"));
     std::fs::remove_file(&staged_path).ok();
-    downloader.download(DEFAULT_MODEL_DOWNLOAD_URL, &staged_path, on_progress)?;
+    let mut expected_bytes = None;
+    downloader.download(DEFAULT_MODEL_DOWNLOAD_URL, &staged_path, &mut |progress| {
+        if progress.total.is_some() {
+            expected_bytes = progress.total;
+        }
+        on_progress(progress);
+    })?;
 
-    if staged_path.metadata()?.len() == 0 {
+    let downloaded_bytes = staged_path.metadata()?.len();
+    if downloaded_bytes == 0 {
         std::fs::remove_file(&staged_path).ok();
         return Err(ModelError::Download(
             "downloaded model was empty".to_string(),
         ));
+    }
+    if let Some(expected_bytes) = expected_bytes {
+        if downloaded_bytes != expected_bytes {
+            std::fs::remove_file(&staged_path).ok();
+            return Err(ModelError::Download(format!(
+                "downloaded model was incomplete: expected {expected_bytes} bytes, got {downloaded_bytes}"
+            )));
+        }
     }
 
     std::fs::rename(staged_path, default_model_path(model_dir))?;
@@ -2189,6 +2204,24 @@ mod tests {
     }
 
     #[test]
+    fn ensure_default_model_rejects_incomplete_downloads() {
+        let model_dir = unique_test_dir("model-download-short");
+        std::fs::remove_dir_all(&model_dir).ok();
+        let downloader = FakeModelDownloader::new(b"partial model").with_total(100);
+
+        let error = ensure_default_model(&model_dir, &downloader, &mut |_| {}).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "model download error: downloaded model was incomplete: expected 100 bytes, got 13"
+        );
+        assert!(!default_model_path(&model_dir).exists());
+        assert!(!model_dir.join("ggml-base.en.bin.download").exists());
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[test]
     fn copy_with_progress_reports_zero_then_each_chunk() {
         let data = vec![7u8; 200_000];
         let mut reader = std::io::Cursor::new(data.clone());
@@ -2498,8 +2531,7 @@ mod tests {
         assert_eq!(config["bundle"]["active"], true);
         assert_eq!(config["bundle"]["macOS"]["infoPlist"], "Info.plist");
 
-        let package_json =
-            std::fs::read_to_string("../package.json").expect("package.json exists");
+        let package_json = std::fs::read_to_string("../package.json").expect("package.json exists");
         let package_json: serde_json::Value = serde_json::from_str(&package_json).unwrap();
 
         assert_eq!(package_json["scripts"]["dev"], "node scripts/run-dev.js");
@@ -2608,6 +2640,7 @@ mod tests {
 
     struct FakeModelDownloader {
         bytes: &'static [u8],
+        total: Option<u64>,
         urls: std::cell::RefCell<Vec<String>>,
     }
 
@@ -2615,8 +2648,14 @@ mod tests {
         fn new(bytes: &'static [u8]) -> Self {
             Self {
                 bytes,
+                total: Some(bytes.len() as u64),
                 urls: std::cell::RefCell::new(Vec::new()),
             }
+        }
+
+        fn with_total(mut self, total: u64) -> Self {
+            self.total = Some(total);
+            self
         }
     }
 
@@ -2628,7 +2667,7 @@ mod tests {
             on_progress: &mut dyn FnMut(DownloadProgress),
         ) -> Result<(), ModelError> {
             self.urls.borrow_mut().push(url.to_string());
-            let total = Some(self.bytes.len() as u64);
+            let total = self.total;
             on_progress(DownloadProgress {
                 downloaded: 0,
                 total,
