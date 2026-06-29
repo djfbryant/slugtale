@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 
 const root = join(__dirname, "..");
 const tauri = process.platform === "win32" ? "tauri.cmd" : "tauri";
+const macosBundleIdentifier = "com.slugtale.desktop";
 const pathEntries = [
   join(root, "node_modules", ".bin"),
   process.env.HOME ? join(process.env.HOME, ".cargo", "bin") : null,
@@ -59,6 +60,16 @@ if (process.platform === "darwin") {
     process.exit(1);
   }
 
+  run("codesign", [
+    "--force",
+    "--deep",
+    "--sign",
+    "-",
+    "--identifier",
+    macosBundleIdentifier,
+    appPath,
+  ]);
+  run("codesign", ["--verify", "--deep", "--strict", appPath]);
   run("open", ["-n", appPath]);
 } else {
   run(tauri, ["dev", "--features", "local-whisper-runtime"]);

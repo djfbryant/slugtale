@@ -27,12 +27,21 @@
       cursor: default;
     }
 
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      /* Transparent gutter on every side so the pill's drop shadow fades out
+         inside the window instead of being sliced off at the bottom edge. */
+      padding: 28px;
+    }
+
     .bar {
       display: flex;
       align-items: center;
       gap: 12px;
-      height: 100%;
-      margin: 6px;
+      width: 100%;
+      height: 48px;
       padding: 0 12px;
       border-radius: 999px;
       background: rgba(24, 27, 31, 0.92);

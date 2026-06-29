@@ -471,7 +471,10 @@ fn open_microphone_settings() -> Result<(), String> {
 fn open_text_insertion_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        return slugtale_lib::open_accessibility_settings();
+        return slugtale_lib::run_text_insertion_permission_setup(
+            &slugtale_lib::MacosTextInsertionPermissionSetup,
+        )
+        .map(|_| ());
     }
 
     #[cfg(not(target_os = "macos"))]

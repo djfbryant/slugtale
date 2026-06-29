@@ -766,6 +766,10 @@
       return channel;
     }
 
+    function delay(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
     async function loadReadiness() {
       const invoke = tauriInvoke();
       if (!invoke) {
@@ -781,6 +785,23 @@
       }
     }
 
+    async function pollReadinessUntilReady(itemId, attempts = 12) {
+      const invoke = tauriInvoke();
+      if (!invoke) return;
+
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        await delay(1000);
+        const report = await invoke("get_settings_readiness");
+        render(report);
+
+        const item = report.items.find((entry) => entry.id === itemId);
+        if (item?.ready) {
+          renderSettings(currentSettings, "Permission is ready.");
+          return;
+        }
+      }
+    }
+
     async function openReadinessAction(itemId) {
       const invoke = tauriInvoke();
       const action = readinessActions[itemId];
@@ -790,9 +811,9 @@
         await invoke(action.command);
         renderSettings(
           currentSettings,
-          "Opened macOS Privacy & Security. Grant access there, then return here."
+          "Checking permission. If macOS opens Privacy & Security, grant access there and return here."
         );
-        setTimeout(loadReadiness, 1000);
+        await pollReadinessUntilReady(itemId);
       } catch (error) {
         renderSettings(currentSettings, String(error), true);
       }
@@ -904,6 +925,12 @@
           return;
         }
         saveHotkeySettings(captured.hotkey);
+      });
+      window.addEventListener("focus", loadReadiness);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          loadReadiness();
+        }
       });
 
       refreshSetup();
