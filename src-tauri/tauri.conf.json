@@ -8,6 +8,7 @@
   },
   "app": {
     "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "settings",
@@ -16,6 +17,20 @@
         "height": 520,
         "visible": false,
         "resizable": false
+      },
+      {
+        "label": "dictation-bar",
+        "url": "dictation-bar.html",
+        "title": "Slugtale Dictation",
+        "width": 220,
+        "height": 64,
+        "visible": false,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false
       }
     ]
   },
