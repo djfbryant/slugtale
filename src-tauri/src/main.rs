@@ -734,6 +734,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn whisper_runtime_cache_reuses_runtime_for_same_model_path() {
+        let cache = WhisperRuntimeCache::default();
+        let model_path = unique_test_dir("whisper-cache").join("ggml-base.en.bin");
+
+        let first = cache.runtime_for(&model_path);
+        let second = cache.runtime_for(&model_path);
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn whisper_runtime_cache_rebuilds_runtime_when_model_path_changes() {
+        let cache = WhisperRuntimeCache::default();
+        let model_dir = unique_test_dir("whisper-cache-model-change");
+        let first_path = model_dir.join("ggml-base.en.bin");
+        let second_path = model_dir.join("custom-model.bin");
+
+        let first = cache.runtime_for(&first_path);
+        let second = cache.runtime_for(&second_path);
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(second.model_path(), second_path);
+    }
+
+    #[test]
     fn readiness_uses_default_local_model_when_settings_model_is_unset() {
         let model_dir = unique_test_dir("readiness-default-model");
         std::fs::create_dir_all(&model_dir).unwrap();
