@@ -541,6 +541,7 @@
 
     let downloading = false;
     let savingSettings = false;
+    let openingReadinessAction = false;
     let currentSettings = { ...fallbackSettings };
 
     function stateWord(item) {
@@ -805,8 +806,9 @@
     async function openReadinessAction(itemId) {
       const invoke = tauriInvoke();
       const action = readinessActions[itemId];
-      if (!invoke || !action) return;
+      if (!invoke || !action || openingReadinessAction) return;
 
+      openingReadinessAction = true;
       try {
         await invoke(action.command);
         renderSettings(
@@ -816,6 +818,8 @@
         await pollReadinessUntilReady(itemId);
       } catch (error) {
         renderSettings(currentSettings, String(error), true);
+      } finally {
+        openingReadinessAction = false;
       }
     }
 
