@@ -443,7 +443,9 @@ fn position_bottom_center(window: &tauri::WebviewWindow) {
 #[tauri::command]
 fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
     let settings = load_current_settings(&app);
-    let platform = CurrentPlatform::new(settings.model.as_deref().map(PathBuf::from));
+    let platform = model_dir(&app)
+        .map(|dir| CurrentPlatform::for_readiness(&dir))
+        .unwrap_or_else(|_| CurrentPlatform::new(settings.model.as_deref().map(PathBuf::from)));
     slugtale_lib::settings_readiness_report(&settings, &platform)
 }
 
@@ -609,6 +611,10 @@ impl CurrentPlatform {
         Self { model_path }
     }
 
+    fn for_readiness(model_dir: &Path) -> Self {
+        Self::new(Some(slugtale_lib::default_model_path(model_dir)))
+    }
+
     #[cfg(target_os = "macos")]
     fn macos_platform(&self) -> slugtale_lib::MacosPlatform {
         slugtale_lib::MacosPlatform::new(self.model_path.clone().unwrap_or_default())
@@ -721,4 +727,63 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Slugtale");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readiness_uses_default_local_model_when_settings_model_is_unset() {
+        let model_dir = unique_test_dir("readiness-default-model");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(slugtale_lib::default_model_path(&model_dir), b"model").unwrap();
+
+        let platform = CurrentPlatform::for_readiness(&model_dir);
+
+        assert!(slugtale_lib::PlatformReadiness::local_model_present(
+            &platform
+        ));
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[test]
+    fn readiness_uses_default_local_model_when_settings_model_is_stale() {
+        let model_dir = unique_test_dir("readiness-stale-model-setting");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(slugtale_lib::default_model_path(&model_dir), b"model").unwrap();
+
+        let stale_settings = slugtale_lib::Settings {
+            model: Some(
+                model_dir
+                    .join("missing-custom-model.bin")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            ..slugtale_lib::Settings::default()
+        };
+        let platform = CurrentPlatform::for_readiness(&model_dir);
+        let report = slugtale_lib::settings_readiness_report(&stale_settings, &platform);
+        let local_model = report
+            .items
+            .iter()
+            .find(|item| item.id == "local_model")
+            .unwrap();
+
+        assert!(local_model.ready);
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "slugtale-main-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 }
