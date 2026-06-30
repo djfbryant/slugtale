@@ -2,22 +2,24 @@ use crate::Settings;
 use serde::{Deserialize, Serialize};
 
 /// Platform Adapter boundary (ADR-0021) for the OS-specific facts that gate
-/// dictation: microphone permission, text insertion permission, and whether the
-/// local model is present on disk.
+/// dictation: microphone permission and text insertion permission.
 pub trait PlatformReadiness {
     fn microphone_granted(&self) -> bool;
     fn insertion_granted(&self) -> bool;
-    fn local_model_present(&self) -> bool;
 }
 
 /// Dictation Readiness (ADR-0013): dictation is only available once microphone
 /// permission, text insertion permission, a configured hotkey, and a local model
 /// are all ready.
-pub fn dictation_ready(settings: &Settings, platform: &dyn PlatformReadiness) -> bool {
+pub fn dictation_ready(
+    settings: &Settings,
+    platform: &dyn PlatformReadiness,
+    local_model_ready: bool,
+) -> bool {
     settings.hotkey.is_some()
         && platform.microphone_granted()
         && platform.insertion_granted()
-        && platform.local_model_present()
+        && local_model_ready
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,9 +59,10 @@ pub struct SettingsReadinessReport {
 pub fn settings_readiness_report(
     settings: &Settings,
     platform: &dyn PlatformReadiness,
+    local_model_ready: bool,
 ) -> SettingsReadinessReport {
     SettingsReadinessReport {
-        dictation_available: dictation_ready(settings, platform),
+        dictation_available: dictation_ready(settings, platform, local_model_ready),
         items: vec![
             readiness_item(
                 "microphone",
@@ -74,12 +77,7 @@ pub fn settings_readiness_report(
                 platform.insertion_granted(),
             ),
             readiness_item("hotkey", "Hotkey", true, settings.hotkey.is_some()),
-            readiness_item(
-                "local_model",
-                "Local model",
-                true,
-                platform.local_model_present(),
-            ),
+            readiness_item("local_model", "Local model", true, local_model_ready),
             readiness_item("launch_at_login", "Launch at login", false, true),
         ],
     }
@@ -102,9 +100,8 @@ mod tests {
         let platform = FakePlatform {
             microphone: false,
             insertion: false,
-            model: false,
         };
-        assert!(!dictation_ready(&Settings::default(), &platform));
+        assert!(!dictation_ready(&Settings::default(), &platform, false));
     }
     #[test]
     fn dictation_is_not_ready_without_microphone_permission() {
@@ -112,7 +109,7 @@ mod tests {
             microphone: false,
             ..FakePlatform::all_ready()
         };
-        assert!(!dictation_ready(&configured_settings(), &platform));
+        assert!(!dictation_ready(&configured_settings(), &platform, true));
     }
     #[test]
     fn dictation_is_not_ready_without_insertion_permission() {
@@ -120,7 +117,7 @@ mod tests {
             insertion: false,
             ..FakePlatform::all_ready()
         };
-        assert!(!dictation_ready(&configured_settings(), &platform));
+        assert!(!dictation_ready(&configured_settings(), &platform, true));
     }
     #[test]
     fn dictation_is_not_ready_without_configured_hotkey() {
@@ -128,21 +125,26 @@ mod tests {
             hotkey: None,
             ..Settings::default()
         };
-        assert!(!dictation_ready(&settings, &FakePlatform::all_ready()));
+        assert!(!dictation_ready(
+            &settings,
+            &FakePlatform::all_ready(),
+            true
+        ));
     }
     #[test]
     fn dictation_is_not_ready_without_local_model() {
-        let platform = FakePlatform {
-            model: false,
-            ..FakePlatform::all_ready()
-        };
-        assert!(!dictation_ready(&configured_settings(), &platform));
+        assert!(!dictation_ready(
+            &configured_settings(),
+            &FakePlatform::all_ready(),
+            false
+        ));
     }
     #[test]
     fn dictation_is_ready_when_all_requirements_are_met() {
         assert!(dictation_ready(
             &configured_settings(),
-            &FakePlatform::all_ready()
+            &FakePlatform::all_ready(),
+            true
         ));
     }
     #[test]
@@ -150,9 +152,8 @@ mod tests {
         let platform = FakePlatform {
             microphone: false,
             insertion: false,
-            model: false,
         };
-        let report = settings_readiness_report(&Settings::default(), &platform);
+        let report = settings_readiness_report(&Settings::default(), &platform, false);
 
         assert!(!report.dictation_available);
         assert_eq!(
@@ -168,7 +169,8 @@ mod tests {
     }
     #[test]
     fn settings_readiness_report_allows_dictation_when_required_items_are_ready() {
-        let report = settings_readiness_report(&configured_settings(), &FakePlatform::all_ready());
+        let report =
+            settings_readiness_report(&configured_settings(), &FakePlatform::all_ready(), true);
 
         assert!(report.dictation_available);
         assert!(report
@@ -177,11 +179,26 @@ mod tests {
             .filter(|item| item.required)
             .all(|item| item.ready));
     }
+    #[test]
+    fn model_readiness_is_supplied_outside_the_platform_adapter() {
+        let report =
+            settings_readiness_report(&configured_settings(), &FakePlatform::all_ready(), false);
+        let local_model = report
+            .items
+            .iter()
+            .find(|item| item.id == "local_model")
+            .unwrap();
+
+        assert!(!report.dictation_available);
+        assert_eq!(
+            local_model,
+            &ReadinessItem::missing("local_model", "Local model", true)
+        );
+    }
 
     struct FakePlatform {
         microphone: bool,
         insertion: bool,
-        model: bool,
     }
 
     impl FakePlatform {
@@ -189,7 +206,6 @@ mod tests {
             Self {
                 microphone: true,
                 insertion: true,
-                model: true,
             }
         }
     }
@@ -200,9 +216,6 @@ mod tests {
         }
         fn insertion_granted(&self) -> bool {
             self.insertion
-        }
-        fn local_model_present(&self) -> bool {
-            self.model
         }
     }
 

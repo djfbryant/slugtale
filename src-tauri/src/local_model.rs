@@ -31,6 +31,10 @@ pub fn local_model_status(model_dir: &std::path::Path) -> LocalModelStatus {
     }
 }
 
+pub fn local_model_ready(model_dir: &std::path::Path) -> bool {
+    local_model_status(model_dir).present
+}
+
 #[derive(Debug)]
 pub enum ModelError {
     Io(std::io::Error),
@@ -51,6 +55,70 @@ impl std::error::Error for ModelError {}
 impl From<std::io::Error> for ModelError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+pub struct LocalModelManager {
+    model_dir: std::path::PathBuf,
+    settings_path: std::path::PathBuf,
+}
+
+impl LocalModelManager {
+    pub fn new(model_dir: std::path::PathBuf, settings_path: std::path::PathBuf) -> Self {
+        Self {
+            model_dir,
+            settings_path,
+        }
+    }
+
+    pub fn status(&self) -> LocalModelStatus {
+        local_model_status(&self.model_dir)
+    }
+
+    pub fn ready(&self) -> bool {
+        self.status().present
+    }
+
+    pub fn active_model_path(&self, settings: &crate::Settings) -> std::path::PathBuf {
+        settings
+            .model
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| default_model_path(&self.model_dir))
+    }
+
+    pub fn download_default(
+        &self,
+        downloader: &dyn ModelDownloader,
+        on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<LocalModelStatus, ModelError> {
+        let status = ensure_default_model(&self.model_dir, downloader, on_progress)?;
+        self.persist_active_model(status.present.then(|| status.path.clone()))?;
+        Ok(status)
+    }
+
+    pub fn delete_default(&self) -> Result<LocalModelStatus, ModelError> {
+        let status = delete_default_model(&self.model_dir)?;
+        self.persist_active_model(None)?;
+        Ok(status)
+    }
+
+    pub fn reveal_location(&self) -> RevealLocation {
+        reveal_location(&self.model_dir)
+    }
+
+    pub fn open_in_file_manager(&self) -> std::io::Result<()> {
+        open_in_file_manager(&self.reveal_location())
+    }
+
+    fn persist_active_model(
+        &self,
+        model_path: Option<std::path::PathBuf>,
+    ) -> Result<(), ModelError> {
+        let mut settings = crate::load_settings(&self.settings_path);
+        settings.model = model_path.map(|path| path.to_string_lossy().to_string());
+        crate::save_settings(&self.settings_path, &settings)?;
+        Ok(())
     }
 }
 
@@ -253,6 +321,17 @@ mod tests {
         assert_eq!(status.bytes, None);
     }
     #[test]
+    fn local_model_ready_reports_default_model_presence() {
+        let model_dir = unique_test_dir("model-ready");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        assert!(!local_model_ready(&model_dir));
+
+        std::fs::write(default_model_path(&model_dir), b"model").unwrap();
+
+        assert!(local_model_ready(&model_dir));
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+    #[test]
     fn ensure_default_model_downloads_missing_base_en_model() {
         let model_dir = unique_test_dir("model-download");
         std::fs::remove_dir_all(&model_dir).ok();
@@ -374,6 +453,51 @@ mod tests {
         assert!(!status.present);
         assert_eq!(status.bytes, None);
         assert!(!default_model_path(&model_dir).exists());
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+    #[test]
+    fn local_model_manager_downloads_model_and_persists_active_model_path() {
+        let model_dir = unique_test_dir("manager-download");
+        let settings_path = model_dir.join("settings.json");
+        std::fs::remove_dir_all(&model_dir).ok();
+        let manager = LocalModelManager::new(model_dir.clone(), settings_path.clone());
+        let downloader = FakeModelDownloader::new(b"local model bytes");
+
+        let status = manager
+            .download_default(&downloader, &mut |_| {})
+            .expect("manager downloads model");
+        let settings = crate::load_settings(&settings_path);
+
+        assert!(status.present);
+        assert_eq!(
+            settings.model,
+            Some(default_model_path(&model_dir).to_string_lossy().to_string())
+        );
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+    #[test]
+    fn local_model_manager_deletes_model_and_clears_active_model_path() {
+        let model_dir = unique_test_dir("manager-delete");
+        let settings_path = model_dir.join("settings.json");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(default_model_path(&model_dir), b"local model bytes").unwrap();
+        crate::save_settings(
+            &settings_path,
+            &crate::Settings {
+                model: Some(default_model_path(&model_dir).to_string_lossy().to_string()),
+                ..crate::Settings::default()
+            },
+        )
+        .unwrap();
+        let manager = LocalModelManager::new(model_dir.clone(), settings_path.clone());
+
+        let status = manager.delete_default().expect("manager deletes model");
+        let settings = crate::load_settings(&settings_path);
+
+        assert!(!status.present);
+        assert_eq!(settings.model, None);
 
         std::fs::remove_dir_all(&model_dir).ok();
     }
