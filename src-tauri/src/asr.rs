@@ -1,6 +1,8 @@
 use crate::CapturedAudio;
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "local-whisper-runtime"))]
 use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalTranscription {
@@ -32,11 +34,13 @@ pub trait AsrRuntime {
     fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError>;
 }
 
+#[cfg(any(test, feature = "local-whisper-runtime"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WhisperDecodeStrategy {
     Greedy { best_of: i32 },
 }
 
+#[cfg(any(test, feature = "local-whisper-runtime"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WhisperDecodeSettings {
     strategy: WhisperDecodeStrategy,
@@ -50,6 +54,7 @@ fn recommended_whisper_decode_settings() -> WhisperDecodeSettings {
     )
 }
 
+#[cfg(any(test, feature = "local-whisper-runtime"))]
 fn whisper_decode_settings_for_available_threads(
     available_threads: NonZeroUsize,
 ) -> WhisperDecodeSettings {
@@ -78,6 +83,8 @@ pub struct LocalWhisperRuntime {
     // and reused across transcriptions rather than rebuilt on every call.
     #[cfg(feature = "local-whisper-runtime")]
     context: std::sync::OnceLock<whisper_rs::WhisperContext>,
+    #[cfg(feature = "local-whisper-runtime")]
+    context_init: Mutex<()>,
 }
 
 impl LocalWhisperRuntime {
@@ -86,6 +93,8 @@ impl LocalWhisperRuntime {
             model_path,
             #[cfg(feature = "local-whisper-runtime")]
             context: std::sync::OnceLock::new(),
+            #[cfg(feature = "local-whisper-runtime")]
+            context_init: Mutex::new(()),
         }
     }
 
@@ -94,11 +103,75 @@ impl LocalWhisperRuntime {
     }
 }
 
+/// Caches the loaded Whisper runtime across transcriptions so the model file is
+/// read from disk once rather than on every call. The runtime is rebuilt only
+/// when the configured model path changes.
+#[derive(Default)]
+pub struct WhisperRuntimeCache(Mutex<WhisperRuntimeCacheState>);
+
+#[derive(Default)]
+struct WhisperRuntimeCacheState {
+    runtime: Option<Arc<LocalWhisperRuntime>>,
+    warming_model_path: Option<std::path::PathBuf>,
+}
+
+impl WhisperRuntimeCache {
+    pub fn runtime_for(&self, model_path: &std::path::Path) -> Arc<LocalWhisperRuntime> {
+        let mut state = self.0.lock().expect("whisper runtime cache mutex poisoned");
+        Self::runtime_for_locked(&mut state, model_path)
+    }
+
+    pub fn begin_warming_existing_model(
+        &self,
+        model_path: &std::path::Path,
+    ) -> Option<Arc<LocalWhisperRuntime>> {
+        if !model_path.exists() {
+            return None;
+        }
+
+        let mut state = self.0.lock().expect("whisper runtime cache mutex poisoned");
+        if state.warming_model_path.as_deref() == Some(model_path) {
+            return None;
+        }
+
+        let runtime = Self::runtime_for_locked(&mut state, model_path);
+        state.warming_model_path = Some(model_path.to_path_buf());
+        Some(runtime)
+    }
+
+    fn runtime_for_locked(
+        state: &mut WhisperRuntimeCacheState,
+        model_path: &std::path::Path,
+    ) -> Arc<LocalWhisperRuntime> {
+        if let Some(existing) = state.runtime.as_ref() {
+            if existing.model_path() == model_path {
+                return existing.clone();
+            }
+        }
+
+        let runtime = Arc::new(LocalWhisperRuntime::new(model_path.to_path_buf()));
+        state.runtime = Some(runtime.clone());
+        runtime
+    }
+}
+
 #[cfg(feature = "local-whisper-runtime")]
 impl LocalWhisperRuntime {
+    pub fn warm_up(&self) -> Result<(), AsrError> {
+        self.context().map(|_| ())
+    }
+
     /// Return the loaded Whisper context, reading the model file from disk only
     /// on the first call and caching it for subsequent transcriptions.
     fn context(&self) -> Result<&whisper_rs::WhisperContext, AsrError> {
+        if let Some(context) = self.context.get() {
+            return Ok(context);
+        }
+
+        let _guard = self
+            .context_init
+            .lock()
+            .map_err(|_| AsrError::Runtime("whisper context mutex poisoned".to_string()))?;
         if let Some(context) = self.context.get() {
             return Ok(context);
         }
@@ -164,6 +237,19 @@ impl AsrRuntime for LocalWhisperRuntime {
 }
 
 #[cfg(not(feature = "local-whisper-runtime"))]
+impl LocalWhisperRuntime {
+    pub fn warm_up(&self) -> Result<(), AsrError> {
+        if !self.model_path.exists() {
+            return Err(AsrError::ModelMissing {
+                path: self.model_path.clone(),
+            });
+        }
+
+        Err(local_whisper_runtime_disabled_error())
+    }
+}
+
+#[cfg(not(feature = "local-whisper-runtime"))]
 impl AsrRuntime for LocalWhisperRuntime {
     fn transcribe(&self, _audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
         if !self.model_path.exists() {
@@ -172,10 +258,15 @@ impl AsrRuntime for LocalWhisperRuntime {
             });
         }
 
-        Err(AsrError::Runtime(
-            "local Whisper runtime was built without the local-whisper-runtime feature".to_string(),
-        ))
+        Err(local_whisper_runtime_disabled_error())
     }
+}
+
+#[cfg(not(feature = "local-whisper-runtime"))]
+fn local_whisper_runtime_disabled_error() -> AsrError {
+    AsrError::Runtime(
+        "local Whisper runtime was built without the local-whisper-runtime feature".to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -221,6 +312,57 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, AsrError::ModelMissing { path: model_path });
+    }
+
+    #[test]
+    fn whisper_runtime_cache_reuses_runtime_for_same_model_path() {
+        let cache = WhisperRuntimeCache::default();
+        let model_path = unique_test_dir("whisper-cache").join(DEFAULT_MODEL_FILENAME);
+
+        let first = cache.runtime_for(&model_path);
+        let second = cache.runtime_for(&model_path);
+
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn whisper_runtime_cache_rebuilds_runtime_when_model_path_changes() {
+        let cache = WhisperRuntimeCache::default();
+        let model_dir = unique_test_dir("whisper-cache-model-change");
+        let first_path = model_dir.join(DEFAULT_MODEL_FILENAME);
+        let second_path = model_dir.join("custom-model.bin");
+
+        let first = cache.runtime_for(&first_path);
+        let second = cache.runtime_for(&second_path);
+
+        assert!(!std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(second.model_path(), second_path);
+    }
+
+    #[test]
+    fn whisper_runtime_cache_does_not_warm_missing_model() {
+        let cache = WhisperRuntimeCache::default();
+        let model_path = unique_test_dir("whisper-cache-missing").join(DEFAULT_MODEL_FILENAME);
+
+        assert!(cache.begin_warming_existing_model(&model_path).is_none());
+    }
+
+    #[test]
+    fn whisper_runtime_cache_warms_ready_model_once() {
+        let cache = WhisperRuntimeCache::default();
+        let model_dir = unique_test_dir("whisper-cache-ready");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let model_path = model_dir.join(DEFAULT_MODEL_FILENAME);
+        std::fs::write(&model_path, b"model").unwrap();
+
+        let warmed = cache.begin_warming_existing_model(&model_path).unwrap();
+        let duplicate = cache.begin_warming_existing_model(&model_path);
+        let transcription_runtime = cache.runtime_for(&model_path);
+
+        assert!(duplicate.is_none());
+        assert!(std::sync::Arc::ptr_eq(&warmed, &transcription_runtime));
+
+        std::fs::remove_dir_all(&model_dir).ok();
     }
 
     #[test]
