@@ -7,6 +7,7 @@ license = "MIT"
 [features]
 default = []
 local-whisper-runtime = ["dep:whisper-rs"]
+local-whisper-runtime-metal = ["local-whisper-runtime", "whisper-rs/metal"]
 
 [lib]
 name = "slugtale_lib"

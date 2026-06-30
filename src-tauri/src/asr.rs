@@ -1,5 +1,6 @@
 use crate::CapturedAudio;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroUsize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalTranscription {
@@ -29,6 +30,33 @@ impl std::error::Error for AsrError {}
 
 pub trait AsrRuntime {
     fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhisperDecodeStrategy {
+    Greedy { best_of: i32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WhisperDecodeSettings {
+    strategy: WhisperDecodeStrategy,
+    n_threads: i32,
+}
+
+#[cfg(feature = "local-whisper-runtime")]
+fn recommended_whisper_decode_settings() -> WhisperDecodeSettings {
+    whisper_decode_settings_for_available_threads(
+        std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+    )
+}
+
+fn whisper_decode_settings_for_available_threads(
+    available_threads: NonZeroUsize,
+) -> WhisperDecodeSettings {
+    WhisperDecodeSettings {
+        strategy: WhisperDecodeStrategy::Greedy { best_of: 1 },
+        n_threads: available_threads.get().min(i32::MAX as usize) as i32,
+    }
 }
 
 pub fn transcribe_captured_audio(
@@ -104,11 +132,14 @@ impl AsrRuntime for LocalWhisperRuntime {
         let mut state = context
             .create_state()
             .map_err(|error| AsrError::Runtime(error.to_string()))?;
-        let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::BeamSearch {
-            beam_size: 5,
-            patience: -1.0,
+        let decode_settings = recommended_whisper_decode_settings();
+        let mut params = whisper_rs::FullParams::new(match decode_settings.strategy {
+            WhisperDecodeStrategy::Greedy { best_of } => {
+                whisper_rs::SamplingStrategy::Greedy { best_of }
+            }
         });
 
+        params.set_n_threads(decode_settings.n_threads);
         params.set_language(Some("en"));
         params.set_translate(false);
         params.set_print_special(false);
@@ -190,6 +221,20 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, AsrError::ModelMissing { path: model_path });
+    }
+
+    #[test]
+    fn recommended_whisper_decode_settings_prioritize_low_latency_dictation() {
+        let settings =
+            whisper_decode_settings_for_available_threads(NonZeroUsize::new(10).unwrap());
+
+        assert_eq!(
+            settings,
+            WhisperDecodeSettings {
+                strategy: WhisperDecodeStrategy::Greedy { best_of: 1 },
+                n_threads: 10,
+            }
+        );
     }
 
     struct FakeAsrRuntime {
