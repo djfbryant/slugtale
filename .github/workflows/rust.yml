@@ -1,4 +1,4 @@
-name: Rust
+name: Project checks
 
 on:
   push:
@@ -10,13 +10,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  checks:
 
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: Install dependencies
+      run: npm install
+    - name: Run project checks
+      # Single documented entry point (package.json `test`): frontend tests
+      # then the Rust lib tests via scripts/run-cargo.js. Per CLAUDE.md/AGENTS.md,
+      # CI must go through npm scripts, not bare Cargo. cargo is preinstalled on
+      # ubuntu-latest and resolved from PATH by scripts/run-cargo.js.
+      run: npm test
