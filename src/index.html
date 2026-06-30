@@ -771,7 +771,9 @@
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
-    async function loadReadiness() {
+    async function loadReadiness(options = {}) {
+      if (options.background && openingReadinessAction) return;
+
       const invoke = tauriInvoke();
       if (!invoke) {
         render(fallbackReport);
@@ -779,9 +781,12 @@
       }
 
       try {
-        render(await invoke("get_settings_readiness"));
+        const report = await invoke("get_settings_readiness");
+        if (options.background && openingReadinessAction) return;
+        render(report);
       } catch (error) {
         console.error("Could not load readiness", error);
+        if (options.background && openingReadinessAction) return;
         render(fallbackReport);
       }
     }
@@ -935,10 +940,10 @@
         }
         saveHotkeySettings(captured.hotkey);
       });
-      window.addEventListener("focus", loadReadiness);
+      window.addEventListener("focus", () => loadReadiness({ background: true }));
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") {
-          loadReadiness();
+          loadReadiness({ background: true });
         }
       });
 
