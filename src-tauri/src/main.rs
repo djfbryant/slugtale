@@ -628,10 +628,16 @@ fn position_bottom_center(window: &tauri::WebviewWindow) {
 #[tauri::command]
 fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
     let settings = load_current_settings(&app);
-    let platform = model_dir(&app)
-        .map(|dir| CurrentPlatform::for_readiness(&dir))
-        .unwrap_or_else(|_| CurrentPlatform::new(settings.model.as_deref().map(PathBuf::from)));
-    let report = slugtale_lib::settings_readiness_report(&settings, &platform);
+    let platform = CurrentPlatform::new();
+    let local_model_ready = model_manager(&app)
+        .map(|manager| manager.ready())
+        .unwrap_or_else(|_| {
+            settings
+                .model
+                .as_ref()
+                .is_some_and(|path| PathBuf::from(path).exists())
+        });
+    let report = slugtale_lib::settings_readiness_report(&settings, &platform, local_model_ready);
     if !report.dictation_available {
         let missing = report
             .items
@@ -706,7 +712,7 @@ fn save_hotkey_settings(
 
 #[tauri::command]
 fn get_local_model_status(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelStatus, String> {
-    Ok(slugtale_lib::local_model_status(&model_dir(&app)?))
+    Ok(model_manager(&app)?.status())
 }
 
 #[tauri::command]
@@ -714,7 +720,7 @@ async fn download_local_model(
     app: tauri::AppHandle,
     on_progress: tauri::ipc::Channel<slugtale_lib::DownloadProgress>,
 ) -> Result<slugtale_lib::LocalModelStatus, String> {
-    let dir = model_dir(&app)?;
+    let manager = model_manager(&app)?;
     let status = tauri::async_runtime::spawn_blocking(move || {
         // Throttle IPC traffic: forward progress after ~1 MB of new data, plus
         // the initial and final updates, so the bar stays smooth without
@@ -730,27 +736,27 @@ async fn download_local_model(
                 let _ = on_progress.send(progress);
             }
         };
-        slugtale_lib::ensure_default_model(&dir, &slugtale_lib::HttpModelDownloader, &mut forward)
+        manager
+            .download_default(&slugtale_lib::HttpModelDownloader, &mut forward)
             .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| error.to_string())??;
-    save_model_setting(&app, status.present.then(|| status.path.clone()))?;
     Ok(status)
 }
 
 #[tauri::command]
 fn delete_local_model(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelStatus, String> {
-    let status =
-        slugtale_lib::delete_default_model(&model_dir(&app)?).map_err(|error| error.to_string())?;
-    save_model_setting(&app, None)?;
-    Ok(status)
+    model_manager(&app)?
+        .delete_default()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 fn reveal_model_location(app: tauri::AppHandle) -> Result<(), String> {
-    let location = slugtale_lib::reveal_location(&model_dir(&app)?);
-    slugtale_lib::open_in_file_manager(&location).map_err(|error| error.to_string())
+    model_manager(&app)?
+        .open_in_file_manager()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -761,11 +767,7 @@ async fn transcribe_captured_audio(
     samples: Vec<f32>,
 ) -> Result<slugtale_lib::FinalTranscription, String> {
     let settings = load_current_settings(&app);
-    let model_path = settings
-        .model
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or(slugtale_lib::default_model_path(&model_dir(&app)?));
+    let model_path = model_manager(&app)?.active_model_path(&settings);
     let runtime = cache.runtime_for(&model_path);
     let diagnostic_log = current_diagnostic_log(&app, &settings);
     let audio = slugtale_lib::CapturedAudio {
@@ -805,22 +807,16 @@ impl WhisperRuntimeCache {
 }
 
 #[derive(Default)]
-struct CurrentPlatform {
-    model_path: Option<PathBuf>,
-}
+struct CurrentPlatform;
 
 impl CurrentPlatform {
-    fn new(model_path: Option<PathBuf>) -> Self {
-        Self { model_path }
-    }
-
-    fn for_readiness(model_dir: &Path) -> Self {
-        Self::new(Some(slugtale_lib::default_model_path(model_dir)))
+    fn new() -> Self {
+        Self
     }
 
     #[cfg(target_os = "macos")]
     fn macos_platform(&self) -> slugtale_lib::MacosPlatform {
-        slugtale_lib::MacosPlatform::new(self.model_path.clone().unwrap_or_default())
+        slugtale_lib::MacosPlatform::new()
     }
 }
 
@@ -836,6 +832,15 @@ fn model_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map(|dir| dir.join("models"))
         .map_err(|error| error.to_string())
+}
+
+fn model_manager(app: &tauri::AppHandle) -> Result<slugtale_lib::LocalModelManager, String> {
+    let settings_path =
+        settings_path(app).ok_or_else(|| "could not resolve settings path".to_string())?;
+    Ok(slugtale_lib::LocalModelManager::new(
+        model_dir(app)?,
+        settings_path,
+    ))
 }
 
 fn diagnostic_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -878,12 +883,6 @@ fn save_current_settings(
     slugtale_lib::save_settings(&path, settings).map_err(|error| error.to_string())
 }
 
-fn save_model_setting(app: &tauri::AppHandle, model_path: Option<PathBuf>) -> Result<(), String> {
-    let mut settings = load_current_settings(app);
-    settings.model = model_path.map(|path| path.to_string_lossy().to_string());
-    save_current_settings(app, &settings)
-}
-
 impl slugtale_lib::PlatformReadiness for CurrentPlatform {
     fn microphone_granted(&self) -> bool {
         #[cfg(target_os = "macos")]
@@ -907,10 +906,6 @@ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
         {
             false
         }
-    }
-
-    fn local_model_present(&self) -> bool {
-        self.model_path.as_ref().is_some_and(|path| path.exists())
     }
 }
 
@@ -989,11 +984,23 @@ mod tests {
         std::fs::create_dir_all(&model_dir).unwrap();
         std::fs::write(slugtale_lib::default_model_path(&model_dir), b"model").unwrap();
 
-        let platform = CurrentPlatform::for_readiness(&model_dir);
+        let platform = CurrentPlatform::new();
+        let settings = slugtale_lib::Settings {
+            hotkey: Some("cmd+shift+d".to_string()),
+            ..slugtale_lib::Settings::default()
+        };
+        let report = slugtale_lib::settings_readiness_report(
+            &settings,
+            &platform,
+            slugtale_lib::local_model_ready(&model_dir),
+        );
+        let local_model = report
+            .items
+            .iter()
+            .find(|item| item.id == "local_model")
+            .unwrap();
 
-        assert!(slugtale_lib::PlatformReadiness::local_model_present(
-            &platform
-        ));
+        assert!(local_model.ready);
 
         std::fs::remove_dir_all(&model_dir).ok();
     }
@@ -1013,8 +1020,12 @@ mod tests {
             ),
             ..slugtale_lib::Settings::default()
         };
-        let platform = CurrentPlatform::for_readiness(&model_dir);
-        let report = slugtale_lib::settings_readiness_report(&stale_settings, &platform);
+        let platform = CurrentPlatform::new();
+        let report = slugtale_lib::settings_readiness_report(
+            &stale_settings,
+            &platform,
+            slugtale_lib::local_model_ready(&model_dir),
+        );
         let local_model = report
             .items
             .iter()

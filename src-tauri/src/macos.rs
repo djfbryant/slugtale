@@ -10,7 +10,6 @@ use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWork
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use std::ffi::c_void;
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::ptr;
 use std::time::Duration;
@@ -52,13 +51,17 @@ const K_CG_HID_EVENT_TAP: u32 = 0;
 const K_CG_EVENT_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
 const MACOS_V_KEY_CODE: u16 = 9;
 
-pub struct MacosPlatform {
-    model_path: PathBuf,
-}
+pub struct MacosPlatform;
 
 impl MacosPlatform {
-    pub fn new(model_path: PathBuf) -> Self {
-        Self { model_path }
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for MacosPlatform {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -75,10 +78,6 @@ impl PlatformReadiness for MacosPlatform {
     fn insertion_granted(&self) -> bool {
         // Accessibility trust governs text insertion via synthesized events.
         unsafe { AXIsProcessTrusted() }
-    }
-
-    fn local_model_present(&self) -> bool {
-        self.model_path.exists()
     }
 }
 
