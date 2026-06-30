@@ -1,0 +1,228 @@
+use crate::CapturedAudio;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalTranscription {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AsrError {
+    ModelMissing { path: std::path::PathBuf },
+    UnsupportedAudio(String),
+    Runtime(String),
+}
+
+impl std::fmt::Display for AsrError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ModelMissing { path } => {
+                write!(f, "local model is missing at {}", path.display())
+            }
+            Self::UnsupportedAudio(message) => write!(f, "unsupported captured audio: {message}"),
+            Self::Runtime(message) => write!(f, "local transcription failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for AsrError {}
+
+pub trait AsrRuntime {
+    fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError>;
+}
+
+pub fn transcribe_captured_audio(
+    runtime: &dyn AsrRuntime,
+    audio: CapturedAudio,
+) -> Result<FinalTranscription, AsrError> {
+    if audio.sample_rate_hz != 16_000 {
+        return Err(AsrError::UnsupportedAudio(
+            "Whisper transcription expects 16 kHz mono f32 samples".to_string(),
+        ));
+    }
+
+    runtime.transcribe(audio)
+}
+
+pub struct LocalWhisperRuntime {
+    model_path: std::path::PathBuf,
+    // The loaded model is expensive to read and parse, so it is initialized once
+    // and reused across transcriptions rather than rebuilt on every call.
+    #[cfg(feature = "local-whisper-runtime")]
+    context: std::sync::OnceLock<whisper_rs::WhisperContext>,
+}
+
+impl LocalWhisperRuntime {
+    pub fn new(model_path: std::path::PathBuf) -> Self {
+        Self {
+            model_path,
+            #[cfg(feature = "local-whisper-runtime")]
+            context: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub fn model_path(&self) -> &std::path::Path {
+        &self.model_path
+    }
+}
+
+#[cfg(feature = "local-whisper-runtime")]
+impl LocalWhisperRuntime {
+    /// Return the loaded Whisper context, reading the model file from disk only
+    /// on the first call and caching it for subsequent transcriptions.
+    fn context(&self) -> Result<&whisper_rs::WhisperContext, AsrError> {
+        if let Some(context) = self.context.get() {
+            return Ok(context);
+        }
+
+        if !self.model_path.exists() {
+            return Err(AsrError::ModelMissing {
+                path: self.model_path.clone(),
+            });
+        }
+
+        let model_path = self
+            .model_path
+            .to_str()
+            .ok_or_else(|| AsrError::Runtime("model path is not valid UTF-8".to_string()))?;
+        let context = whisper_rs::WhisperContext::new_with_params(
+            model_path,
+            whisper_rs::WhisperContextParameters::default(),
+        )
+        .map_err(|error| AsrError::Runtime(error.to_string()))?;
+
+        // If another thread won the race to initialize, keep the stored context.
+        let _ = self.context.set(context);
+        Ok(self.context.get().expect("context was just initialized"))
+    }
+}
+
+#[cfg(feature = "local-whisper-runtime")]
+impl AsrRuntime for LocalWhisperRuntime {
+    fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+        let context = self.context()?;
+        let mut state = context
+            .create_state()
+            .map_err(|error| AsrError::Runtime(error.to_string()))?;
+        let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::BeamSearch {
+            beam_size: 5,
+            patience: -1.0,
+        });
+
+        params.set_language(Some("en"));
+        params.set_translate(false);
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+
+        state
+            .full(params, &audio.samples)
+            .map_err(|error| AsrError::Runtime(error.to_string()))?;
+
+        let text = state
+            .as_iter()
+            .map(|segment| segment.to_string())
+            .collect::<Vec<_>>()
+            .join("")
+            .trim()
+            .to_string();
+
+        Ok(FinalTranscription { text })
+    }
+}
+
+#[cfg(not(feature = "local-whisper-runtime"))]
+impl AsrRuntime for LocalWhisperRuntime {
+    fn transcribe(&self, _audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+        if !self.model_path.exists() {
+            return Err(AsrError::ModelMissing {
+                path: self.model_path.clone(),
+            });
+        }
+
+        Err(AsrError::Runtime(
+            "local Whisper runtime was built without the local-whisper-runtime feature".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DEFAULT_MODEL_FILENAME;
+
+    #[test]
+    fn transcribe_captured_audio_returns_final_transcription_from_asr_runtime() {
+        let runtime = FakeAsrRuntime::new("hello from slugtale");
+        let audio = CapturedAudio::mono_16khz(vec![0.0, 0.25, -0.25]);
+
+        let transcription = transcribe_captured_audio(&runtime, audio).unwrap();
+
+        assert_eq!(transcription.text, "hello from slugtale");
+        assert_eq!(runtime.sample_counts.borrow().as_slice(), &[3]);
+    }
+    #[test]
+    fn transcribe_captured_audio_rejects_non_16khz_audio_before_runtime() {
+        let runtime = FakeAsrRuntime::new("should not run");
+        let audio = CapturedAudio {
+            sample_rate_hz: 44_100,
+            samples: vec![0.0],
+        };
+
+        let error = transcribe_captured_audio(&runtime, audio).unwrap_err();
+
+        assert_eq!(
+            error,
+            AsrError::UnsupportedAudio(
+                "Whisper transcription expects 16 kHz mono f32 samples".to_string()
+            )
+        );
+        assert!(runtime.sample_counts.borrow().is_empty());
+    }
+    #[test]
+    fn local_whisper_runtime_reports_missing_model_before_transcription() {
+        let model_path = unique_test_dir("missing-model").join(DEFAULT_MODEL_FILENAME);
+        let runtime = LocalWhisperRuntime::new(model_path.clone());
+
+        let error = runtime
+            .transcribe(CapturedAudio::mono_16khz(vec![0.0; 16_000]))
+            .unwrap_err();
+
+        assert_eq!(error, AsrError::ModelMissing { path: model_path });
+    }
+
+    struct FakeAsrRuntime {
+        text: &'static str,
+        sample_counts: std::cell::RefCell<Vec<usize>>,
+    }
+
+    impl FakeAsrRuntime {
+        fn new(text: &'static str) -> Self {
+            Self {
+                text,
+                sample_counts: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl AsrRuntime for FakeAsrRuntime {
+        fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+            self.sample_counts.borrow_mut().push(audio.samples.len());
+            Ok(FinalTranscription {
+                text: self.text.to_string(),
+            })
+        }
+    }
+
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "slugtale-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+}

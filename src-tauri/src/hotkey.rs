@@ -1,0 +1,257 @@
+use crate::ActivationMode;
+
+/// A raw hotkey signal delivered by the OS hotkey adapter (ADR-0021). The
+/// adapter only reports key transitions; interpreting them into dictation
+/// lifecycle events is the job of [`DictationLifecycle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotkeyInput {
+    Pressed,
+    Released,
+}
+
+/// An explicit dictation lifecycle event handed to the dictation pipeline.
+/// `Stop` ends dictation and keeps the resulting transcription; `Cancel`
+/// abandons the dictation and discards it (CONTEXT.md: Dictation Bar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictationEvent {
+    Start,
+    Stop,
+    Cancel,
+}
+
+/// The configurable hotkey lifecycle (ADR-0004). Translates raw [`HotkeyInput`]
+/// transitions into [`DictationEvent`]s according to the active
+/// [`ActivationMode`], so the dictation pipeline receives explicit start, stop,
+/// and cancel events without knowing how the hotkey behaves.
+pub struct DictationLifecycle {
+    mode: ActivationMode,
+    dictating: bool,
+    hotkey_down: bool,
+}
+
+impl DictationLifecycle {
+    pub fn new(mode: ActivationMode) -> Self {
+        Self {
+            mode,
+            dictating: false,
+            hotkey_down: false,
+        }
+    }
+
+    pub fn is_dictating(&self) -> bool {
+        self.dictating
+    }
+
+    pub fn on_hotkey(&mut self, input: HotkeyInput) -> Option<DictationEvent> {
+        match input {
+            HotkeyInput::Pressed if self.hotkey_down => None,
+            HotkeyInput::Pressed if self.mode == ActivationMode::Toggle && self.dictating => {
+                self.hotkey_down = true;
+                self.dictating = false;
+                Some(DictationEvent::Stop)
+            }
+            HotkeyInput::Pressed => {
+                self.hotkey_down = true;
+                self.dictating = true;
+                Some(DictationEvent::Start)
+            }
+            HotkeyInput::Released if self.mode == ActivationMode::Hold && self.dictating => {
+                self.hotkey_down = false;
+                self.dictating = false;
+                Some(DictationEvent::Stop)
+            }
+            HotkeyInput::Released => {
+                self.hotkey_down = false;
+                None
+            }
+        }
+    }
+
+    pub fn cancel(&mut self) -> Option<DictationEvent> {
+        if self.dictating {
+            self.hotkey_down = false;
+            self.dictating = false;
+            Some(DictationEvent::Cancel)
+        } else {
+            None
+        }
+    }
+}
+
+/// Consumer for dictation lifecycle events emitted by a Platform Adapter.
+pub trait DictationEventSink {
+    fn emit(&mut self, event: DictationEvent);
+}
+
+impl<F> DictationEventSink for F
+where
+    F: FnMut(DictationEvent),
+{
+    fn emit(&mut self, event: DictationEvent) {
+        self(event);
+    }
+}
+
+/// Adapter-facing bridge from OS hotkey transitions into the dictation pipeline.
+/// The Platform Adapter owns hotkey registration; this bridge owns the
+/// lifecycle state so hold and toggle modes stay consistent across callbacks.
+pub struct HotkeyDictationAdapter<S> {
+    lifecycle: DictationLifecycle,
+    sink: S,
+}
+
+impl<S> HotkeyDictationAdapter<S>
+where
+    S: DictationEventSink,
+{
+    pub fn new(mode: ActivationMode, sink: S) -> Self {
+        Self {
+            lifecycle: DictationLifecycle::new(mode),
+            sink,
+        }
+    }
+
+    pub fn on_hotkey(&mut self, input: HotkeyInput) {
+        if let Some(event) = self.lifecycle.on_hotkey(input) {
+            self.sink.emit(event);
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        if let Some(event) = self.lifecycle.cancel() {
+            self.sink.emit(event);
+        }
+    }
+
+    pub fn is_dictating(&self) -> bool {
+        self.lifecycle.is_dictating()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hold_mode_press_starts_dictation() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Hold);
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Pressed),
+            Some(DictationEvent::Start)
+        );
+        assert!(lifecycle.is_dictating());
+    }
+    #[test]
+    fn hold_mode_release_stops_dictation() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Hold);
+        lifecycle.on_hotkey(HotkeyInput::Pressed);
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Released),
+            Some(DictationEvent::Stop)
+        );
+        assert!(!lifecycle.is_dictating());
+    }
+    #[test]
+    fn hold_mode_release_while_idle_does_nothing() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Hold);
+        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Released), None);
+        assert!(!lifecycle.is_dictating());
+    }
+    #[test]
+    fn toggle_mode_second_press_stops_dictation() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Toggle);
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Pressed),
+            Some(DictationEvent::Start)
+        );
+        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Released), None);
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Pressed),
+            Some(DictationEvent::Stop)
+        );
+        assert!(!lifecycle.is_dictating());
+    }
+    #[test]
+    fn toggle_mode_ignores_repeated_press_until_key_release() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Toggle);
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Pressed),
+            Some(DictationEvent::Start)
+        );
+        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Pressed), None);
+        assert!(lifecycle.is_dictating());
+    }
+    #[test]
+    fn toggle_mode_release_is_ignored() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Toggle);
+        lifecycle.on_hotkey(HotkeyInput::Pressed);
+        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Released), None);
+        assert!(
+            lifecycle.is_dictating(),
+            "holding the key must not stop toggle dictation"
+        );
+    }
+    #[test]
+    fn cancel_while_dictating_emits_cancel_and_returns_to_idle() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Toggle);
+        lifecycle.on_hotkey(HotkeyInput::Pressed);
+        assert_eq!(lifecycle.cancel(), Some(DictationEvent::Cancel));
+        assert!(!lifecycle.is_dictating());
+    }
+    #[test]
+    fn cancel_while_idle_does_nothing() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Hold);
+        assert_eq!(lifecycle.cancel(), None);
+        assert!(!lifecycle.is_dictating());
+    }
+    #[test]
+    fn hotkey_adapter_forwards_hold_mode_events_to_dictation_sink() {
+        let events = std::cell::RefCell::new(Vec::new());
+        let mut adapter = HotkeyDictationAdapter::new(ActivationMode::Hold, |event| {
+            events.borrow_mut().push(event);
+        });
+
+        adapter.on_hotkey(HotkeyInput::Pressed);
+        adapter.on_hotkey(HotkeyInput::Released);
+
+        assert_eq!(
+            *events.borrow(),
+            vec![DictationEvent::Start, DictationEvent::Stop]
+        );
+        assert!(!adapter.is_dictating());
+    }
+    #[test]
+    fn hotkey_adapter_forwards_toggle_mode_events_to_dictation_sink() {
+        let events = std::cell::RefCell::new(Vec::new());
+        let mut adapter = HotkeyDictationAdapter::new(ActivationMode::Toggle, |event| {
+            events.borrow_mut().push(event);
+        });
+
+        adapter.on_hotkey(HotkeyInput::Pressed);
+        adapter.on_hotkey(HotkeyInput::Released);
+        adapter.on_hotkey(HotkeyInput::Pressed);
+
+        assert_eq!(
+            *events.borrow(),
+            vec![DictationEvent::Start, DictationEvent::Stop]
+        );
+        assert!(!adapter.is_dictating());
+    }
+    #[test]
+    fn hotkey_adapter_forwards_cancel_and_returns_to_idle() {
+        let events = std::cell::RefCell::new(Vec::new());
+        let mut adapter = HotkeyDictationAdapter::new(ActivationMode::Hold, |event| {
+            events.borrow_mut().push(event);
+        });
+
+        adapter.on_hotkey(HotkeyInput::Pressed);
+        adapter.cancel();
+        adapter.on_hotkey(HotkeyInput::Released);
+
+        assert_eq!(
+            *events.borrow(),
+            vec![DictationEvent::Start, DictationEvent::Cancel]
+        );
+        assert!(!adapter.is_dictating());
+    }
+}
