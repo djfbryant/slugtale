@@ -24,7 +24,9 @@ Some product workflow pieces are still intentionally early. The repository docum
 - Rust and Cargo, usually installed with `rustup`.
 - Xcode Command Line Tools on macOS.
 
-The npm scripts add `$HOME/.cargo/bin` to `PATH`, so a standard `rustup` installation works without extra shell setup.
+The npm scripts look for Cargo on `PATH`, then at the standard `rustup`
+location (`$HOME/.cargo/bin/cargo`). If Cargo is installed somewhere else, set
+`CARGO=/path/to/cargo`.
 
 ## Install
 
@@ -51,8 +53,12 @@ npm test
 This runs the Rust library tests:
 
 ```sh
-cd src-tauri && $HOME/.cargo/bin/cargo test --lib
+npm run test:rust
 ```
+
+Use the npm scripts for project checks instead of bare `cargo ...` commands in
+agent shells. Some agent environments do not include `$HOME/.cargo/bin` on
+`PATH`, even when Rust is installed there.
 
 ## Build
 

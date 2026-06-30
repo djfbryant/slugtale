@@ -47,6 +47,18 @@ cp -rf source dest          # NOT: cp -r source dest
 - `apt-get` - use `-y` flag
 - `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
 
+## Project Checks
+
+Use npm scripts for checks instead of bare `cargo ...` commands:
+
+```bash
+npm test             # frontend tests, then Rust unit tests
+npm run test:rust    # Rust-only tests via scripts/run-cargo.js
+```
+
+The runner looks for Cargo on `PATH`, then at `$HOME/.cargo/bin/cargo`. If
+Cargo is installed somewhere else, set `CARGO=/path/to/cargo`.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
 
