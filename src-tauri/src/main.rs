@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -257,6 +257,22 @@ fn emit_dictation_audio_level(app: &tauri::AppHandle, level: f32) {
     }
 }
 
+fn warm_ready_local_whisper_runtime(app: &tauri::AppHandle) -> Result<(), String> {
+    let settings = load_current_settings(app);
+    let model_path = model_manager(app)?.active_model_path(&settings);
+    warm_local_whisper_runtime(app, &model_path);
+    Ok(())
+}
+
+fn warm_local_whisper_runtime(app: &tauri::AppHandle, model_path: &std::path::Path) {
+    let cache = app.state::<slugtale_lib::WhisperRuntimeCache>();
+    if let Some(runtime) = cache.begin_warming_existing_model(model_path) {
+        tauri::async_runtime::spawn_blocking(move || {
+            let _ = runtime.warm_up();
+        });
+    }
+}
+
 async fn complete_captured_dictation(
     app: tauri::AppHandle,
     audio: slugtale_lib::CapturedAudio,
@@ -268,7 +284,9 @@ async fn complete_captured_dictation(
         .as_ref()
         .map(PathBuf::from)
         .unwrap_or(slugtale_lib::default_model_path(&model_dir(&app)?));
-    let runtime = app.state::<WhisperRuntimeCache>().runtime_for(&model_path);
+    let runtime = app
+        .state::<slugtale_lib::WhisperRuntimeCache>()
+        .runtime_for(&model_path);
     let target_pid = app
         .state::<FocusTargetState>()
         .0
@@ -474,6 +492,9 @@ fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadin
                 .is_some_and(|path| PathBuf::from(path).exists())
         });
     let report = slugtale_lib::settings_readiness_report(&settings, &platform, local_model_ready);
+    if local_model_ready {
+        let _ = warm_ready_local_whisper_runtime(&app);
+    }
     if !report.dictation_available {
         let missing = report
             .items
@@ -578,6 +599,9 @@ async fn download_local_model(
     })
     .await
     .map_err(|error| error.to_string())??;
+    if status.present {
+        warm_local_whisper_runtime(&app, &status.path);
+    }
     Ok(status)
 }
 
@@ -598,7 +622,7 @@ fn reveal_model_location(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn transcribe_captured_audio(
     app: tauri::AppHandle,
-    cache: tauri::State<'_, WhisperRuntimeCache>,
+    cache: tauri::State<'_, slugtale_lib::WhisperRuntimeCache>,
     sample_rate_hz: u32,
     samples: Vec<f32>,
 ) -> Result<slugtale_lib::FinalTranscription, String> {
@@ -617,29 +641,6 @@ async fn transcribe_captured_audio(
     })
     .await
     .map_err(|error| error.to_string())?
-}
-
-/// Caches the loaded Whisper runtime across transcriptions so the model file is
-/// read from disk once rather than on every call. The runtime is rebuilt only
-/// when the configured model path changes.
-#[derive(Default)]
-struct WhisperRuntimeCache(Mutex<Option<Arc<slugtale_lib::LocalWhisperRuntime>>>);
-
-impl WhisperRuntimeCache {
-    fn runtime_for(&self, model_path: &Path) -> Arc<slugtale_lib::LocalWhisperRuntime> {
-        let mut guard = self.0.lock().expect("whisper runtime cache mutex poisoned");
-        if let Some(existing) = guard.as_ref() {
-            if existing.model_path() == model_path {
-                return existing.clone();
-            }
-        }
-
-        let runtime = Arc::new(slugtale_lib::LocalWhisperRuntime::new(
-            model_path.to_path_buf(),
-        ));
-        *guard = Some(runtime.clone());
-        runtime
-    }
 }
 
 #[derive(Default)]
@@ -747,7 +748,7 @@ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
 
 fn main() {
     tauri::Builder::default()
-        .manage(WhisperRuntimeCache::default())
+        .manage(slugtale_lib::WhisperRuntimeCache::default())
         .manage(RecordingFeedbackState::default())
         .manage(FocusTargetState::default())
         .manage(AudioCaptureState::default())
@@ -757,6 +758,7 @@ fn main() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             slugtale_lib::setup_tray(app)?;
             setup_configured_hotkey(app)?;
+            let _ = warm_ready_local_whisper_runtime(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -788,31 +790,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn whisper_runtime_cache_reuses_runtime_for_same_model_path() {
-        let cache = WhisperRuntimeCache::default();
-        let model_path = unique_test_dir("whisper-cache").join("ggml-base.en.bin");
-
-        let first = cache.runtime_for(&model_path);
-        let second = cache.runtime_for(&model_path);
-
-        assert!(Arc::ptr_eq(&first, &second));
-    }
-
-    #[test]
-    fn whisper_runtime_cache_rebuilds_runtime_when_model_path_changes() {
-        let cache = WhisperRuntimeCache::default();
-        let model_dir = unique_test_dir("whisper-cache-model-change");
-        let first_path = model_dir.join("ggml-base.en.bin");
-        let second_path = model_dir.join("custom-model.bin");
-
-        let first = cache.runtime_for(&first_path);
-        let second = cache.runtime_for(&second_path);
-
-        assert!(!Arc::ptr_eq(&first, &second));
-        assert_eq!(second.model_path(), second_path);
-    }
 
     #[test]
     fn readiness_uses_default_local_model_when_settings_model_is_unset() {
