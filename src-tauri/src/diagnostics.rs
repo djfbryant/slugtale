@@ -7,9 +7,13 @@
 //! test/injection seam and [`LocalDiagnosticLog`] stays generic over it.
 
 use crate::{
-    AsrError, AudioCaptureError, DictationEvent, FinalTranscription, ReadinessItem,
-    TextInsertionError,
+    AsrError, AsrRuntime, AudioCaptureError, CapturedAudio, DictationEvent, FinalTranscription,
+    InsertionRescue, InsertionRescueError, InsertionRescueOutcome, ReadinessItem, TextInsertion,
+    TextInsertionError, TextInsertionOutcome,
 };
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 /// A redaction-safe record for the Local Diagnostic Log (ADR-0019, CONTEXT.md).
 /// By construction it carries no captured audio samples or transcription text —
@@ -150,6 +154,175 @@ where
         if self.enabled {
             self.sink.write_line(&render_diagnostic_event(&event));
         }
+    }
+}
+
+/// A [`DiagnosticSink`] that appends rendered lines to a file, or stays a no-op
+/// when no path is available (e.g. the app config directory could not be
+/// resolved).
+pub struct FileDiagnosticSink {
+    path: Option<PathBuf>,
+}
+
+impl FileDiagnosticSink {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    pub fn unavailable() -> Self {
+        Self { path: None }
+    }
+}
+
+impl DiagnosticSink for FileDiagnosticSink {
+    fn write_line(&mut self, line: &str) {
+        let Some(path) = &self.path else {
+            return;
+        };
+
+        if let Some(parent) = path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!("could not create diagnostic log directory: {error}");
+                return;
+            }
+        }
+
+        let mut file = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("could not open diagnostic log: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) = writeln!(file, "{line}") {
+            eprintln!("could not write diagnostic log line: {error}");
+        }
+    }
+}
+
+/// A cheaply cloneable handle to a [`LocalDiagnosticLog`], shared across the
+/// diagnostic decorator adapters below so they can all record to the same log.
+pub struct SharedDiagnosticLog<S> {
+    inner: Arc<Mutex<LocalDiagnosticLog<S>>>,
+}
+
+impl<S> Clone for SharedDiagnosticLog<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<S> SharedDiagnosticLog<S>
+where
+    S: DiagnosticSink,
+{
+    pub fn new(enabled: bool, sink: S) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(LocalDiagnosticLog::new(enabled, sink))),
+        }
+    }
+
+    pub fn record(&self, event: DiagnosticEvent) {
+        match self.inner.lock() {
+            Ok(mut log) => log.record(event),
+            Err(_) => eprintln!("diagnostic log mutex poisoned"),
+        }
+    }
+}
+
+/// Decorates an [`AsrRuntime`], logging transcription outcomes (never the
+/// transcript text itself, per ADR-0019) without changing its behavior.
+pub struct DiagnosticAsrRuntime<'a, S> {
+    runtime: &'a dyn AsrRuntime,
+    log: SharedDiagnosticLog<S>,
+}
+
+impl<'a, S> DiagnosticAsrRuntime<'a, S> {
+    pub fn new(runtime: &'a dyn AsrRuntime, log: SharedDiagnosticLog<S>) -> Self {
+        Self { runtime, log }
+    }
+}
+
+impl<S> AsrRuntime for DiagnosticAsrRuntime<'_, S>
+where
+    S: DiagnosticSink,
+{
+    fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+        let result = self.runtime.transcribe(audio);
+        match &result {
+            Ok(transcription) => self
+                .log
+                .record(DiagnosticEvent::transcription_completed(transcription)),
+            Err(error) => self
+                .log
+                .record(DiagnosticEvent::transcription_failed(error)),
+        }
+        result
+    }
+}
+
+/// Decorates a [`TextInsertion`], logging insertion failures without changing
+/// its behavior.
+pub struct DiagnosticTextInsertion<'a, S> {
+    insertion: &'a dyn TextInsertion,
+    log: SharedDiagnosticLog<S>,
+}
+
+impl<'a, S> DiagnosticTextInsertion<'a, S> {
+    pub fn new(insertion: &'a dyn TextInsertion, log: SharedDiagnosticLog<S>) -> Self {
+        Self { insertion, log }
+    }
+}
+
+impl<S> TextInsertion for DiagnosticTextInsertion<'_, S>
+where
+    S: DiagnosticSink,
+{
+    fn insert(
+        &self,
+        transcription: &FinalTranscription,
+    ) -> Result<TextInsertionOutcome, TextInsertionError> {
+        let result = self.insertion.insert(transcription);
+        if let Err(error) = &result {
+            self.log.record(DiagnosticEvent::insertion_failed(error));
+        }
+        result
+    }
+}
+
+/// Decorates an [`InsertionRescue`], logging successful rescues without
+/// changing its behavior.
+pub struct DiagnosticInsertionRescue<'a, S> {
+    rescue: &'a dyn InsertionRescue,
+    log: SharedDiagnosticLog<S>,
+}
+
+impl<'a, S> DiagnosticInsertionRescue<'a, S> {
+    pub fn new(rescue: &'a dyn InsertionRescue, log: SharedDiagnosticLog<S>) -> Self {
+        Self { rescue, log }
+    }
+}
+
+impl<S> InsertionRescue for DiagnosticInsertionRescue<'_, S>
+where
+    S: DiagnosticSink,
+{
+    fn rescue(
+        &self,
+        transcription: &FinalTranscription,
+    ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+        let result = self.rescue.rescue(transcription);
+        if result.is_ok() {
+            self.log.record(DiagnosticEvent::insertion_rescued());
+        }
+        result
     }
 }
 
@@ -304,6 +477,129 @@ mod tests {
 
             assert!(!line.contains(secret), "leaked transcript text: {line}");
             assert!(line.contains(&secret.chars().count().to_string()));
+        }
+    }
+
+    #[test]
+    fn disabled_file_backed_diagnostic_log_does_not_create_a_log_file() {
+        let log_dir = unique_test_dir("diagnostic-log-disabled");
+        let log_path = log_dir.join("diagnostics.log");
+        let mut log = LocalDiagnosticLog::new(false, FileDiagnosticSink::new(log_path.clone()));
+
+        log.record(DiagnosticEvent::hotkey_transition(DictationEvent::Start));
+
+        assert!(!log_path.exists());
+        std::fs::remove_dir_all(&log_dir).ok();
+    }
+
+    #[test]
+    fn enabled_file_backed_diagnostic_log_appends_redacted_lines() {
+        let log_dir = unique_test_dir("diagnostic-log-enabled");
+        let log_path = log_dir.join("diagnostics.log");
+        let secret = "never write this transcript";
+        let mut log = LocalDiagnosticLog::new(true, FileDiagnosticSink::new(log_path.clone()));
+
+        log.record(DiagnosticEvent::hotkey_transition(DictationEvent::Start));
+        log.record(DiagnosticEvent::transcription_completed(
+            &FinalTranscription {
+                text: secret.to_string(),
+            },
+        ));
+
+        let contents = std::fs::read_to_string(&log_path).unwrap();
+        assert!(contents.contains("hotkey"));
+        assert!(contents.contains("asr"));
+        assert!(!contents.contains(secret));
+        assert_eq!(contents.lines().count(), 2);
+
+        std::fs::remove_dir_all(&log_dir).ok();
+    }
+
+    #[test]
+    fn diagnostic_wrappers_record_asr_insertion_and_rescue_without_transcript_text() {
+        let sink = TestDiagnosticSink::default();
+        let log = SharedDiagnosticLog::new(true, sink.clone());
+        let secret = "do not log these dictated words";
+        let runtime = FakeAsrRuntime {
+            result: Ok(FinalTranscription {
+                text: secret.to_string(),
+            }),
+        };
+        let runtime = DiagnosticAsrRuntime::new(&runtime, log.clone());
+        let insertion = FailingTextInsertion;
+        let insertion = DiagnosticTextInsertion::new(&insertion, log.clone());
+        let rescue = SuccessfulInsertionRescue;
+        let rescue = DiagnosticInsertionRescue::new(&rescue, log);
+
+        let transcription =
+            AsrRuntime::transcribe(&runtime, CapturedAudio::mono_16khz(vec![0.0])).unwrap();
+        let _ = TextInsertion::insert(&insertion, &transcription);
+        InsertionRescue::rescue(&rescue, &transcription).unwrap();
+
+        let lines = sink.lines();
+        assert!(lines.iter().any(|line| line.contains("asr")));
+        assert!(lines.iter().any(|line| line.contains("insertion: failed")));
+        assert!(lines.iter().any(|line| line.contains("rescued")));
+        assert!(lines.iter().all(|line| !line.contains(secret)));
+    }
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "slugtale-diagnostics-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[derive(Clone, Default)]
+    struct TestDiagnosticSink {
+        lines: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl TestDiagnosticSink {
+        fn lines(&self) -> Vec<String> {
+            self.lines.lock().unwrap().clone()
+        }
+    }
+
+    impl DiagnosticSink for TestDiagnosticSink {
+        fn write_line(&mut self, line: &str) {
+            self.lines.lock().unwrap().push(line.to_string());
+        }
+    }
+
+    struct FakeAsrRuntime {
+        result: Result<FinalTranscription, AsrError>,
+    }
+
+    impl AsrRuntime for FakeAsrRuntime {
+        fn transcribe(&self, _audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+            self.result.clone()
+        }
+    }
+
+    struct FailingTextInsertion;
+
+    impl TextInsertion for FailingTextInsertion {
+        fn insert(
+            &self,
+            _transcription: &FinalTranscription,
+        ) -> Result<TextInsertionOutcome, TextInsertionError> {
+            Err(TextInsertionError::new("test insertion failure"))
+        }
+    }
+
+    struct SuccessfulInsertionRescue;
+
+    impl InsertionRescue for SuccessfulInsertionRescue {
+        fn rescue(
+            &self,
+            _transcription: &FinalTranscription,
+        ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+            Ok(InsertionRescueOutcome::CopiedToClipboardAndNotified)
         }
     }
 }
