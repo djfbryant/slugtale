@@ -19,6 +19,10 @@ const env = {
   ...process.env,
   PATH: pathEntries.join(delimiter),
 };
+const whisperRuntimeFeatures =
+  process.platform === "darwin"
+    ? "local-whisper-runtime,local-whisper-runtime-metal"
+    : "local-whisper-runtime";
 
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -99,7 +103,7 @@ if (process.platform === "darwin") {
     "build",
     "--debug",
     "--features",
-    "local-whisper-runtime",
+    whisperRuntimeFeatures,
     "--bundles",
     "app",
   ]);
@@ -131,5 +135,5 @@ if (process.platform === "darwin") {
   run("codesign", ["--verify", "--deep", "--strict", appPath]);
   run("open", [appPath]);
 } else {
-  run(tauri, ["dev", "--features", "local-whisper-runtime"]);
+  run(tauri, ["dev", "--features", whisperRuntimeFeatures]);
 }

@@ -21,7 +21,8 @@ bar app that stays out of the way until the user presses a hotkey.
   (`ggml-base.en.bin`).
 - Local audio capture through `cpal`.
 - Local English transcription through `whisper-rs` when built with the
-  `local-whisper-runtime` feature.
+  `local-whisper-runtime` feature; signed macOS developer builds also enable
+  `local-whisper-runtime-metal`.
 - Clipboard-free macOS text insertion first, with clipboard rescue and a local
   notification if direct insertion fails.
 - Local non-secret settings file and optional local diagnostic log.
@@ -154,6 +155,10 @@ Run the signed macOS developer build:
 npm run dev
 ```
 
+On macOS this enables Whisper Metal acceleration through the
+`local-whisper-runtime-metal` Cargo feature. CPU fallback builds can still use
+only `local-whisper-runtime`.
+
 Run the raw Tauri dev command:
 
 ```sh
@@ -180,6 +185,13 @@ Build a release app:
 
 ```sh
 npm run build
+```
+
+For a macOS release build with local Whisper acceleration enabled, run the Tauri
+build with both runtime features:
+
+```sh
+PATH=$HOME/.cargo/bin:$PATH tauri build --features local-whisper-runtime,local-whisper-runtime-metal
 ```
 
 Release packaging is not the first target yet. Signing, notarization, installer
