@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
@@ -37,6 +38,174 @@ impl Default for AudioCaptureState {
         Self(Mutex::new(slugtale_lib::AudioCaptureSession::new(
             slugtale_lib::CpalAudioRecorder::new(),
         )))
+    }
+}
+
+struct FileDiagnosticSink {
+    path: Option<PathBuf>,
+}
+
+impl FileDiagnosticSink {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn unavailable() -> Self {
+        Self { path: None }
+    }
+}
+
+impl slugtale_lib::DiagnosticSink for FileDiagnosticSink {
+    fn write_line(&mut self, line: &str) {
+        let Some(path) = &self.path else {
+            return;
+        };
+
+        if let Some(parent) = path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!("could not create diagnostic log directory: {error}");
+                return;
+            }
+        }
+
+        let mut file = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("could not open diagnostic log: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) = writeln!(file, "{line}") {
+            eprintln!("could not write diagnostic log line: {error}");
+        }
+    }
+}
+
+struct SharedDiagnosticLog<S> {
+    inner: Arc<Mutex<slugtale_lib::LocalDiagnosticLog<S>>>,
+}
+
+impl<S> Clone for SharedDiagnosticLog<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<S> SharedDiagnosticLog<S>
+where
+    S: slugtale_lib::DiagnosticSink,
+{
+    fn new(enabled: bool, sink: S) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(slugtale_lib::LocalDiagnosticLog::new(
+                enabled, sink,
+            ))),
+        }
+    }
+
+    fn record(&self, event: slugtale_lib::DiagnosticEvent) {
+        match self.inner.lock() {
+            Ok(mut log) => log.record(event),
+            Err(_) => eprintln!("diagnostic log mutex poisoned"),
+        }
+    }
+}
+
+struct DiagnosticAsrRuntime<'a, S> {
+    runtime: &'a dyn slugtale_lib::AsrRuntime,
+    log: SharedDiagnosticLog<S>,
+}
+
+impl<'a, S> DiagnosticAsrRuntime<'a, S> {
+    fn new(runtime: &'a dyn slugtale_lib::AsrRuntime, log: SharedDiagnosticLog<S>) -> Self {
+        Self { runtime, log }
+    }
+}
+
+impl<S> slugtale_lib::AsrRuntime for DiagnosticAsrRuntime<'_, S>
+where
+    S: slugtale_lib::DiagnosticSink,
+{
+    fn transcribe(
+        &self,
+        audio: slugtale_lib::CapturedAudio,
+    ) -> Result<slugtale_lib::FinalTranscription, slugtale_lib::AsrError> {
+        let result = self.runtime.transcribe(audio);
+        match &result {
+            Ok(transcription) => {
+                self.log
+                    .record(slugtale_lib::DiagnosticEvent::transcription_completed(
+                        transcription,
+                    ))
+            }
+            Err(error) => self
+                .log
+                .record(slugtale_lib::DiagnosticEvent::transcription_failed(error)),
+        }
+        result
+    }
+}
+
+struct DiagnosticTextInsertion<'a, S> {
+    insertion: &'a dyn slugtale_lib::TextInsertion,
+    log: SharedDiagnosticLog<S>,
+}
+
+impl<'a, S> DiagnosticTextInsertion<'a, S> {
+    fn new(insertion: &'a dyn slugtale_lib::TextInsertion, log: SharedDiagnosticLog<S>) -> Self {
+        Self { insertion, log }
+    }
+}
+
+impl<S> slugtale_lib::TextInsertion for DiagnosticTextInsertion<'_, S>
+where
+    S: slugtale_lib::DiagnosticSink,
+{
+    fn insert(
+        &self,
+        transcription: &slugtale_lib::FinalTranscription,
+    ) -> Result<slugtale_lib::TextInsertionOutcome, slugtale_lib::TextInsertionError> {
+        let result = self.insertion.insert(transcription);
+        if let Err(error) = &result {
+            self.log
+                .record(slugtale_lib::DiagnosticEvent::insertion_failed(error));
+        }
+        result
+    }
+}
+
+struct DiagnosticInsertionRescue<'a, S> {
+    rescue: &'a dyn slugtale_lib::InsertionRescue,
+    log: SharedDiagnosticLog<S>,
+}
+
+impl<'a, S> DiagnosticInsertionRescue<'a, S> {
+    fn new(rescue: &'a dyn slugtale_lib::InsertionRescue, log: SharedDiagnosticLog<S>) -> Self {
+        Self { rescue, log }
+    }
+}
+
+impl<S> slugtale_lib::InsertionRescue for DiagnosticInsertionRescue<'_, S>
+where
+    S: slugtale_lib::DiagnosticSink,
+{
+    fn rescue(
+        &self,
+        transcription: &slugtale_lib::FinalTranscription,
+    ) -> Result<slugtale_lib::InsertionRescueOutcome, slugtale_lib::InsertionRescueError> {
+        let result = self.rescue.rescue(transcription);
+        if result.is_ok() {
+            self.log
+                .record(slugtale_lib::DiagnosticEvent::insertion_rescued());
+        }
+        result
     }
 }
 
@@ -89,6 +258,8 @@ fn handle_dictation_event(
     app: &tauri::AppHandle,
     event: slugtale_lib::DictationEvent,
 ) -> Result<(), String> {
+    record_diagnostic_event(app, slugtale_lib::DiagnosticEvent::hotkey_transition(event));
+
     match event {
         slugtale_lib::DictationEvent::Start => {
             // Capture the app the user is dictating into before our own bar can
@@ -179,7 +350,16 @@ fn handle_audio_capture_event(
                 .recorder_mut()
                 .set_level_callback(Some(dictation_audio_level_callback(app.clone())));
         }
-        guard.on_event(event).map_err(|error| error.to_string())?
+        match guard.on_event(event) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                record_diagnostic_event(
+                    app,
+                    slugtale_lib::DiagnosticEvent::audio_capture_failed(&error),
+                );
+                return Err(error.to_string());
+            }
+        }
     };
 
     match outcome {
@@ -246,8 +426,10 @@ async fn complete_captured_dictation(
     audio: slugtale_lib::CapturedAudio,
 ) -> Result<slugtale_lib::FinalTranscription, String> {
     let settings = load_current_settings(&app);
+    let diagnostic_log = current_diagnostic_log(&app, &settings);
     let model_path = settings
         .model
+        .as_ref()
         .map(PathBuf::from)
         .unwrap_or(slugtale_lib::default_model_path(&model_dir(&app)?));
     let runtime = app.state::<WhisperRuntimeCache>().runtime_for(&model_path);
@@ -283,7 +465,10 @@ async fn complete_captured_dictation(
 
             let insertion = slugtale_lib::MacosTextInsertion::new();
             let rescue = slugtale_lib::MacosInsertionRescue::new();
-            let workflow = slugtale_lib::DictationWorkflow::new(&*runtime, &insertion, &rescue);
+            let runtime = DiagnosticAsrRuntime::new(&*runtime, diagnostic_log.clone());
+            let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
+            let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
+            let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
             workflow.complete(audio).map_err(|error| error.to_string())
         }
 
@@ -446,7 +631,22 @@ fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadin
     let platform = model_dir(&app)
         .map(|dir| CurrentPlatform::for_readiness(&dir))
         .unwrap_or_else(|_| CurrentPlatform::new(settings.model.as_deref().map(PathBuf::from)));
-    slugtale_lib::settings_readiness_report(&settings, &platform)
+    let report = slugtale_lib::settings_readiness_report(&settings, &platform);
+    if !report.dictation_available {
+        let missing = report
+            .items
+            .iter()
+            .filter(|item| item.required && !item.ready)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            record_diagnostic_event(
+                &app,
+                slugtale_lib::DiagnosticEvent::readiness_incomplete(&missing),
+            );
+        }
+    }
+    report
 }
 
 #[tauri::command]
@@ -563,16 +763,19 @@ async fn transcribe_captured_audio(
     let settings = load_current_settings(&app);
     let model_path = settings
         .model
+        .as_ref()
         .map(PathBuf::from)
         .unwrap_or(slugtale_lib::default_model_path(&model_dir(&app)?));
     let runtime = cache.runtime_for(&model_path);
+    let diagnostic_log = current_diagnostic_log(&app, &settings);
     let audio = slugtale_lib::CapturedAudio {
         sample_rate_hz,
         samples,
     };
 
     tauri::async_runtime::spawn_blocking(move || {
-        slugtale_lib::transcribe_captured_audio(&*runtime, audio).map_err(|error| error.to_string())
+        let runtime = DiagnosticAsrRuntime::new(&*runtime, diagnostic_log);
+        slugtale_lib::transcribe_captured_audio(&runtime, audio).map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -635,10 +838,32 @@ fn model_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
+fn diagnostic_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join("diagnostics.log"))
+}
+
 fn load_current_settings(app: &tauri::AppHandle) -> slugtale_lib::Settings {
     settings_path(app)
         .map(|path| slugtale_lib::load_settings(&path))
         .unwrap_or_default()
+}
+
+fn current_diagnostic_log(
+    app: &tauri::AppHandle,
+    settings: &slugtale_lib::Settings,
+) -> SharedDiagnosticLog<FileDiagnosticSink> {
+    let sink = diagnostic_log_path(app)
+        .map(FileDiagnosticSink::new)
+        .unwrap_or_else(FileDiagnosticSink::unavailable);
+    SharedDiagnosticLog::new(settings.diagnostic_logging, sink)
+}
+
+fn record_diagnostic_event(app: &tauri::AppHandle, event: slugtale_lib::DiagnosticEvent) {
+    let settings = load_current_settings(app);
+    current_diagnostic_log(app, &settings).record(event);
 }
 
 fn save_current_settings(
@@ -801,6 +1026,78 @@ mod tests {
         std::fs::remove_dir_all(&model_dir).ok();
     }
 
+    #[test]
+    fn disabled_file_backed_diagnostic_log_does_not_create_a_log_file() {
+        let log_dir = unique_test_dir("diagnostic-log-disabled");
+        let log_path = log_dir.join("diagnostics.log");
+        let mut log =
+            slugtale_lib::LocalDiagnosticLog::new(false, FileDiagnosticSink::new(log_path.clone()));
+
+        log.record(slugtale_lib::DiagnosticEvent::hotkey_transition(
+            slugtale_lib::DictationEvent::Start,
+        ));
+
+        assert!(!log_path.exists());
+        std::fs::remove_dir_all(&log_dir).ok();
+    }
+
+    #[test]
+    fn enabled_file_backed_diagnostic_log_appends_redacted_lines() {
+        let log_dir = unique_test_dir("diagnostic-log-enabled");
+        let log_path = log_dir.join("diagnostics.log");
+        let secret = "never write this transcript";
+        let mut log =
+            slugtale_lib::LocalDiagnosticLog::new(true, FileDiagnosticSink::new(log_path.clone()));
+
+        log.record(slugtale_lib::DiagnosticEvent::hotkey_transition(
+            slugtale_lib::DictationEvent::Start,
+        ));
+        log.record(slugtale_lib::DiagnosticEvent::transcription_completed(
+            &slugtale_lib::FinalTranscription {
+                text: secret.to_string(),
+            },
+        ));
+
+        let contents = std::fs::read_to_string(&log_path).unwrap();
+        assert!(contents.contains("hotkey"));
+        assert!(contents.contains("asr"));
+        assert!(!contents.contains(secret));
+        assert_eq!(contents.lines().count(), 2);
+
+        std::fs::remove_dir_all(&log_dir).ok();
+    }
+
+    #[test]
+    fn diagnostic_wrappers_record_asr_insertion_and_rescue_without_transcript_text() {
+        let sink = TestDiagnosticSink::default();
+        let log = SharedDiagnosticLog::new(true, sink.clone());
+        let secret = "do not log these dictated words";
+        let runtime = FakeAsrRuntime {
+            result: Ok(slugtale_lib::FinalTranscription {
+                text: secret.to_string(),
+            }),
+        };
+        let runtime = DiagnosticAsrRuntime::new(&runtime, log.clone());
+        let insertion = FailingTextInsertion;
+        let insertion = DiagnosticTextInsertion::new(&insertion, log.clone());
+        let rescue = SuccessfulInsertionRescue;
+        let rescue = DiagnosticInsertionRescue::new(&rescue, log);
+
+        let transcription = slugtale_lib::AsrRuntime::transcribe(
+            &runtime,
+            slugtale_lib::CapturedAudio::mono_16khz(vec![0.0]),
+        )
+        .unwrap();
+        let _ = slugtale_lib::TextInsertion::insert(&insertion, &transcription);
+        slugtale_lib::InsertionRescue::rescue(&rescue, &transcription).unwrap();
+
+        let lines = sink.lines();
+        assert!(lines.iter().any(|line| line.contains("asr")));
+        assert!(lines.iter().any(|line| line.contains("insertion: failed")));
+        assert!(lines.iter().any(|line| line.contains("rescued")));
+        assert!(lines.iter().all(|line| !line.contains(secret)));
+    }
+
     fn unique_test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "slugtale-main-{name}-{}-{}",
@@ -810,5 +1107,60 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[derive(Clone, Default)]
+    struct TestDiagnosticSink {
+        lines: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl TestDiagnosticSink {
+        fn lines(&self) -> Vec<String> {
+            self.lines.lock().unwrap().clone()
+        }
+    }
+
+    impl slugtale_lib::DiagnosticSink for TestDiagnosticSink {
+        fn write_line(&mut self, line: &str) {
+            self.lines.lock().unwrap().push(line.to_string());
+        }
+    }
+
+    struct FakeAsrRuntime {
+        result: Result<slugtale_lib::FinalTranscription, slugtale_lib::AsrError>,
+    }
+
+    impl slugtale_lib::AsrRuntime for FakeAsrRuntime {
+        fn transcribe(
+            &self,
+            _audio: slugtale_lib::CapturedAudio,
+        ) -> Result<slugtale_lib::FinalTranscription, slugtale_lib::AsrError> {
+            self.result.clone()
+        }
+    }
+
+    struct FailingTextInsertion;
+
+    impl slugtale_lib::TextInsertion for FailingTextInsertion {
+        fn insert(
+            &self,
+            _transcription: &slugtale_lib::FinalTranscription,
+        ) -> Result<slugtale_lib::TextInsertionOutcome, slugtale_lib::TextInsertionError> {
+            Err(slugtale_lib::TextInsertionError::new(
+                "test insertion failure",
+            ))
+        }
+    }
+
+    struct SuccessfulInsertionRescue;
+
+    impl slugtale_lib::InsertionRescue for SuccessfulInsertionRescue {
+        fn rescue(
+            &self,
+            _transcription: &slugtale_lib::FinalTranscription,
+        ) -> Result<slugtale_lib::InsertionRescueOutcome, slugtale_lib::InsertionRescueError>
+        {
+            Ok(slugtale_lib::InsertionRescueOutcome::CopiedToClipboardAndNotified)
+        }
     }
 }

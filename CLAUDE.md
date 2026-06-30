@@ -61,10 +61,12 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 ## Build & Test
 
 Requires Rust stable (install via `rustup`). The Tauri CLI is installed as an npm devDependency.
+Use npm scripts for project checks; they find Cargo from `PATH`, `CARGO`, or the standard rustup location.
 
 ```bash
 npm install          # install Tauri CLI
-npm test             # cargo test --lib (Rust unit tests, no app launch needed)
+npm test             # frontend tests, then Rust unit tests without app launch
+npm run test:rust    # Rust-only tests via scripts/run-cargo.js
 npm run dev          # cargo tauri dev (starts the tray app with hot reload)
 npm run build        # cargo tauri build (not needed for developer-run builds)
 ```
