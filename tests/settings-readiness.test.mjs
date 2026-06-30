@@ -67,7 +67,7 @@ function loadSettingsScript({ invoke }) {
 
   const testableScript = script.replace(
     /\s*init\(\);\s*$/,
-    "\nwindow.__slugtaleTest = { openReadinessAction };\n"
+    "\nwindow.__slugtaleTest = { loadReadiness, openReadinessAction };\n"
   );
   vm.runInNewContext(testableScript, context);
 
@@ -81,6 +81,7 @@ function loadSettingsScript({ invoke }) {
       if (!callback) throw new Error("No pending timer to flush");
       callback();
     },
+    loadReadiness: context.window.__slugtaleTest.loadReadiness,
     openReadinessAction: context.window.__slugtaleTest.openReadinessAction
   };
 }
@@ -139,4 +140,67 @@ test("readiness permission action shows not-yet-granted message after polling ti
     elements.get("settings-message").textContent,
     "Still not granted. Grant access in macOS Privacy & Security, then reopen this window."
   );
+});
+
+test("background readiness refresh does not overwrite active permission polling render", async () => {
+  const staleReport = {
+    dictation_available: false,
+    items: [
+      {
+        id: "microphone",
+        label: "Microphone",
+        ready: false,
+        required: true
+      }
+    ]
+  };
+  const readyReport = {
+    dictation_available: true,
+    items: [
+      {
+        id: "microphone",
+        label: "Microphone",
+        ready: true,
+        required: true
+      }
+    ]
+  };
+  let captureNextReadinessAsBackground = false;
+  let resolveBackgroundReadiness;
+
+  const { elements, flushNextTimer, loadReadiness, openReadinessAction } = loadSettingsScript({
+    async invoke(command) {
+      if (command === "open_microphone_settings") return {};
+      if (captureNextReadinessAsBackground) {
+        return new Promise((resolve) => {
+          resolveBackgroundReadiness = resolve;
+        });
+      }
+      return readyReport;
+    }
+  });
+
+  const action = openReadinessAction("microphone");
+  await Promise.resolve();
+  await Promise.resolve();
+
+  captureNextReadinessAsBackground = true;
+  const backgroundRefresh = loadReadiness({ background: true });
+  await Promise.resolve();
+  captureNextReadinessAsBackground = false;
+
+  await flushNextTimer();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(elements.get("overall-status").textContent, "Ready");
+
+  if (resolveBackgroundReadiness) {
+    resolveBackgroundReadiness(staleReport);
+  }
+  await backgroundRefresh;
+
+  assert.equal(elements.get("overall-status").textContent, "Ready");
+  await action;
 });
