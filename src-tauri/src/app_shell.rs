@@ -124,6 +124,11 @@ mod tests {
         assert!(dev_runner.contains("\"--identifier\""));
         assert!(dev_runner.contains("com.slugtale.desktop"));
         assert!(!dev_runner.contains("\"--sign\",\n    \"-\""));
+        assert!(
+            !dev_runner.contains("run(\"open\", [\"-n\", appPath])"),
+            "developer runs must not force a second Slugtale instance"
+        );
+        assert!(dev_runner.contains("run(\"open\", [appPath])"));
         assert!(dev_runner.contains("SLUGTALE_SIGN_IDENTITY"));
         assert!(dev_runner.contains("Slugtale Dev"));
     }
