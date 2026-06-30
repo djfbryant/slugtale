@@ -129,7 +129,7 @@ if (process.platform === "darwin") {
     appPath,
   ]);
   run("codesign", ["--verify", "--deep", "--strict", appPath]);
-  run("open", ["-n", appPath]);
+  run("open", [appPath]);
 } else {
   run(tauri, ["dev", "--features", "local-whisper-runtime"]);
 }
