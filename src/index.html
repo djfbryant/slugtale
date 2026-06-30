@@ -801,6 +801,11 @@
           return;
         }
       }
+
+      renderSettings(
+        currentSettings,
+        "Still not granted. Grant access in macOS Privacy & Security, then reopen this window."
+      );
     }
 
     async function openReadinessAction(itemId) {
