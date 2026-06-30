@@ -1803,6 +1803,29 @@ mod tests {
         assert!(dev_runner.contains("\"codesign\""));
         assert!(dev_runner.contains("\"--identifier\""));
         assert!(dev_runner.contains("com.slugtale.desktop"));
+        assert!(!dev_runner.contains("\"--sign\",\n    \"-\""));
+        assert!(dev_runner.contains("SLUGTALE_SIGN_IDENTITY"));
+        assert!(dev_runner.contains("Slugtale Dev"));
+    }
+
+    #[test]
+    fn developer_run_has_a_recovery_path_for_stale_macos_text_insertion_grants() {
+        let package_json = std::fs::read_to_string("../package.json").expect("package.json exists");
+        let package_json: serde_json::Value = serde_json::from_str(&package_json).unwrap();
+
+        assert_eq!(
+            package_json["scripts"]["macos:reset-permissions"],
+            "node scripts/reset-dev-permissions.js"
+        );
+
+        let recovery_script = std::fs::read_to_string("../scripts/reset-dev-permissions.js")
+            .expect("dev permissions recovery script exists");
+
+        assert!(recovery_script.contains("tccutil"));
+        assert!(recovery_script.contains("Accessibility"));
+        assert!(recovery_script.contains("com.slugtale.desktop"));
+        assert!(recovery_script.contains("--all-accessibility"));
+        assert!(recovery_script.contains("npm run dev"));
     }
 
     #[test]
