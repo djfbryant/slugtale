@@ -4,13 +4,14 @@
 //! and focus-targeting seams so the core Dictation Workflow runs unchanged on
 //! Windows.
 //!
-//! This is the scaffold from issue slugtale-5pc.1: the trait impls and free
-//! functions exist and compile, but their bodies are `todo!()` placeholders the
-//! follow-on Windows issues replace with real Win32 behaviour:
+//! This started as the scaffold from issue slugtale-5pc.1: the trait impls and
+//! free functions exist and compile, with the remaining `todo!()` bodies filled
+//! by the follow-on Windows issues:
 //!
-//! * 5pc.2 — `WindowsPlatform` readiness (mic ConsentStore read; insertion is
-//!   effectively always granted, since Windows has no synthesized-input trust
-//!   gate — the analogous failure is UIPI against an elevated target).
+//! * 5pc.2 — `WindowsPlatform` readiness (implemented: mic ConsentStore read;
+//!   insertion is effectively always granted, since Windows has no
+//!   synthesized-input trust gate — the analogous failure is UIPI against an
+//!   elevated target).
 //! * 5pc.3 — `WindowsTextInsertionSystem` (SendInput Unicode + Ctrl+V paste).
 //! * 5pc.4 — `WindowsInsertionRescueSystem` (clipboard copy + notification).
 //! * 5pc.5 — focus targeting (`frontmost_app_pid`/`activate_app` via
@@ -27,8 +28,15 @@ use crate::{
     TextInsertion, TextInsertionError, TextInsertionOutcome, TextInsertionPermissionSetup,
     TextInsertionPipeline, TextInsertionSystem,
 };
+use std::ptr;
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
 
 const UNIMPLEMENTED: &str = "Windows Platform Adapter is not implemented yet (PRD slugtale-5pc)";
+const MICROPHONE_CONSENT_KEY: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
+const MICROPHONE_CONSENT_VALUE: &str = "Value";
+const MICROPHONE_ALLOWED: &str = "Allow";
 
 pub struct WindowsPlatform;
 
@@ -46,16 +54,91 @@ impl Default for WindowsPlatform {
 
 impl PlatformReadiness for WindowsPlatform {
     fn microphone_granted(&self) -> bool {
-        // 5pc.2: read HKCU\...\ConsentStore\microphone\Value.
-        todo!("{UNIMPLEMENTED}: microphone_granted")
+        microphone_consent_value()
+            .map(|value| microphone_consent_allows(&value))
+            .unwrap_or(false)
     }
 
     fn insertion_granted(&self) -> bool {
-        // 5pc.2: Windows has no synthesized-input permission gate, so this is
-        // effectively always true (UIPI against elevated targets is the
-        // analogous silent-drop path, handled by the clipboard rescue).
-        todo!("{UNIMPLEMENTED}: insertion_granted")
+        // Windows has no Accessibility-equivalent trust gate for synthesized
+        // input. Elevated targets can still reject input through UIPI, but that
+        // is a delivery failure for the insertion pipeline/rescue rather than a
+        // permission-readiness failure.
+        true
     }
+}
+
+fn microphone_consent_value() -> Result<String, String> {
+    read_hkcu_string(MICROPHONE_CONSENT_KEY, MICROPHONE_CONSENT_VALUE)
+}
+
+fn microphone_consent_allows(value: &str) -> bool {
+    value.eq_ignore_ascii_case(MICROPHONE_ALLOWED)
+}
+
+fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<String, String> {
+    let subkey = wide_null(subkey);
+    let value_name = wide_null(value_name);
+    let mut byte_len = 0u32;
+
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value_name.as_ptr(),
+            RRF_RT_REG_SZ,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut byte_len,
+        )
+    };
+
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "could not read HKCU\\{MICROPHONE_CONSENT_KEY}\\{MICROPHONE_CONSENT_VALUE}: \
+             RegGetValueW returned {status}"
+        ));
+    }
+
+    if byte_len == 0 {
+        return Ok(String::new());
+    }
+
+    let mut buffer = vec![0u16; byte_len.div_ceil(2) as usize];
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value_name.as_ptr(),
+            RRF_RT_REG_SZ,
+            ptr::null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut byte_len,
+        )
+    };
+
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "could not read HKCU\\{MICROPHONE_CONSENT_KEY}\\{MICROPHONE_CONSENT_VALUE}: \
+             RegGetValueW returned {status}"
+        ));
+    }
+
+    let unit_len = (byte_len / 2) as usize;
+    let value_units = &buffer[..unit_len.min(buffer.len())];
+    let value_units = value_units
+        .split(|unit| *unit == 0)
+        .next()
+        .unwrap_or(value_units);
+    String::from_utf16(value_units).map_err(|error| {
+        format!(
+            "could not decode HKCU\\{MICROPHONE_CONSENT_KEY}\\{MICROPHONE_CONSENT_VALUE}: {error}"
+        )
+    })
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 pub struct WindowsTextInsertion {
