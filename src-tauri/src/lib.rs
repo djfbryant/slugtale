@@ -60,3 +60,17 @@ pub use macos::{
     MacosInsertionRescue, MacosMicrophonePermissionSetup, MacosPlatform, MacosTextInsertion,
     MacosTextInsertionPermissionSetup,
 };
+
+/// Windows implementation of platform adapters (ADR-0021, PRD slugtale-5pc).
+/// Mirrors the macOS adapter surface so the core Dictation Workflow runs
+/// unchanged on Windows. Scaffold from slugtale-5pc.1; behaviour filled by the
+/// follow-on Windows issues.
+#[cfg(target_os = "windows")]
+mod windows;
+
+#[cfg(target_os = "windows")]
+pub use windows::{
+    activate_app, frontmost_app_pid, notify, open_microphone_settings, WindowsInsertionRescue,
+    WindowsMicrophonePermissionSetup, WindowsPlatform, WindowsTextInsertion,
+    WindowsTextInsertionPermissionSetup,
+};
