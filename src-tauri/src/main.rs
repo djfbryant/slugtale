@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 #[derive(Default)]
@@ -287,6 +288,9 @@ async fn complete_captured_dictation(
     let runtime = app
         .state::<slugtale_lib::WhisperRuntimeCache>()
         .runtime_for(&model_path);
+    // Apply the current Transcription Speed Profile before decoding so the user's
+    // accuracy/speed choice takes effect without reloading the model.
+    runtime.set_speed_profile(settings.speed_profile);
     let target_pid = app
         .state::<FocusTargetState>()
         .0
@@ -568,6 +572,47 @@ fn save_hotkey_settings(
 }
 
 #[tauri::command]
+fn save_transcription_settings(
+    app: tauri::AppHandle,
+    speed_profile: slugtale_lib::SpeedProfile,
+) -> Result<slugtale_lib::Settings, String> {
+    let mut settings = load_current_settings(&app);
+    slugtale_lib::apply_transcription_settings(&mut settings, speed_profile);
+    save_current_settings(&app, &settings)?;
+    Ok(settings)
+}
+
+/// Register or unregister the app as an OS login item to match the desired state.
+/// Backed by tauri-plugin-autostart (a macOS LaunchAgent), which keeps this off the
+/// dictation hot path and gives the Windows port the same abstraction for free.
+fn set_launch_at_login_state(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch.enable().map_err(|error| error.to_string())
+    } else {
+        autolaunch.disable().map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+fn save_launch_at_login(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<slugtale_lib::Settings, String> {
+    let previous = load_current_settings(&app);
+    let mut settings = previous.clone();
+    slugtale_lib::apply_launch_at_login_settings(&mut settings, enabled);
+
+    set_launch_at_login_state(&app, enabled)?;
+    if let Err(error) = save_current_settings(&app, &settings) {
+        let _ = set_launch_at_login_state(&app, previous.launch_at_login);
+        return Err(error);
+    }
+
+    Ok(settings)
+}
+
+#[tauri::command]
 fn get_local_model_status(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelStatus, String> {
     Ok(model_manager(&app)?.status())
 }
@@ -629,6 +674,7 @@ async fn transcribe_captured_audio(
     let settings = load_current_settings(&app);
     let model_path = model_manager(&app)?.active_model_path(&settings);
     let runtime = cache.runtime_for(&model_path);
+    runtime.set_speed_profile(settings.speed_profile);
     let diagnostic_log = current_diagnostic_log(&app, &settings);
     let audio = slugtale_lib::CapturedAudio {
         sample_rate_hz,
@@ -753,11 +799,19 @@ fn main() {
         .manage(FocusTargetState::default())
         .manage(AudioCaptureState::default())
         .manage(HotkeyRegistrationState::default())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             slugtale_lib::setup_tray(app)?;
             setup_configured_hotkey(app)?;
+            // Reconcile the OS login item with the stored preference so a moved or
+            // rebuilt app (dev binaries change path) does not drift out of sync.
+            let settings = load_current_settings(app.handle());
+            let _ = set_launch_at_login_state(app.handle(), settings.launch_at_login);
             let _ = warm_ready_local_whisper_runtime(app.handle());
             Ok(())
         })
@@ -776,6 +830,8 @@ fn main() {
             open_microphone_settings,
             open_text_insertion_settings,
             save_hotkey_settings,
+            save_transcription_settings,
+            save_launch_at_login,
             get_local_model_status,
             download_local_model,
             delete_local_model,

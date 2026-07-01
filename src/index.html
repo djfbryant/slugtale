@@ -465,8 +465,28 @@
         </div>
         <label class="toggle">
           Launch at login
-          <input type="checkbox" disabled />
+          <input id="launch-at-login-toggle" type="checkbox" />
         </label>
+        <div id="launch-at-login-message" class="note" aria-live="polite">
+          Start Slugtale automatically when you sign in.
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="transcription-title">
+      <h2 id="transcription-title">Transcription</h2>
+      <div class="controls">
+        <label class="field">
+          Speed vs. accuracy
+          <select id="speed-profile-select">
+            <option value="fast">Fast — quickest, less accurate</option>
+            <option value="balanced">Balanced — recommended</option>
+            <option value="accurate">Accurate — slowest, most accurate</option>
+          </select>
+        </label>
+        <div id="transcription-message" class="note" aria-live="polite">
+          Applies to every dictation. Faster settings trade some accuracy for speed.
+        </div>
       </div>
     </section>
 
@@ -523,7 +543,8 @@
       activation_mode: "toggle",
       launch_at_login: false,
       diagnostic_logging: false,
-      model: null
+      model: null,
+      speed_profile: "balanced"
     };
 
     const guidance = {
@@ -541,6 +562,8 @@
 
     let downloading = false;
     let savingSettings = false;
+    let savingProfile = false;
+    let savingLaunchAtLogin = false;
     let openingReadinessAction = false;
     let currentSettings = { ...fallbackSettings };
 
@@ -679,6 +702,85 @@
       clearButton.disabled = savingSettings || !currentSettings.hotkey;
       messageEl.classList.toggle("error", isError);
       messageEl.textContent = message;
+
+      const profileSelect = document.getElementById("speed-profile-select");
+      profileSelect.value = currentSettings.speed_profile || "balanced";
+      profileSelect.disabled = savingProfile;
+
+      const launchToggle = document.getElementById("launch-at-login-toggle");
+      launchToggle.checked = Boolean(currentSettings.launch_at_login);
+      launchToggle.disabled = savingLaunchAtLogin;
+    }
+
+    async function saveLaunchAtLogin(enabled) {
+      const invoke = tauriInvoke();
+      const previousSettings = { ...currentSettings };
+      const toggle = document.getElementById("launch-at-login-toggle");
+      const messageEl = document.getElementById("launch-at-login-message");
+
+      if (!invoke) {
+        currentSettings = { ...currentSettings, launch_at_login: enabled };
+        toggle.checked = enabled;
+        return;
+      }
+
+      savingLaunchAtLogin = true;
+      toggle.disabled = true;
+      messageEl.classList.remove("error");
+      messageEl.textContent = "Saving…";
+
+      try {
+        const saved = await invoke("save_launch_at_login", { enabled });
+        savingLaunchAtLogin = false;
+        currentSettings = { ...fallbackSettings, ...saved };
+        toggle.checked = Boolean(currentSettings.launch_at_login);
+        toggle.disabled = false;
+        messageEl.textContent = currentSettings.launch_at_login
+          ? "Slugtale will launch when you sign in."
+          : "Start Slugtale automatically when you sign in.";
+      } catch (error) {
+        savingLaunchAtLogin = false;
+        currentSettings = { ...previousSettings };
+        toggle.checked = Boolean(currentSettings.launch_at_login);
+        toggle.disabled = false;
+        messageEl.classList.add("error");
+        messageEl.textContent = String(error);
+      }
+    }
+
+    async function saveTranscriptionSettings(speedProfile) {
+      const invoke = tauriInvoke();
+      const previousSettings = { ...currentSettings };
+      const nextSettings = { ...currentSettings, speed_profile: speedProfile };
+      const messageEl = document.getElementById("transcription-message");
+
+      if (!invoke) {
+        currentSettings = { ...fallbackSettings, ...nextSettings };
+        document.getElementById("speed-profile-select").value = speedProfile;
+        return;
+      }
+
+      savingProfile = true;
+      document.getElementById("speed-profile-select").disabled = true;
+      messageEl.classList.remove("error");
+      messageEl.textContent = "Saving…";
+
+      try {
+        const saved = await invoke("save_transcription_settings", { speedProfile });
+        savingProfile = false;
+        currentSettings = { ...fallbackSettings, ...saved };
+        document.getElementById("speed-profile-select").value = currentSettings.speed_profile;
+        document.getElementById("speed-profile-select").disabled = false;
+        messageEl.textContent = "Saved. Applies to your next dictation.";
+      } catch (error) {
+        savingProfile = false;
+        currentSettings = { ...previousSettings };
+        const select = document.getElementById("speed-profile-select");
+        select.value = currentSettings.speed_profile || "balanced";
+        select.disabled = false;
+        messageEl.classList.add("error");
+        messageEl.textContent = String(error);
+      }
     }
 
     function hotkeyKeyToken(event) {
@@ -926,6 +1028,12 @@
       document.getElementById("delete-model-button").addEventListener("click", deleteModel);
       document.getElementById("activation-mode-select").addEventListener("change", () => {
         saveHotkeySettings(currentSettings.hotkey);
+      });
+      document.getElementById("speed-profile-select").addEventListener("change", (event) => {
+        saveTranscriptionSettings(event.target.value);
+      });
+      document.getElementById("launch-at-login-toggle").addEventListener("change", (event) => {
+        saveLaunchAtLogin(event.target.checked);
       });
       document.getElementById("clear-hotkey-button").addEventListener("click", () => {
         saveHotkeySettings(null);

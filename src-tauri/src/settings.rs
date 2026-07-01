@@ -8,6 +8,26 @@ pub enum ActivationMode {
     Toggle,
 }
 
+/// The Transcription Speed Profile (CONTEXT.md): a global user preference that
+/// trades transcription accuracy against speed for every future dictation. Each
+/// profile maps to an underlying Beam Search value in the local model runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpeedProfile {
+    /// Fastest transcription, greedy decoding with no beam search.
+    Fast,
+    /// Balanced accuracy and speed. The default for new users.
+    Balanced,
+    /// Most accurate transcription, widest beam search and slowest.
+    Accurate,
+}
+
+impl Default for SpeedProfile {
+    fn default() -> Self {
+        Self::Balanced
+    }
+}
+
 /// The local non-secret Settings File (ADR-0018): user preferences such as
 /// hotkey, activation mode, model choice, launch-at-login, and diagnostic logging.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +37,10 @@ pub struct Settings {
     pub launch_at_login: bool,
     pub diagnostic_logging: bool,
     pub model: Option<String>,
+    /// The Transcription Speed Profile applied to all future transcriptions.
+    /// Older Settings Files predate this field, so it defaults to Balanced.
+    #[serde(default)]
+    pub speed_profile: SpeedProfile,
 }
 
 impl Default for Settings {
@@ -27,6 +51,7 @@ impl Default for Settings {
             launch_at_login: false,
             diagnostic_logging: false,
             model: None,
+            speed_profile: SpeedProfile::default(),
         }
     }
 }
@@ -48,6 +73,20 @@ pub fn apply_hotkey_settings(
         }
     });
     settings.activation_mode = activation_mode;
+}
+
+/// Update the Transcription Speed Profile stored in the Settings File. The user
+/// sets this once in the Transcription section of settings and it persists across
+/// restarts, applying to all future transcriptions (CONTEXT.md).
+pub fn apply_transcription_settings(settings: &mut Settings, speed_profile: SpeedProfile) {
+    settings.speed_profile = speed_profile;
+}
+
+/// Update the launch-at-login preference stored in the Settings File. The stored
+/// bool records the user's intent; registering the app as an OS login item is a
+/// platform concern handled at the Tauri layer (ADR-0021).
+pub fn apply_launch_at_login_settings(settings: &mut Settings, enabled: bool) {
+    settings.launch_at_login = enabled;
 }
 
 /// Write the Settings File as human-readable JSON so it can be inspected
@@ -91,6 +130,7 @@ mod tests {
         assert!(!settings.launch_at_login);
         assert!(!settings.diagnostic_logging);
         assert_eq!(settings.model, None);
+        assert_eq!(settings.speed_profile, SpeedProfile::Balanced);
     }
     #[test]
     fn settings_round_trip_through_saved_file() {
@@ -102,6 +142,7 @@ mod tests {
             launch_at_login: true,
             diagnostic_logging: true,
             model: Some("whisper-base.en".to_string()),
+            speed_profile: SpeedProfile::Accurate,
         };
 
         save_settings(&path, &settings).unwrap();
@@ -146,6 +187,66 @@ mod tests {
 
         assert_eq!(settings.hotkey, None);
         assert_eq!(settings.activation_mode, ActivationMode::Toggle);
+    }
+    #[test]
+    fn transcription_speed_profile_defaults_to_balanced() {
+        assert_eq!(SpeedProfile::default(), SpeedProfile::Balanced);
+        assert_eq!(Settings::default().speed_profile, SpeedProfile::Balanced);
+    }
+    #[test]
+    fn apply_transcription_settings_stores_selected_profile() {
+        let mut settings = Settings::default();
+
+        apply_transcription_settings(&mut settings, SpeedProfile::Fast);
+        assert_eq!(settings.speed_profile, SpeedProfile::Fast);
+
+        apply_transcription_settings(&mut settings, SpeedProfile::Accurate);
+        assert_eq!(settings.speed_profile, SpeedProfile::Accurate);
+    }
+    #[test]
+    fn apply_launch_at_login_settings_stores_choice() {
+        let mut settings = Settings::default();
+        assert!(!settings.launch_at_login);
+
+        apply_launch_at_login_settings(&mut settings, true);
+        assert!(settings.launch_at_login);
+
+        apply_launch_at_login_settings(&mut settings, false);
+        assert!(!settings.launch_at_login);
+    }
+    #[test]
+    fn speed_profile_persists_as_stable_lowercase_strings() {
+        for (profile, token) in [
+            (SpeedProfile::Fast, "\"speed_profile\":\"fast\""),
+            (SpeedProfile::Balanced, "\"speed_profile\":\"balanced\""),
+            (SpeedProfile::Accurate, "\"speed_profile\":\"accurate\""),
+        ] {
+            let settings = Settings {
+                speed_profile: profile,
+                ..Settings::default()
+            };
+            let json = serde_json::to_string(&settings).unwrap();
+            assert!(json.contains(token), "got: {json}");
+        }
+    }
+    #[test]
+    fn settings_file_without_speed_profile_loads_as_balanced() {
+        // Settings Files written before the Transcription Speed Profile existed
+        // omit the field; loading must fall back to the default rather than fail.
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-settings-legacy-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"hotkey":null,"activation_mode":"toggle","launch_at_login":false,"diagnostic_logging":false,"model":null}"#,
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        assert_eq!(loaded.speed_profile, SpeedProfile::Balanced);
     }
     #[test]
     fn activation_mode_persists_as_stable_lowercase_strings() {
