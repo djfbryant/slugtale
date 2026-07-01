@@ -3292,6 +3292,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "ureq",
  "whisper-rs",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
