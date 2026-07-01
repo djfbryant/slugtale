@@ -1,4 +1,4 @@
-use crate::CapturedAudio;
+use crate::{CapturedAudio, SpeedProfile};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "local-whisper-runtime"))]
 use std::num::NonZeroUsize;
@@ -47,19 +47,35 @@ struct WhisperDecodeSettings {
     n_threads: i32,
 }
 
+/// Map a Transcription Speed Profile to the Beam Search width (`best_of`) the
+/// local Whisper runtime uses: wider search is more accurate but slower
+/// (CONTEXT.md). Fast disables the search entirely with greedy decoding.
+#[cfg(any(test, feature = "local-whisper-runtime"))]
+fn best_of_for_speed_profile(profile: SpeedProfile) -> i32 {
+    match profile {
+        SpeedProfile::Fast => 1,
+        SpeedProfile::Balanced => 5,
+        SpeedProfile::Accurate => 10,
+    }
+}
+
 #[cfg(feature = "local-whisper-runtime")]
-fn recommended_whisper_decode_settings() -> WhisperDecodeSettings {
+fn recommended_whisper_decode_settings(profile: SpeedProfile) -> WhisperDecodeSettings {
     whisper_decode_settings_for_available_threads(
+        profile,
         std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
     )
 }
 
 #[cfg(any(test, feature = "local-whisper-runtime"))]
 fn whisper_decode_settings_for_available_threads(
+    profile: SpeedProfile,
     available_threads: NonZeroUsize,
 ) -> WhisperDecodeSettings {
     WhisperDecodeSettings {
-        strategy: WhisperDecodeStrategy::Greedy { best_of: 1 },
+        strategy: WhisperDecodeStrategy::Greedy {
+            best_of: best_of_for_speed_profile(profile),
+        },
         n_threads: available_threads.get().min(i32::MAX as usize) as i32,
     }
 }
@@ -79,6 +95,10 @@ pub fn transcribe_captured_audio(
 
 pub struct LocalWhisperRuntime {
     model_path: std::path::PathBuf,
+    // The Transcription Speed Profile sets the Beam Search width per call. It is
+    // interior-mutable so the caller can update it from settings without
+    // rebuilding the cached model context, which the profile does not affect.
+    speed_profile: Mutex<SpeedProfile>,
     // The loaded model is expensive to read and parse, so it is initialized once
     // and reused across transcriptions rather than rebuilt on every call.
     #[cfg(feature = "local-whisper-runtime")]
@@ -91,6 +111,7 @@ impl LocalWhisperRuntime {
     pub fn new(model_path: std::path::PathBuf) -> Self {
         Self {
             model_path,
+            speed_profile: Mutex::new(SpeedProfile::default()),
             #[cfg(feature = "local-whisper-runtime")]
             context: std::sync::OnceLock::new(),
             #[cfg(feature = "local-whisper-runtime")]
@@ -100,6 +121,24 @@ impl LocalWhisperRuntime {
 
     pub fn model_path(&self) -> &std::path::Path {
         &self.model_path
+    }
+
+    /// Set the Transcription Speed Profile applied to subsequent transcriptions.
+    /// Callers set this from the current Settings File before each dictation so
+    /// the accuracy/speed choice takes effect without reloading the model.
+    pub fn set_speed_profile(&self, profile: SpeedProfile) {
+        match self.speed_profile.lock() {
+            Ok(mut current) => *current = profile,
+            Err(poisoned) => *poisoned.into_inner() = profile,
+        }
+    }
+
+    #[cfg(any(test, feature = "local-whisper-runtime"))]
+    fn speed_profile(&self) -> SpeedProfile {
+        match self.speed_profile.lock() {
+            Ok(profile) => *profile,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
     }
 }
 
@@ -205,7 +244,7 @@ impl AsrRuntime for LocalWhisperRuntime {
         let mut state = context
             .create_state()
             .map_err(|error| AsrError::Runtime(error.to_string()))?;
-        let decode_settings = recommended_whisper_decode_settings();
+        let decode_settings = recommended_whisper_decode_settings(self.speed_profile());
         let mut params = whisper_rs::FullParams::new(match decode_settings.strategy {
             WhisperDecodeStrategy::Greedy { best_of } => {
                 whisper_rs::SamplingStrategy::Greedy { best_of }
@@ -315,6 +354,43 @@ mod tests {
     }
 
     #[test]
+    fn speed_profiles_map_to_widening_beam_search_best_of_values() {
+        // Fast disables beam search; Balanced and Accurate widen it for accuracy.
+        assert_eq!(best_of_for_speed_profile(SpeedProfile::Fast), 1);
+        assert_eq!(best_of_for_speed_profile(SpeedProfile::Balanced), 5);
+        assert_eq!(best_of_for_speed_profile(SpeedProfile::Accurate), 10);
+        assert!(
+            best_of_for_speed_profile(SpeedProfile::Fast)
+                < best_of_for_speed_profile(SpeedProfile::Balanced)
+                && best_of_for_speed_profile(SpeedProfile::Balanced)
+                    < best_of_for_speed_profile(SpeedProfile::Accurate)
+        );
+    }
+
+    #[test]
+    fn decode_settings_use_selected_profile_and_available_threads() {
+        let threads = NonZeroUsize::new(4).unwrap();
+        let settings =
+            whisper_decode_settings_for_available_threads(SpeedProfile::Accurate, threads);
+
+        assert_eq!(
+            settings.strategy,
+            WhisperDecodeStrategy::Greedy { best_of: 10 }
+        );
+        assert_eq!(settings.n_threads, 4);
+    }
+
+    #[test]
+    fn runtime_defaults_to_balanced_profile_and_accepts_updates() {
+        let runtime =
+            LocalWhisperRuntime::new(unique_test_dir("profile").join(DEFAULT_MODEL_FILENAME));
+        assert_eq!(runtime.speed_profile(), SpeedProfile::Balanced);
+
+        runtime.set_speed_profile(SpeedProfile::Fast);
+        assert_eq!(runtime.speed_profile(), SpeedProfile::Fast);
+    }
+
+    #[test]
     fn whisper_runtime_cache_reuses_runtime_for_same_model_path() {
         let cache = WhisperRuntimeCache::default();
         let model_path = unique_test_dir("whisper-cache").join(DEFAULT_MODEL_FILENAME);
@@ -366,9 +442,11 @@ mod tests {
     }
 
     #[test]
-    fn recommended_whisper_decode_settings_prioritize_low_latency_dictation() {
-        let settings =
-            whisper_decode_settings_for_available_threads(NonZeroUsize::new(10).unwrap());
+    fn fast_profile_decode_settings_prioritize_low_latency_dictation() {
+        let settings = whisper_decode_settings_for_available_threads(
+            SpeedProfile::Fast,
+            NonZeroUsize::new(10).unwrap(),
+        );
 
         assert_eq!(
             settings,

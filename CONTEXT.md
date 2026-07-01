@@ -107,3 +107,11 @@ _Avoid_: Edit mode, write mode
 **Live Preview**:
 A future workflow where partial transcription text is shown while the user is still speaking. Live preview is not part of the first version.
 _Avoid_: Streaming preview, partial output
+
+**Beam Search**:
+A search strategy used by the local speech recognition model to balance accuracy against transcription speed. Beam Search with higher values (wider beam) produces more accurate results but takes longer; lower values (narrower beam) produce faster results with potential accuracy loss.
+_Avoid_: Beam size, decode beam, search width
+
+**Transcription Speed Profile**:
+A user-configurable global setting stored in the Settings File that determines the accuracy/speed tradeoff for all future transcriptions. The user selects a profile once and it persists across app restarts. Each profile maps to an underlying Beam Search value. The profile applies to all dictations until the user changes the setting again. Three profiles are available: Fast (`best_of: 1`), Balanced (`best_of: 5`, default), and Accurate (`best_of: 10`). The setting appears in its own "Transcription" section of the settings UI.
+_Avoid_: Quality setting, transcription mode, decode mode, per-dictation quality
