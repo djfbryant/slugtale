@@ -13,6 +13,10 @@ local-whisper-runtime-metal = ["local-whisper-runtime", "whisper-rs/metal"]
 name = "slugtale_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[[example]]
+name = "decode_benchmark"
+required-features = ["local-whisper-runtime"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
