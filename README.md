@@ -157,7 +157,11 @@ npm run dev
 
 On macOS this enables Whisper Metal acceleration through the
 `local-whisper-runtime-metal` Cargo feature. CPU fallback builds can still use
-only `local-whisper-runtime`.
+only `local-whisper-runtime`. whisper-rs also offers a `coreml` feature, but it
+was evaluated and deferred: it requires shipping a separately converted CoreML
+encoder (`.mlmodelc`) alongside the ggml model and only accelerates the
+encoder, which Metal already offloads. Decode strategy and thread settings were
+chosen from measurements — see `docs/research/whisper-decode-benchmark.md`.
 
 Run the raw Tauri dev command:
 

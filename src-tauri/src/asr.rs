@@ -38,6 +38,7 @@ pub trait AsrRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WhisperDecodeStrategy {
     Greedy { best_of: i32 },
+    BeamSearch { beam_size: i32 },
 }
 
 #[cfg(any(test, feature = "local-whisper-runtime"))]
@@ -47,15 +48,20 @@ struct WhisperDecodeSettings {
     n_threads: i32,
 }
 
-/// Map a Transcription Speed Profile to the Beam Search width (`best_of`) the
-/// local Whisper runtime uses: wider search is more accurate but slower
-/// (CONTEXT.md). Fast disables the search entirely with greedy decoding.
+/// Map a Transcription Speed Profile to the decode strategy the local Whisper
+/// runtime uses: a wider Beam Search is more accurate but slower (CONTEXT.md);
+/// Fast skips Beam Search entirely with greedy decoding. Values were picked
+/// from measured latency on real speech clips — greedy is fastest, beam 2 costs
+/// little over greedy, and beam 5 (the pre-profile default) is 25-45% slower on
+/// longer clips (docs/research/whisper-decode-benchmark.md). Note whisper.cpp
+/// ignores greedy `best_of` at its default temperature, so meaningfully wider
+/// search requires the BeamSearch strategy, not a larger `best_of`.
 #[cfg(any(test, feature = "local-whisper-runtime"))]
-fn best_of_for_speed_profile(profile: SpeedProfile) -> i32 {
+fn decode_strategy_for_speed_profile(profile: SpeedProfile) -> WhisperDecodeStrategy {
     match profile {
-        SpeedProfile::Fast => 1,
-        SpeedProfile::Balanced => 5,
-        SpeedProfile::Accurate => 10,
+        SpeedProfile::Fast => WhisperDecodeStrategy::Greedy { best_of: 1 },
+        SpeedProfile::Balanced => WhisperDecodeStrategy::BeamSearch { beam_size: 2 },
+        SpeedProfile::Accurate => WhisperDecodeStrategy::BeamSearch { beam_size: 5 },
     }
 }
 
@@ -73,9 +79,7 @@ fn whisper_decode_settings_for_available_threads(
     available_threads: NonZeroUsize,
 ) -> WhisperDecodeSettings {
     WhisperDecodeSettings {
-        strategy: WhisperDecodeStrategy::Greedy {
-            best_of: best_of_for_speed_profile(profile),
-        },
+        strategy: decode_strategy_for_speed_profile(profile),
         n_threads: available_threads.get().min(i32::MAX as usize) as i32,
     }
 }
@@ -95,7 +99,7 @@ pub fn transcribe_captured_audio(
 
 pub struct LocalWhisperRuntime {
     model_path: std::path::PathBuf,
-    // The Transcription Speed Profile sets the Beam Search width per call. It is
+    // The Transcription Speed Profile sets the decode strategy per call. It is
     // interior-mutable so the caller can update it from settings without
     // rebuilding the cached model context, which the profile does not affect.
     speed_profile: Mutex<SpeedProfile>,
@@ -249,6 +253,13 @@ impl AsrRuntime for LocalWhisperRuntime {
             WhisperDecodeStrategy::Greedy { best_of } => {
                 whisper_rs::SamplingStrategy::Greedy { best_of }
             }
+            WhisperDecodeStrategy::BeamSearch { beam_size } => {
+                whisper_rs::SamplingStrategy::BeamSearch {
+                    beam_size,
+                    // whisper.cpp's default patience (unbounded beam pruning off).
+                    patience: -1.0,
+                }
+            }
         });
 
         params.set_n_threads(decode_settings.n_threads);
@@ -354,16 +365,21 @@ mod tests {
     }
 
     #[test]
-    fn speed_profiles_map_to_widening_beam_search_best_of_values() {
-        // Fast disables beam search; Balanced and Accurate widen it for accuracy.
-        assert_eq!(best_of_for_speed_profile(SpeedProfile::Fast), 1);
-        assert_eq!(best_of_for_speed_profile(SpeedProfile::Balanced), 5);
-        assert_eq!(best_of_for_speed_profile(SpeedProfile::Accurate), 10);
-        assert!(
-            best_of_for_speed_profile(SpeedProfile::Fast)
-                < best_of_for_speed_profile(SpeedProfile::Balanced)
-                && best_of_for_speed_profile(SpeedProfile::Balanced)
-                    < best_of_for_speed_profile(SpeedProfile::Accurate)
+    fn speed_profiles_map_to_progressively_wider_decode_search() {
+        // Mapping chosen from measured latency on real speech clips
+        // (docs/research/whisper-decode-benchmark.md): Fast skips Beam Search
+        // entirely, Balanced uses a narrow beam, Accurate uses the widest beam.
+        assert_eq!(
+            decode_strategy_for_speed_profile(SpeedProfile::Fast),
+            WhisperDecodeStrategy::Greedy { best_of: 1 }
+        );
+        assert_eq!(
+            decode_strategy_for_speed_profile(SpeedProfile::Balanced),
+            WhisperDecodeStrategy::BeamSearch { beam_size: 2 }
+        );
+        assert_eq!(
+            decode_strategy_for_speed_profile(SpeedProfile::Accurate),
+            WhisperDecodeStrategy::BeamSearch { beam_size: 5 }
         );
     }
 
@@ -375,7 +391,7 @@ mod tests {
 
         assert_eq!(
             settings.strategy,
-            WhisperDecodeStrategy::Greedy { best_of: 10 }
+            WhisperDecodeStrategy::BeamSearch { beam_size: 5 }
         );
         assert_eq!(settings.n_threads, 4);
     }
