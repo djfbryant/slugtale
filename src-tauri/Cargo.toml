@@ -37,7 +37,8 @@ objc2-app-kit = "0.3.2"
 # Windows Platform Adapter (ADR-0021, PRD slugtale-5pc). Mirrors the macOS
 # native-dependency block so neither platform pulls the other's crates. The
 # windows-sys features cover the Win32 surface the follow-on Windows issues
-# fill: SendInput/clipboard for text insertion (5pc.3/5pc.4), the microphone
+# fill: SendInput + clipboard (DataExchange/Memory/Ole for CF_UNICODETEXT) for
+# text insertion (5pc.3/5pc.4), the microphone
 # ConsentStore registry read for readiness (5pc.2), GetForegroundWindow/
 # SetForegroundWindow for focus targeting (5pc.5), and PlaySoundW for audible
 # feedback (5pc.6). winreg/clipboard-win are folded into windows-sys here.
@@ -49,5 +50,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Registry",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    "Win32_System_Ole",
     "Win32_Media_Audio",
 ] }

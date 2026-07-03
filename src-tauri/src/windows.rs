@@ -12,7 +12,9 @@
 //!   insertion is effectively always granted, since Windows has no
 //!   synthesized-input trust gate — the analogous failure is UIPI against an
 //!   elevated target).
-//! * 5pc.3 — `WindowsTextInsertionSystem` (SendInput Unicode + Ctrl+V paste).
+//! * 5pc.3 — `WindowsTextInsertionSystem` (implemented: SendInput with
+//!   KEYEVENTF_UNICODE for clipboard-free insertion, and CF_UNICODETEXT +
+//!   SendInput Ctrl+V for the clipboard-paste fallback).
 //! * 5pc.4 — `WindowsInsertionRescueSystem` (clipboard copy + notification).
 //! * 5pc.5 — focus targeting (`frontmost_app_pid`/`activate_app` via
 //!   `GetForegroundWindow`/`SetForegroundWindow`) and its wiring in main.rs.
@@ -29,8 +31,17 @@ use crate::{
     TextInsertionPipeline, TextInsertionSystem,
 };
 use std::ptr;
-use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::Foundation::{GlobalFree, ERROR_SUCCESS, HANDLE, HWND};
+use windows_sys::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+};
+use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+    VK_CONTROL, VK_V,
+};
 
 const UNIMPLEMENTED: &str = "Windows Platform Adapter is not implemented yet (PRD slugtale-5pc)";
 const MICROPHONE_CONSENT_KEY: &str =
@@ -171,15 +182,154 @@ impl TextInsertion for WindowsTextInsertion {
 struct WindowsTextInsertionSystem;
 
 impl TextInsertionSystem for WindowsTextInsertionSystem {
-    fn insert_clipboard_free(&self, _text: &str) -> Result<(), TextInsertionError> {
-        // 5pc.3: SendInput with KEYEVENTF_UNICODE over the UTF-16 code units.
-        todo!("{UNIMPLEMENTED}: insert_clipboard_free")
+    fn insert_clipboard_free(&self, text: &str) -> Result<(), TextInsertionError> {
+        // The direct analog of the macOS CGEventKeyboardSetUnicodeString path:
+        // inject each UTF-16 code unit as a synthesized key press with
+        // KEYEVENTF_UNICODE. SendInput can be silently blocked by UIPI when the
+        // foreground target runs at a higher integrity level; reporting the
+        // short insert as an error lets the pipeline fall through to the
+        // clipboard paste and, failing that, the rescue.
+        send_unicode_text(text).map_err(TextInsertionError::new)
     }
 
-    fn insert_from_clipboard(&self, _text: &str) -> Result<(), TextInsertionError> {
-        // 5pc.3: set CF_UNICODETEXT then SendInput Ctrl+V.
-        todo!("{UNIMPLEMENTED}: insert_from_clipboard")
+    fn insert_from_clipboard(&self, text: &str) -> Result<(), TextInsertionError> {
+        // Set CF_UNICODETEXT then synthesize Ctrl+V. The paste keystroke is also
+        // a synthesized event, so the same UIPI failure mode falls through to the
+        // rescue. The brief pause mirrors macos.rs: it lets the clipboard settle
+        // before the target receives the paste.
+        set_clipboard_text(text).map_err(TextInsertionError::new)?;
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        send_paste_shortcut().map_err(TextInsertionError::new)
     }
+}
+
+/// One synthesized keyboard event carrying a single UTF-16 code unit
+/// (`KEYEVENTF_UNICODE`), for the key-down (`key_up == false`) or key-up half.
+fn unicode_key_event(code_unit: u16, key_up: bool) -> INPUT {
+    let mut flags = KEYEVENTF_UNICODE;
+    if key_up {
+        flags |= KEYEVENTF_KEYUP;
+    }
+    keyboard_input(0, code_unit, flags)
+}
+
+/// One synthesized virtual-key event (e.g. Ctrl, V), for the key-down or key-up
+/// half.
+fn virtual_key_event(virtual_key: u16, key_up: bool) -> INPUT {
+    let flags = if key_up { KEYEVENTF_KEYUP } else { 0 };
+    keyboard_input(virtual_key, 0, flags)
+}
+
+fn keyboard_input(virtual_key: u16, scan_code: u16, flags: u32) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: virtual_key,
+                wScan: scan_code,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+/// Inject a batch of synthesized keyboard events in one `SendInput` call.
+/// `SendInput` returns the count actually inserted; a short count means the
+/// events were blocked (typically UIPI against a higher-integrity target), which
+/// we surface as an error so the caller can fall back.
+fn send_keyboard_events(inputs: &[INPUT]) -> Result<(), String> {
+    if inputs.is_empty() {
+        return Ok(());
+    }
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        )
+    };
+    if sent as usize == inputs.len() {
+        Ok(())
+    } else {
+        Err(format!(
+            "SendInput injected {sent} of {} keyboard events; input may be blocked (UIPI)",
+            inputs.len()
+        ))
+    }
+}
+
+/// Type `text` into the focused control by synthesizing a Unicode key press per
+/// UTF-16 code unit. Surrogate pairs are sent as two consecutive units, as
+/// Windows expects.
+fn send_unicode_text(text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    let mut inputs = Vec::with_capacity(text.encode_utf16().count() * 2);
+    for unit in text.encode_utf16() {
+        inputs.push(unicode_key_event(unit, false));
+        inputs.push(unicode_key_event(unit, true));
+    }
+    send_keyboard_events(&inputs)
+}
+
+/// Synthesize Ctrl+V to paste the current clipboard contents into the focused
+/// control.
+fn send_paste_shortcut() -> Result<(), String> {
+    let inputs = [
+        virtual_key_event(VK_CONTROL, false),
+        virtual_key_event(VK_V, false),
+        virtual_key_event(VK_V, true),
+        virtual_key_event(VK_CONTROL, true),
+    ];
+    send_keyboard_events(&inputs)
+}
+
+/// Place `text` on the clipboard as `CF_UNICODETEXT`. On success the system owns
+/// the moveable global memory; on failure it is freed here. Shared with the
+/// insertion rescue path (5pc.4).
+fn set_clipboard_text(text: &str) -> Result<(), String> {
+    // UTF-16 with the terminating NUL that CF_UNICODETEXT requires.
+    let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let byte_len = units.len() * std::mem::size_of::<u16>();
+
+    if unsafe { OpenClipboard(ptr::null_mut::<std::ffi::c_void>() as HWND) } == 0 {
+        return Err("could not open the Windows clipboard".to_string());
+    }
+
+    let result = (|| {
+        if unsafe { EmptyClipboard() } == 0 {
+            return Err("could not empty the Windows clipboard".to_string());
+        }
+
+        let hmem = unsafe { GlobalAlloc(GMEM_MOVEABLE, byte_len) };
+        if hmem.is_null() {
+            return Err("could not allocate clipboard memory".to_string());
+        }
+
+        let locked = unsafe { GlobalLock(hmem) };
+        if locked.is_null() {
+            unsafe { GlobalFree(hmem) };
+            return Err("could not lock clipboard memory".to_string());
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(units.as_ptr(), locked.cast::<u16>(), units.len());
+            GlobalUnlock(hmem);
+        }
+
+        // On success SetClipboardData takes ownership of hmem; only free it when
+        // the call fails so we do not leak the block.
+        if unsafe { SetClipboardData(CF_UNICODETEXT as u32, hmem as HANDLE) }.is_null() {
+            unsafe { GlobalFree(hmem) };
+            return Err("could not set clipboard text".to_string());
+        }
+        Ok(())
+    })();
+
+    unsafe { CloseClipboard() };
+    result
 }
 
 pub struct WindowsInsertionRescue {
