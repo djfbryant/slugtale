@@ -42,3 +42,27 @@ jobs:
       # CI must go through npm scripts, not bare Cargo. cargo is preinstalled on
       # ubuntu-latest and resolved from PATH by scripts/run-cargo.js.
       run: npm test
+
+  checks-windows:
+    # Real-Windows coverage for the Windows Platform Adapter (PRD slugtale-5pc):
+    # windows.rs only compiles and runs on a Windows target, and Wine/cross-checks
+    # from macOS cannot exercise it faithfully (ConsentStore registry, UIPI,
+    # WASAPI). This job compiles the whole crate — including the cfg-gated
+    # Windows adapter — and runs the same npm test entry point as the Linux job.
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        # Git Bash, so the tests/*.test.mjs glob expands and run-cargo.js
+        # resolves cargo from a POSIX-style PATH, same as the Linux job.
+        shell: bash
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: Install dependencies
+      run: npm install
+    - name: Run project checks
+      run: npm test
