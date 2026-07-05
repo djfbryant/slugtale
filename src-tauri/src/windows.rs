@@ -15,7 +15,10 @@
 //! * 5pc.3 — `WindowsTextInsertionSystem` (implemented: SendInput with
 //!   KEYEVENTF_UNICODE for clipboard-free insertion, and CF_UNICODETEXT +
 //!   SendInput Ctrl+V for the clipboard-paste fallback).
-//! * 5pc.4 — `WindowsInsertionRescueSystem` (clipboard copy + notification).
+//! * 5pc.4 — `WindowsInsertionRescueSystem` (implemented: CF_UNICODETEXT
+//!   clipboard copy shared with the paste fallback, and a detached-thread
+//!   MessageBox notification — the OQ-2 fallback for unpackaged dev-run builds,
+//!   which cannot post WinRT toasts without an AUMID/shortcut).
 //! * 5pc.5 — focus targeting (`frontmost_app_pid`/`activate_app` via
 //!   `GetForegroundWindow`/`SetForegroundWindow`) and its wiring in main.rs.
 //! * 5pc.6 — audible feedback (not a trait seam; `PlaySoundW`).
@@ -41,6 +44,9 @@ use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
     VK_CONTROL, VK_V,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
 };
 
 const UNIMPLEMENTED: &str = "Windows Platform Adapter is not implemented yet (PRD slugtale-5pc)";
@@ -362,15 +368,45 @@ impl InsertionRescue for WindowsInsertionRescue {
 struct WindowsInsertionRescueSystem;
 
 impl InsertionRescueSystem for WindowsInsertionRescueSystem {
-    fn copy_to_clipboard(&self, _text: &str) -> Result<(), InsertionRescueError> {
-        // 5pc.4: set CF_UNICODETEXT on the clipboard.
-        todo!("{UNIMPLEMENTED}: copy_to_clipboard")
+    fn copy_to_clipboard(&self, text: &str) -> Result<(), InsertionRescueError> {
+        set_clipboard_text(text).map_err(InsertionRescueError::new)
     }
 
-    fn notify_user(&self, _title: &str, _body: &str) -> Result<(), InsertionRescueError> {
-        // 5pc.4: WinRT toast (with a balloon/MessageBox fallback for dev-run).
-        todo!("{UNIMPLEMENTED}: notify_user")
+    fn notify_user(&self, title: &str, body: &str) -> Result<(), InsertionRescueError> {
+        notify_user(title, body).map_err(InsertionRescueError::new)
     }
+}
+
+/// Show a user-facing notification via `MessageBoxW` on a detached thread.
+///
+/// This is the OQ-2 fallback: unpackaged dev-run builds cannot post WinRT
+/// toasts without an AUMID/shortcut, and a message box needs no registration.
+/// The box is modal only to its own throwaway thread, so the dictation
+/// workflow never blocks on the user dismissing it. Unlike the macOS
+/// osascript path, `Ok` here means the box was dispatched, not shown — a
+/// `MessageBoxW` failure after detach can only be logged. `MB_SETFOREGROUND`
+/// does pull focus from the paste target, but a tray-resident app has no
+/// other guaranteed-visible surface for the rescue alert.
+fn notify_user(title: &str, body: &str) -> Result<(), String> {
+    let title = wide_null(title);
+    let body = wide_null(body);
+    std::thread::Builder::new()
+        .name("slugtale-notify".to_string())
+        .spawn(move || {
+            let shown = unsafe {
+                MessageBoxW(
+                    ptr::null_mut(),
+                    body.as_ptr(),
+                    title.as_ptr(),
+                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+                )
+            };
+            if shown == 0 {
+                eprintln!("slugtale: MessageBoxW failed to show the insertion-rescue notification");
+            }
+        })
+        .map_err(|error| format!("could not show notification: {error}"))?;
+    Ok(())
 }
 
 pub struct WindowsMicrophonePermissionSetup;
@@ -419,8 +455,8 @@ pub fn activate_app(_pid: i32) -> bool {
     todo!("{UNIMPLEMENTED}: activate_app")
 }
 
-/// Show a user-facing notification. Exposed for the Tauri layer; 5pc.4 provides
-/// the real toast/fallback implementation.
-pub fn notify(_title: &str, _body: &str) -> Result<(), String> {
-    todo!("{UNIMPLEMENTED}: notify")
+/// Show a user-facing notification. Exposed for the Tauri layer; parallels the
+/// macOS `notify` free function.
+pub fn notify(title: &str, body: &str) -> Result<(), String> {
+    notify_user(title, body)
 }
