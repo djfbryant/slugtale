@@ -25,3 +25,5 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
+# Claude Code worktrees (local working copies, never repo content)
+.claude/worktrees/
