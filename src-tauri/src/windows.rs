@@ -19,13 +19,16 @@
 //!   clipboard copy shared with the paste fallback, and a detached-thread
 //!   MessageBox notification — the OQ-2 fallback for unpackaged dev-run builds,
 //!   which cannot post WinRT toasts without an AUMID/shortcut).
-//! * 5pc.5 — focus targeting (`frontmost_app_pid`/`activate_app` via
-//!   `GetForegroundWindow`/`SetForegroundWindow`) and its wiring in main.rs.
+//! * 5pc.5 — focus targeting (implemented: `frontmost_app_pid` via
+//!   `GetForegroundWindow` + `GetWindowThreadProcessId`, `activate_app` via
+//!   `EnumWindows` + `SetForegroundWindow`, both wired in main.rs alongside
+//!   the macOS paths).
 //! * 5pc.6 — audible feedback (not a trait seam; `PlaySoundW`).
 //! * 5pc.7 — permission setup (`ms-settings:` deep link).
 //!
-//! Nothing here is wired into `main.rs` yet; issue 5pc.11 selects this adapter
-//! from `CurrentPlatform`.
+//! Focus targeting is wired into `main.rs` (capture at record start,
+//! reactivation before insertion); issue 5pc.11 wires the rest by selecting
+//! this adapter from `CurrentPlatform`.
 
 use crate::{
     ClipboardInsertionRescue, FinalTranscription, InsertionRescue, InsertionRescueError,
@@ -34,7 +37,7 @@ use crate::{
     TextInsertionPipeline, TextInsertionSystem,
 };
 use std::ptr;
-use windows_sys::Win32::Foundation::{GlobalFree, ERROR_SUCCESS, HANDLE, HWND};
+use windows_sys::Win32::Foundation::{GlobalFree, BOOL, ERROR_SUCCESS, HANDLE, HWND, LPARAM};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
@@ -46,7 +49,9 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     VK_CONTROL, VK_V,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
+    EnumWindows, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+    MessageBoxW, SetForegroundWindow, ShowWindow, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
+    SW_RESTORE,
 };
 
 const UNIMPLEMENTED: &str = "Windows Platform Adapter is not implemented yet (PRD slugtale-5pc)";
@@ -444,15 +449,66 @@ pub fn open_microphone_settings() -> Result<(), String> {
 
 /// The process id of the foreground window's owning app — captured at record
 /// start so insertion can re-target it (parallels the macOS `frontmost_app_pid`).
-/// 5pc.5 implements this via `GetForegroundWindow` + `GetWindowThreadProcessId`.
 pub fn frontmost_app_pid() -> Option<i32> {
-    todo!("{UNIMPLEMENTED}: frontmost_app_pid")
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return None;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    (pid != 0).then(|| pid as i32)
+}
+
+struct ActivateTarget {
+    pid: u32,
+    activated: bool,
 }
 
 /// Bring the app with `pid` back to the foreground before synthesized input.
-/// 5pc.5 implements this via `SetForegroundWindow`.
-pub fn activate_app(_pid: i32) -> bool {
-    todo!("{UNIMPLEMENTED}: activate_app")
+/// The pid-based seam matches macOS; the pid's window is re-found here because
+/// an HWND captured at record start could die while the user dictates. Like
+/// the macOS `activateWithOptions` path this works at app granularity — for a
+/// multi-window app it foregrounds the process's topmost visible window, not
+/// necessarily the exact window that had focus at record start.
+///
+/// Foreground-lock (PRD risk R3): the hotkey press grants Slugtale
+/// foreground-set rights, but transcription can take seconds and the right can
+/// lapse if the user clicks elsewhere meanwhile. A failed activation returns
+/// false and the caller proceeds; a misdirected insert then falls through the
+/// pipeline to the clipboard rescue like any other delivery failure.
+pub fn activate_app(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let mut target = ActivateTarget {
+        pid: pid as u32,
+        activated: false,
+    };
+    unsafe {
+        EnumWindows(
+            Some(activate_first_visible_window),
+            &mut target as *mut ActivateTarget as LPARAM,
+        );
+    }
+    target.activated
+}
+
+/// `EnumWindows` callback: activate the first visible top-level window owned by
+/// the target pid, restoring it first if minimized. Returns FALSE to stop
+/// enumerating once that window is found, whether or not activation succeeded —
+/// one attempt, like the macOS `activateWithOptions` call.
+unsafe extern "system" fn activate_first_visible_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let target = unsafe { &mut *(lparam as *mut ActivateTarget) };
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    if pid != target.pid || unsafe { IsWindowVisible(hwnd) } == 0 {
+        return 1;
+    }
+    if unsafe { IsIconic(hwnd) } != 0 {
+        unsafe { ShowWindow(hwnd, SW_RESTORE) };
+    }
+    target.activated = unsafe { SetForegroundWindow(hwnd) } != 0;
+    0
 }
 
 /// Show a user-facing notification. Exposed for the Tauri layer; parallels the

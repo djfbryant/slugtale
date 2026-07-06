@@ -163,7 +163,7 @@ fn apply_recording_feedback(
 
 fn capture_focus_target(app: &tauri::AppHandle) {
     let _ = app;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         let pid = slugtale_lib::frontmost_app_pid();
         if let Ok(mut guard) = app.state::<FocusTargetState>().0.lock() {
@@ -299,16 +299,17 @@ async fn complete_captured_dictation(
         .and_then(|guard| *guard);
 
     tauri::async_runtime::spawn_blocking(move || {
+        // Bring the user's app back to the front so synthesized keystrokes land
+        // in its focused field rather than wherever focus drifted (slugtale-squ).
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some(pid) = target_pid {
+            if slugtale_lib::activate_app(pid) {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+        }
+
         #[cfg(target_os = "macos")]
         {
-            // Bring the user's app back to the front so synthesized keystrokes land
-            // in its focused field rather than wherever focus drifted (slugtale-squ).
-            if let Some(pid) = target_pid {
-                if slugtale_lib::activate_app(pid) {
-                    std::thread::sleep(std::time::Duration::from_millis(120));
-                }
-            }
-
             // Without Accessibility trust every synthesized event is silently
             // dropped; insertion falls back to the clipboard rescue, so tell the
             // user how to fix it permanently (slugtale-avo).
