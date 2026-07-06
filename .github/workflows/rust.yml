@@ -54,9 +54,26 @@ jobs:
 
     defaults:
       run:
-        # Git Bash, so the tests/*.test.mjs glob expands and run-cargo.js
-        # resolves cargo from a POSIX-style PATH, same as the Linux job.
+        # Git Bash, so run-cargo.js resolves cargo from a POSIX-style PATH,
+        # same as the Linux job.
         shell: bash
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: Install dependencies
+      run: npm install
+    - name: Run project checks
+      run: npm test
+
+  checks-macos:
+    # macOS is the primary supported platform, but until now the maintainer's
+    # local runs were the only Mac signal — CI covered Ubuntu and Windows.
+    # Mirror the same npm test entry point so every PR reports Mac breakage
+    # before merge. cargo is preinstalled; no extra system packages needed.
+    runs-on: macos-latest
 
     steps:
     - uses: actions/checkout@v4
