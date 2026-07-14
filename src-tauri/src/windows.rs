@@ -4,9 +4,9 @@
 //! and focus-targeting seams so the core Dictation Workflow runs unchanged on
 //! Windows.
 //!
-//! This started as the scaffold from issue slugtale-5pc.1: the trait impls and
-//! free functions exist and compile, with the remaining `todo!()` bodies filled
-//! by the follow-on Windows issues:
+//! This started as the scaffold from issue slugtale-5pc.1; the follow-on
+//! Windows issues have since filled every body, so the adapter surface is
+//! complete:
 //!
 //! * 5pc.2 — `WindowsPlatform` readiness (implemented: mic ConsentStore read;
 //!   insertion is effectively always granted, since Windows has no
@@ -23,21 +23,27 @@
 //!   `GetForegroundWindow` + `GetWindowThreadProcessId`, `activate_app` via
 //!   `EnumWindows` + `SetForegroundWindow`, both wired in main.rs alongside
 //!   the macOS paths).
-//! * 5pc.6 — audible feedback (not a trait seam; `PlaySoundW`).
-//! * 5pc.7 — permission setup (`ms-settings:` deep link).
+//! * 5pc.6 — audible feedback (implemented: `PlaySoundW` with system event
+//!   aliases, called from the recording_feedback.rs Windows arm).
+//! * 5pc.7 — permission setup (implemented: mic deep-links to
+//!   `ms-settings:privacy-microphone` from the setup workflow's open phase,
+//!   since unpackaged apps have no prompt API; insertion permission is
+//!   trivially granted per OQ-1 — there is no gate, so request returns true
+//!   and open-settings is a documented no-op).
 //!
 //! Focus targeting is wired into `main.rs` (capture at record start,
 //! reactivation before insertion); issue 5pc.11 wires the rest by selecting
 //! this adapter from `CurrentPlatform`.
 
 use crate::{
-    ClipboardInsertionRescue, FinalTranscription, InsertionRescue, InsertionRescueError,
-    InsertionRescueOutcome, InsertionRescueSystem, MicrophonePermissionSetup, PlatformReadiness,
-    TextInsertion, TextInsertionError, TextInsertionOutcome, TextInsertionPermissionSetup,
-    TextInsertionPipeline, TextInsertionSystem,
+    ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
+    InsertionRescueError, InsertionRescueOutcome, InsertionRescueSystem, MicrophonePermissionSetup,
+    PlatformReadiness, TextInsertion, TextInsertionError, TextInsertionOutcome,
+    TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem,
 };
 use std::ptr;
 use windows_sys::Win32::Foundation::{GlobalFree, BOOL, ERROR_SUCCESS, HANDLE, HWND, LPARAM};
+use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
@@ -54,7 +60,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SW_RESTORE,
 };
 
-const UNIMPLEMENTED: &str = "Windows Platform Adapter is not implemented yet (PRD slugtale-5pc)";
 const MICROPHONE_CONSENT_KEY: &str =
     r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
 const MICROPHONE_CONSENT_VALUE: &str = "Value";
@@ -414,12 +419,38 @@ fn notify_user(title: &str, body: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Play the audible dictation cue through winmm using system event aliases, so
+/// v1 ships no bundled audio assets (the Windows analog of the afplay arm in
+/// recording_feedback.rs). SND_ASYNC returns immediately so the recording
+/// lifecycle never blocks on audio.
+pub(crate) fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
+    // Asterisk is the softer "information" chime for the start edge; Default is
+    // the plain system ding for the stop edge — the closest asset-free pairing
+    // to the macOS Tink/Pop cues.
+    let alias = match sound {
+        DictationSound::Start => "SystemAsterisk",
+        DictationSound::Stop => "SystemDefault",
+    };
+    let alias = wide_null(alias);
+    let played = unsafe { PlaySoundW(alias.as_ptr(), ptr::null_mut(), SND_ALIAS | SND_ASYNC) };
+    if played == 0 {
+        return Err(std::io::Error::other(
+            "PlaySoundW could not play the system sound",
+        ));
+    }
+    Ok(())
+}
+
 pub struct WindowsMicrophonePermissionSetup;
 
 impl MicrophonePermissionSetup for WindowsMicrophonePermissionSetup {
     fn request_microphone_access(&self) -> Result<(), String> {
-        // 5pc.7: no in-app prompt on Windows; deep-link to Settings instead.
-        todo!("{UNIMPLEMENTED}: request_microphone_access")
+        // Windows has no per-process prompt API for unpackaged desktop apps —
+        // mic consent is the global ConsentStore toggle read by readiness.
+        // `run_microphone_permission_setup` invokes the open phase next, which
+        // performs the single Settings deep link; launching it here too would
+        // open the page twice.
+        Ok(())
     }
 
     fn open_microphone_settings(&self) -> Result<(), String> {
@@ -431,20 +462,36 @@ pub struct WindowsTextInsertionPermissionSetup;
 
 impl TextInsertionPermissionSetup for WindowsTextInsertionPermissionSetup {
     fn request_text_insertion_access(&self) -> Result<bool, String> {
-        // 5pc.7 / OQ-1: Windows has no insertion-trust gate to request.
-        todo!("{UNIMPLEMENTED}: request_text_insertion_access")
+        // OQ-1: Windows has no accessibility-trust gate — synthesized input is
+        // always permitted (UIPI against elevated targets is a delivery
+        // failure, not a permission), so the request trivially succeeds.
+        Ok(true)
     }
 
     fn open_text_insertion_settings(&self) -> Result<(), String> {
-        // 5pc.7 / OQ-1: no accessibility-settings deep link exists on Windows.
-        todo!("{UNIMPLEMENTED}: open_text_insertion_settings")
+        // OQ-1: no settings page exists for a gate that does not exist. This is
+        // an intentional no-op; readiness always reports insertion granted, so
+        // the settings UI never needs to route users here (UI copy is
+        // reconciled in 5pc.12).
+        Ok(())
     }
 }
 
-/// Deep-link to the Windows microphone privacy page. 5pc.7 launches
-/// `ms-settings:privacy-microphone`.
+/// Deep-link to the Windows microphone privacy page, where the global "let
+/// desktop apps access your microphone" toggle lives.
 pub fn open_microphone_settings() -> Result<(), String> {
-    todo!("{UNIMPLEMENTED}: open_microphone_settings")
+    open_settings_uri("ms-settings:privacy-microphone")
+}
+
+/// Launch an `ms-settings:` URI. `explorer` resolves the URI through the shell
+/// without flashing a console window, following the `open_path` precedent in
+/// local_model.rs; the spawned helper returns immediately.
+fn open_settings_uri(uri: &str) -> Result<(), String> {
+    std::process::Command::new("explorer")
+        .arg(uri)
+        .spawn()
+        .map_err(|error| format!("could not open Windows Settings: {error}"))?;
+    Ok(())
 }
 
 /// The process id of the foreground window's owning app — captured at record
