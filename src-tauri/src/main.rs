@@ -331,10 +331,21 @@ async fn complete_captured_dictation(
             workflow.complete(audio).map_err(|error| error.to_string())
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            let insertion = slugtale_lib::WindowsTextInsertion::new();
+            let rescue = slugtale_lib::WindowsInsertionRescue::new();
+            let runtime = DiagnosticAsrRuntime::new(&*runtime, diagnostic_log.clone());
+            let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
+            let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
+            let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
+            workflow.complete(audio).map_err(|error| error.to_string())
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             let _ = (runtime, audio, target_pid);
-            Err("text insertion is only implemented for macOS".to_string())
+            Err("text insertion is not implemented for this platform".to_string())
         }
     })
     .await
@@ -531,9 +542,16 @@ fn open_microphone_settings() -> Result<(), String> {
         );
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        Err("microphone settings shortcut is only implemented for macOS".to_string())
+        return slugtale_lib::run_microphone_permission_setup(
+            &slugtale_lib::WindowsMicrophonePermissionSetup,
+        );
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("microphone settings shortcut is not implemented for this platform".to_string())
     }
 }
 
@@ -547,9 +565,17 @@ fn open_text_insertion_settings() -> Result<(), String> {
         .map(|_| ());
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        Err("text insertion settings shortcut is only implemented for macOS".to_string())
+        return slugtale_lib::run_text_insertion_permission_setup(
+            &slugtale_lib::WindowsTextInsertionPermissionSetup,
+        )
+        .map(|_| ());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("text insertion settings shortcut is not implemented for this platform".to_string())
     }
 }
 
@@ -702,6 +728,11 @@ impl CurrentPlatform {
     fn macos_platform(&self) -> slugtale_lib::MacosPlatform {
         slugtale_lib::MacosPlatform::new()
     }
+
+    #[cfg(target_os = "windows")]
+    fn windows_platform(&self) -> slugtale_lib::WindowsPlatform {
+        slugtale_lib::WindowsPlatform::new()
+    }
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -774,7 +805,12 @@ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
             return self.macos_platform().microphone_granted();
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            return self.windows_platform().microphone_granted();
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             false
         }
@@ -786,7 +822,12 @@ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
             return self.macos_platform().insertion_granted();
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            return self.windows_platform().insertion_granted();
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             false
         }
