@@ -113,7 +113,15 @@ fn play_sound(sound: DictationSound) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn play_sound(sound: DictationSound) -> std::io::Result<()> {
+    // The Win32 call lives in the platform adapter (ADR-0021) so this module
+    // stays free of OS bindings; slugtale-yn9 tracks moving the afplay arm
+    // above behind the same boundary.
+    crate::windows::play_dictation_sound(sound)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn play_sound(_sound: DictationSound) -> std::io::Result<()> {
     // Other platforms get audible feedback once their Platform Adapter lands
     // (ADR-0021); the recording lifecycle stays platform-agnostic until then.
