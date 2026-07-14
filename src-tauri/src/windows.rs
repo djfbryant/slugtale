@@ -31,9 +31,9 @@
 //!   trivially granted per OQ-1 — there is no gate, so request returns true
 //!   and open-settings is a documented no-op).
 //!
-//! Focus targeting is wired into `main.rs` (capture at record start,
-//! reactivation before insertion); issue 5pc.11 wires the rest by selecting
-//! this adapter from `CurrentPlatform`.
+//! The adapter is selected from `CurrentPlatform` in `main.rs`, which also
+//! wires permission commands and the transcription insertion/rescue workflow
+//! on Windows (5pc.11).
 
 use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
