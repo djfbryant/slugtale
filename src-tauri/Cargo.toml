@@ -57,3 +57,17 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Ole",
     "Win32_Media_Audio",
 ] }
+
+# Linux Platform Adapter — X11 slice (ADR-0021, ADR-0023, PRD slugtale-8ul).
+# Mirrors the macOS/Windows native-dependency blocks so no platform pulls
+# another's crates. enigo synthesizes text/keystrokes over XTEST (text
+# insertion + Ctrl+V paste, 8ul.3); arboard owns the X11 clipboard selection
+# for the paste fallback and the insertion rescue (8ul.3/8ul.4); x11rb reads
+# and re-activates _NET_ACTIVE_WINDOW for focus targeting (8ul.5); notify-rust
+# posts the D-Bus rescue notification (8ul.4). enigo uses its pure-Rust x11rb
+# backend (no libxdo C dependency); Wayland/libei backends are added in Phase 2.
+[target.'cfg(target_os = "linux")'.dependencies]
+enigo = { version = "0.6", default-features = false, features = ["x11rb"] }
+arboard = "3.6"
+x11rb = "0.13"
+notify-rust = "4"

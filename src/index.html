@@ -547,18 +547,54 @@
       speed_profile: "balanced"
     };
 
+    // Permission guidance is worded per platform: macOS and Windows gate
+    // microphone and (on macOS) text insertion behind OS permission panels,
+    // while Linux has no per-process gate — the checks confirm a mic is present
+    // and the session is X11 (ADR-0021, ADR-0023).
+    const PLATFORM = (() => {
+      const ua = (typeof navigator !== "undefined" ? navigator.userAgent || "" : "").toLowerCase();
+      if (ua.includes("windows")) return "windows";
+      if (ua.includes("mac os") || ua.includes("macintosh")) return "macos";
+      if (ua.includes("linux") || ua.includes("x11")) return "linux";
+      return "macos";
+    })();
+
+    const GUIDANCE_BY_PLATFORM = {
+      macos: {
+        microphone: "Open macOS Privacy & Security and allow Slugtale to capture audio.",
+        text_insertion: "Open macOS Accessibility and allow Slugtale to write into the current text target."
+      },
+      windows: {
+        microphone: "Open Windows microphone privacy settings and let desktop apps access your microphone.",
+        text_insertion: "No setup needed — Windows lets Slugtale type into the focused app."
+      },
+      linux: {
+        microphone: "Connect a microphone. Linux has no per-app permission — Slugtale just needs an input device.",
+        text_insertion: "Use an X11 session. Slugtale types into other apps on X11; Wayland support is coming."
+      }
+    };
+
+    const READINESS_ACTIONS_BY_PLATFORM = {
+      macos: {
+        microphone: { command: "open_microphone_settings", label: "Open Privacy" },
+        text_insertion: { command: "open_text_insertion_settings", label: "Open Accessibility" }
+      },
+      windows: {
+        microphone: { command: "open_microphone_settings", label: "Open Settings" }
+      },
+      linux: {
+        microphone: { command: "open_microphone_settings", label: "Open Sound Settings" }
+      }
+    };
+
     const guidance = {
-      microphone: "Open macOS Privacy & Security and allow Slugtale to capture audio.",
-      text_insertion: "Open macOS Accessibility and allow Slugtale to write into the current text target.",
+      ...GUIDANCE_BY_PLATFORM[PLATFORM],
       hotkey: "Choose the hotkey that starts dictation while another app has focus.",
       local_model: "Download the local model before transcription can run.",
       launch_at_login: "Optional. Start Slugtale automatically when you sign in."
     };
 
-    const readinessActions = {
-      microphone: { command: "open_microphone_settings", label: "Open Privacy" },
-      text_insertion: { command: "open_text_insertion_settings", label: "Open Accessibility" }
-    };
+    const readinessActions = READINESS_ACTIONS_BY_PLATFORM[PLATFORM] || {};
 
     let downloading = false;
     let savingSettings = false;
@@ -911,7 +947,9 @@
 
       renderSettings(
         currentSettings,
-        "Still not granted. Grant access in macOS Privacy & Security, then reopen this window."
+        PLATFORM === "linux"
+          ? "Still not ready. Connect a microphone or switch to an X11 session, then reopen this window."
+          : "Still not granted. Grant access in your system settings, then reopen this window."
       );
     }
 
@@ -925,7 +963,7 @@
         await invoke(action.command);
         renderSettings(
           currentSettings,
-          "Checking permission. If macOS opens Privacy & Security, grant access there and return here."
+          "Checking permission. If a system settings panel opens, make the change there and return here."
         );
         await pollReadinessUntilReady(itemId);
       } catch (error) {

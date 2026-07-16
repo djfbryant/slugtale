@@ -49,6 +49,7 @@ function loadSettingsScript({ invoke }) {
 
   const context = {
     console,
+    navigator: { userAgent: "Mozilla/5.0 (X11; Linux x86_64)" },
     document: {
       createElement,
       getElementById: element
@@ -136,9 +137,11 @@ test("readiness permission action shows not-yet-granted message after polling ti
   }
   await action;
 
+  // The harness runs with a Linux (X11) navigator, so the copy is the
+  // platform-aware Linux variant (guidance rather than an OS permission grant).
   assert.equal(
     elements.get("settings-message").textContent,
-    "Still not granted. Grant access in macOS Privacy & Security, then reopen this window."
+    "Still not ready. Connect a microphone or switch to an X11 session, then reopen this window."
   );
 });
 

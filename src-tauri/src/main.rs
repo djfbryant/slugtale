@@ -163,7 +163,7 @@ fn apply_recording_feedback(
 
 fn capture_focus_target(app: &tauri::AppHandle) {
     let _ = app;
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         let pid = slugtale_lib::frontmost_app_pid();
         if let Ok(mut guard) = app.state::<FocusTargetState>().0.lock() {
@@ -301,7 +301,7 @@ async fn complete_captured_dictation(
     tauri::async_runtime::spawn_blocking(move || {
         // Bring the user's app back to the front so synthesized keystrokes land
         // in its focused field rather than wherever focus drifted (slugtale-squ).
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         if let Some(pid) = target_pid {
             if slugtale_lib::activate_app(pid) {
                 std::thread::sleep(std::time::Duration::from_millis(120));
@@ -342,7 +342,31 @@ async fn complete_captured_dictation(
             workflow.complete(audio).map_err(|error| error.to_string())
         }
 
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        #[cfg(target_os = "linux")]
+        {
+            // On a Wayland session synthesized input is not yet supported; the
+            // insertion still runs and falls through to the clipboard rescue,
+            // but tell the user why so their transcription is not silently lost
+            // (mirrors the macOS Accessibility notice above).
+            if !slugtale_lib::detect_session().is_supported() {
+                let _ = slugtale_lib::notify(
+                    "Slugtale needs an X11 session",
+                    "Slugtale currently types into other apps only on an X11 session. Until you \
+                     switch to X11 your transcription is copied to the clipboard \u{2014} paste it \
+                     with Ctrl+V.",
+                );
+            }
+
+            let insertion = slugtale_lib::LinuxTextInsertion::new();
+            let rescue = slugtale_lib::LinuxInsertionRescue::new();
+            let runtime = DiagnosticAsrRuntime::new(&*runtime, diagnostic_log.clone());
+            let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
+            let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
+            let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
+            workflow.complete(audio).map_err(|error| error.to_string())
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         {
             let _ = (runtime, audio, target_pid);
             Err("text insertion is not implemented for this platform".to_string())
@@ -549,7 +573,14 @@ fn open_microphone_settings() -> Result<(), String> {
         );
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        return slugtale_lib::run_microphone_permission_setup(
+            &slugtale_lib::LinuxMicrophonePermissionSetup,
+        );
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Err("microphone settings shortcut is not implemented for this platform".to_string())
     }
@@ -573,7 +604,15 @@ fn open_text_insertion_settings() -> Result<(), String> {
         .map(|_| ());
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        return slugtale_lib::run_text_insertion_permission_setup(
+            &slugtale_lib::LinuxTextInsertionPermissionSetup,
+        )
+        .map(|_| ());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Err("text insertion settings shortcut is not implemented for this platform".to_string())
     }
@@ -733,6 +772,11 @@ impl CurrentPlatform {
     fn windows_platform(&self) -> slugtale_lib::WindowsPlatform {
         slugtale_lib::WindowsPlatform::new()
     }
+
+    #[cfg(target_os = "linux")]
+    fn linux_platform(&self) -> slugtale_lib::LinuxPlatform {
+        slugtale_lib::LinuxPlatform::new()
+    }
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -810,7 +854,12 @@ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
             return self.windows_platform().microphone_granted();
         }
 
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        #[cfg(target_os = "linux")]
+        {
+            return self.linux_platform().microphone_granted();
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         {
             false
         }
@@ -827,7 +876,12 @@ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
             return self.windows_platform().insertion_granted();
         }
 
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        #[cfg(target_os = "linux")]
+        {
+            return self.linux_platform().insertion_granted();
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         {
             false
         }

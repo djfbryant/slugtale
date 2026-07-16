@@ -121,7 +121,14 @@ fn play_sound(sound: DictationSound) -> std::io::Result<()> {
     crate::windows::play_dictation_sound(sound)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn play_sound(sound: DictationSound) -> std::io::Result<()> {
+    // The XDG sound-theme call lives in the platform adapter (ADR-0021) so this
+    // module stays free of OS specifics, matching the Windows arm above.
+    crate::linux::play_dictation_sound(sound)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn play_sound(_sound: DictationSound) -> std::io::Result<()> {
     // Other platforms get audible feedback once their Platform Adapter lands
     // (ADR-0021); the recording lifecycle stays platform-agnostic until then.

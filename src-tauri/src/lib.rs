@@ -74,3 +74,17 @@ pub use windows::{
     WindowsMicrophonePermissionSetup, WindowsPlatform, WindowsTextInsertion,
     WindowsTextInsertionPermissionSetup,
 };
+
+/// Linux implementation of platform adapters (ADR-0021, ADR-0023, PRD
+/// slugtale-8ul). Mirrors the macOS/Windows adapter surface so the core
+/// Dictation Workflow runs unchanged on Linux. Phase 1 targets X11 (Mint
+/// Cinnamon); Wayland support is phased second.
+#[cfg(target_os = "linux")]
+mod linux;
+
+#[cfg(target_os = "linux")]
+pub use linux::{
+    activate_app, detect_session, frontmost_app_pid, notify, open_microphone_settings,
+    DisplayServerSession, LinuxInsertionRescue, LinuxMicrophonePermissionSetup, LinuxPlatform,
+    LinuxTextInsertion, LinuxTextInsertionPermissionSetup,
+};
