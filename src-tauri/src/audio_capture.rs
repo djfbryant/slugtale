@@ -163,10 +163,54 @@ pub trait AudioRecorder {
 
 pub type AudioLevelCallback = std::sync::Arc<dyn Fn(f32) + Send + Sync + 'static>;
 
+/// Publishes the dictation waveform level from the audio callback to a
+/// dedicated emitter thread. The audio callback must stay real-time safe — a
+/// Tauri `emit` (IPC into the webview) from inside it stalls the ALSA/PipeWire
+/// period and the driver drops capture buffers, garbling transcription
+/// (slugtale-65l) — so the callback only stores the latest level in an atomic
+/// and the emitter thread forwards it at a UI cadence.
+struct LevelEmitter {
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+impl LevelEmitter {
+    const EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+
+    fn spawn(
+        level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        callback: AudioLevelCallback,
+    ) -> std::io::Result<Self> {
+        use std::sync::atomic::Ordering;
+
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let thread_running = running.clone();
+        let handle = std::thread::Builder::new()
+            .name("slugtale-audio-level".to_string())
+            .spawn(move || {
+                while thread_running.load(Ordering::Relaxed) {
+                    callback(f32::from_bits(level_bits.load(Ordering::Relaxed)));
+                    std::thread::sleep(Self::EMIT_INTERVAL);
+                }
+            })?;
+        Ok(Self { running, handle })
+    }
+
+    /// Stop and join the emitter so no stale level is emitted after the
+    /// recording ends (the Tauri layer resets the waveform to zero right after).
+    fn stop(self) {
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let _ = self.handle.join();
+    }
+}
+
 #[derive(Default)]
 pub struct CpalAudioRecorder {
     stream: Option<cpal::Stream>,
     buffer: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+    level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    level_emitter: Option<LevelEmitter>,
     sample_rate_hz: u32,
     channels: u16,
     level_callback: Option<AudioLevelCallback>,
@@ -185,7 +229,7 @@ impl CpalAudioRecorder {
         device: &cpal::Device,
         config: &cpal::StreamConfig,
         buffer: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
-        level_callback: Option<AudioLevelCallback>,
+        level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
     ) -> Result<cpal::Stream, AudioCaptureError>
     where
         T: cpal::SizedSample,
@@ -198,16 +242,27 @@ impl CpalAudioRecorder {
             .build_input_stream(
                 config.clone(),
                 move |data: &[T], _: &cpal::InputCallbackInfo| {
-                    let converted = data
-                        .iter()
-                        .copied()
-                        .map(f32::from_sample)
-                        .collect::<Vec<_>>();
-                    if let Ok(mut samples) = buffer.try_lock() {
-                        samples.extend(converted.iter().copied());
+                    // Real-time audio callback: no allocation, no IPC, and no
+                    // dropped chunks. A blocking `lock` is safe here — the only
+                    // other holders (start's clear, stop's drain) run outside
+                    // active capture and hold it briefly — whereas the previous
+                    // `try_lock` silently discarded whole chunks under
+                    // contention, leaving gaps in the dictation (slugtale-65l).
+                    let mut sum_of_squares = 0.0f32;
+                    if let Ok(mut samples) = buffer.lock() {
+                        samples.reserve(data.len());
+                        for value in data.iter().copied() {
+                            let sample = f32::from_sample(value);
+                            sum_of_squares += sample.clamp(-1.0, 1.0).powi(2);
+                            samples.push(sample);
+                        }
                     }
-                    if let Some(callback) = &level_callback {
-                        callback(voice_level_from_rms(audio_level_from_samples(&converted)));
+                    if !data.is_empty() {
+                        let rms = (sum_of_squares / data.len() as f32).sqrt().clamp(0.0, 1.0);
+                        level_bits.store(
+                            voice_level_from_rms(rms).to_bits(),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
                     }
                 },
                 move |error| {
@@ -218,6 +273,14 @@ impl CpalAudioRecorder {
             .map_err(|error| AudioCaptureError::new(error.to_string()))?;
 
         Ok(stream)
+    }
+
+    fn stop_level_emitter(&mut self) {
+        if let Some(emitter) = self.level_emitter.take() {
+            emitter.stop();
+        }
+        self.level_bits
+            .store(0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -243,54 +306,56 @@ impl AudioRecorder for CpalAudioRecorder {
             .map_err(|_| AudioCaptureError::new("audio buffer mutex poisoned"))?
             .clear();
 
+        self.level_bits
+            .store(0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
         let stream = match sample_format {
             cpal::SampleFormat::I8 => Self::build_stream::<i8>(
                 &device,
                 &config,
                 self.buffer.clone(),
-                self.level_callback.clone(),
+                self.level_bits.clone(),
             ),
             cpal::SampleFormat::I16 => Self::build_stream::<i16>(
                 &device,
                 &config,
                 self.buffer.clone(),
-                self.level_callback.clone(),
+                self.level_bits.clone(),
             ),
             cpal::SampleFormat::I32 => Self::build_stream::<i32>(
                 &device,
                 &config,
                 self.buffer.clone(),
-                self.level_callback.clone(),
+                self.level_bits.clone(),
             ),
             cpal::SampleFormat::U8 => Self::build_stream::<u8>(
                 &device,
                 &config,
                 self.buffer.clone(),
-                self.level_callback.clone(),
+                self.level_bits.clone(),
             ),
             cpal::SampleFormat::U16 => Self::build_stream::<u16>(
                 &device,
                 &config,
                 self.buffer.clone(),
-                self.level_callback.clone(),
+                self.level_bits.clone(),
             ),
             cpal::SampleFormat::U32 => Self::build_stream::<u32>(
                 &device,
                 &config,
                 self.buffer.clone(),
-                self.level_callback.clone(),
+                self.level_bits.clone(),
             ),
             cpal::SampleFormat::F32 => Self::build_stream::<f32>(
                 &device,
                 &config,
                 self.buffer.clone(),
-                self.level_callback.clone(),
+                self.level_bits.clone(),
             ),
             cpal::SampleFormat::F64 => Self::build_stream::<f64>(
                 &device,
                 &config,
                 self.buffer.clone(),
-                self.level_callback.clone(),
+                self.level_bits.clone(),
             ),
             other => {
                 return Err(AudioCaptureError::new(format!(
@@ -303,11 +368,20 @@ impl AudioRecorder for CpalAudioRecorder {
             .play()
             .map_err(|error| AudioCaptureError::new(error.to_string()))?;
         self.stream = Some(stream);
+
+        if let Some(callback) = self.level_callback.clone() {
+            match LevelEmitter::spawn(self.level_bits.clone(), callback) {
+                Ok(emitter) => self.level_emitter = Some(emitter),
+                // The waveform is cosmetic; capture must not fail without it.
+                Err(error) => eprintln!("could not start audio level emitter: {error}"),
+            }
+        }
         Ok(())
     }
 
     fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
         self.stream.take();
+        self.stop_level_emitter();
         let samples = {
             let mut guard = self
                 .buffer
@@ -321,6 +395,7 @@ impl AudioRecorder for CpalAudioRecorder {
 
     fn cancel(&mut self) -> Result<(), AudioCaptureError> {
         self.stream.take();
+        self.stop_level_emitter();
         self.buffer
             .lock()
             .map_err(|_| AudioCaptureError::new("audio buffer mutex poisoned"))?
