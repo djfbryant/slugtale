@@ -69,8 +69,22 @@ fn decode_strategy_for_speed_profile(profile: SpeedProfile) -> WhisperDecodeStra
 fn recommended_whisper_decode_settings(profile: SpeedProfile) -> WhisperDecodeSettings {
     whisper_decode_settings_for_available_threads(
         profile,
-        std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+        whisper_thread_count(
+            num_cpus::get_physical(),
+            std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+        ),
     )
+}
+
+/// How many threads Whisper decoding should use: the physical core count,
+/// clamped to the parallelism this process may actually use. ggml's compute
+/// threads contend on shared execution units, so running one per SMT sibling
+/// is much slower than one per core — 4x slower on the 6C/12T Linux reference
+/// machine (slugtale-jwy). `physical_cores` of 0 means detection failed; fall
+/// back to the available parallelism.
+#[cfg(any(test, feature = "local-whisper-runtime"))]
+fn whisper_thread_count(physical_cores: usize, available: NonZeroUsize) -> NonZeroUsize {
+    NonZeroUsize::new(physical_cores.min(available.get())).unwrap_or(available)
 }
 
 #[cfg(any(test, feature = "local-whisper-runtime"))]
@@ -380,6 +394,36 @@ mod tests {
         assert_eq!(
             decode_strategy_for_speed_profile(SpeedProfile::Accurate),
             WhisperDecodeStrategy::BeamSearch { beam_size: 5 }
+        );
+    }
+
+    #[test]
+    fn whisper_threads_prefer_physical_cores_over_smt_siblings() {
+        // ggml's compute threads contend on shared FP units, so hyperthread
+        // siblings slow decoding down instead of speeding it up: on the 6C/12T
+        // Linux reference box an 11s clip took 6.1s with 12 threads vs 1.6s with
+        // 6 (slugtale-jwy). Use the physical core count, never the SMT total.
+        assert_eq!(
+            whisper_thread_count(6, NonZeroUsize::new(12).unwrap()),
+            NonZeroUsize::new(6).unwrap()
+        );
+    }
+
+    #[test]
+    fn whisper_threads_never_exceed_available_parallelism() {
+        // A containerized/affinity-restricted process can see fewer logical CPUs
+        // than the machine has physical cores; stay within what we may use.
+        assert_eq!(
+            whisper_thread_count(8, NonZeroUsize::new(4).unwrap()),
+            NonZeroUsize::new(4).unwrap()
+        );
+    }
+
+    #[test]
+    fn whisper_threads_fall_back_to_available_parallelism_when_physical_unknown() {
+        assert_eq!(
+            whisper_thread_count(0, NonZeroUsize::new(8).unwrap()),
+            NonZeroUsize::new(8).unwrap()
         );
     }
 
