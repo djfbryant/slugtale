@@ -40,18 +40,71 @@ pub fn captured_audio_from_interleaved_input(
         return Ok(CapturedAudio::mono_16khz(mono));
     }
 
-    let target_len = ((mono.len() as f64) * 16_000.0 / sample_rate_hz as f64).round() as usize;
+    let ratio = sample_rate_hz as f64 / 16_000.0;
+    let target_len = ((mono.len() as f64) / ratio).round() as usize;
     let mut resampled = Vec::with_capacity(target_len);
-    for index in 0..target_len {
-        let source_position = index as f64 * sample_rate_hz as f64 / 16_000.0;
-        let left = source_position.floor() as usize;
-        let right = (left + 1).min(mono.len().saturating_sub(1));
-        let fraction = (source_position - left as f64) as f32;
-        let sample = mono[left] + (mono[right] - mono[left]) * fraction;
-        resampled.push(sample);
+
+    if sample_rate_hz > 16_000 {
+        // Downsampling. Average each output sample over its whole source window
+        // (a box filter) so content above the 8 kHz Nyquist limit is band-limited
+        // away instead of aliasing into the speech band. Point/linear sampling
+        // here folds high-frequency mic content down as noise and garbles Whisper
+        // on 44.1/48 kHz mics (slugtale-8dj).
+        for index in 0..target_len {
+            let start = index as f64 * ratio;
+            let end = start + ratio;
+            resampled.push(window_average(&mono, start, end));
+        }
+    } else {
+        // Upsampling (sub-16 kHz mics, rare). Linear interpolation is smooth and
+        // adds no aliasing when moving to a higher rate.
+        for index in 0..target_len {
+            let source_position = index as f64 * ratio;
+            let left = source_position.floor() as usize;
+            let right = (left + 1).min(mono.len().saturating_sub(1));
+            let fraction = (source_position - left as f64) as f32;
+            let sample = mono[left] + (mono[right] - mono[left]) * fraction;
+            resampled.push(sample);
+        }
     }
 
     Ok(CapturedAudio::mono_16khz(resampled))
+}
+
+/// Average the mono signal over the source-sample window `[start, end)`,
+/// treating each input sample as covering a unit-width cell. This box filter
+/// band-limits the signal ahead of decimation so downsampling to 16 kHz does not
+/// alias high-frequency microphone content into the speech band.
+fn window_average(mono: &[f32], start: f64, end: f64) -> f32 {
+    let len = mono.len();
+    if len == 0 {
+        return 0.0;
+    }
+    let start = start.max(0.0);
+    let end = end.min(len as f64);
+    if end <= start {
+        return mono[(start as usize).min(len - 1)];
+    }
+
+    let first = start.floor() as usize;
+    let last = (end.ceil() as usize).min(len);
+    let mut weighted = 0.0f64;
+    let mut total = 0.0f64;
+    for (offset, &value) in mono[first..last].iter().enumerate() {
+        let cell_start = (first + offset) as f64;
+        let cell_end = cell_start + 1.0;
+        let overlap = cell_end.min(end) - cell_start.max(start);
+        if overlap > 0.0 {
+            weighted += value as f64 * overlap;
+            total += overlap;
+        }
+    }
+
+    if total > 0.0 {
+        (weighted / total) as f32
+    } else {
+        mono[first.min(len - 1)]
+    }
 }
 
 pub fn audio_level_from_samples(samples: &[f32]) -> f32 {
@@ -351,7 +404,37 @@ mod tests {
         .unwrap();
 
         assert_eq!(audio.sample_rate_hz, 16_000);
-        assert_eq!(audio.samples, vec![0.0, 0.9]);
+        // 48 kHz -> 16 kHz is a 3x downsample: each output sample is the average
+        // of its three-sample source window (band-limiting), not every third
+        // sample. Window [0,3) = mean(0.0, 0.3, 0.6); window [3,6) = mean(0.9,
+        // 1.0, 0.7).
+        assert_eq!(audio.samples.len(), 2);
+        assert!((audio.samples[0] - 0.3).abs() < 1e-4);
+        assert!((audio.samples[1] - 0.866_666_7).abs() < 1e-4);
+    }
+
+    #[test]
+    fn downsampling_attenuates_a_nyquist_tone_instead_of_aliasing_it() {
+        // A full-amplitude tone at the input Nyquist frequency (here 16 kHz in a
+        // 32 kHz signal, the alternating +1/-1 sequence) is above the 8 kHz
+        // Nyquist limit of the 16 kHz target. Without a band-limiting filter it
+        // aliases straight into the speech band at full amplitude; with one it is
+        // averaged away. This is the fricative/sibilant garble that made 48 kHz
+        // mic dictation far worse than macOS 16 kHz-native capture (slugtale-8dj).
+        let audio = captured_audio_from_interleaved_input(
+            32_000,
+            1,
+            &[1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0],
+        )
+        .unwrap();
+
+        assert_eq!(audio.sample_rate_hz, 16_000);
+        for sample in &audio.samples {
+            assert!(
+                sample.abs() < 0.1,
+                "Nyquist tone should be attenuated, got {sample}"
+            );
+        }
     }
 
     #[test]
