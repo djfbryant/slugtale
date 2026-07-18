@@ -61,8 +61,12 @@ A build run directly by a developer from the source tree rather than a signed in
 _Avoid_: Prototype, dev mode
 
 **Platform Adapter**:
-An implementation boundary around operating-system-specific behavior such as hotkeys, permissions, audio capture, and text insertion. Slugtale's first implementation target is macOS, but platform adapters must keep Windows support visible.
+An implementation boundary around operating-system-specific behavior such as hotkeys, permissions, audio capture, and text insertion. Slugtale's first implementation target is macOS, but platform adapters must keep Windows and Linux support visible.
 _Avoid_: OS helper, native bridge
+
+**Display Server Session**:
+The kind of graphical session a Linux user is signed into — X11 or Wayland. The session kind determines whether Slugtale can grab hotkeys and synthesize text insertion directly, so Slugtale must detect it and tell the user when a session kind is not yet supported.
+_Avoid_: Window system, graphics mode
 
 **Launch at Login**:
 The setting that starts Slugtale automatically when the user signs in. Slugtale asks about launch at login during onboarding instead of enabling it silently.

@@ -118,11 +118,13 @@ pub struct LocalWhisperRuntime {
     // rebuilding the cached model context, which the profile does not affect.
     speed_profile: Mutex<SpeedProfile>,
     // The loaded model is expensive to read and parse, so it is initialized once
-    // and reused across transcriptions rather than rebuilt on every call.
+    // and reused across transcriptions rather than rebuilt on every call. The
+    // mutex also owns the model lifetime: shutdown takes it before dropping the
+    // context, so Metal initialization or transcription cannot race process exit.
     #[cfg(feature = "local-whisper-runtime")]
-    context: std::sync::OnceLock<whisper_rs::WhisperContext>,
+    context: Mutex<Option<whisper_rs::WhisperContext>>,
     #[cfg(feature = "local-whisper-runtime")]
-    context_init: Mutex<()>,
+    shutting_down: std::sync::atomic::AtomicBool,
 }
 
 impl LocalWhisperRuntime {
@@ -131,9 +133,9 @@ impl LocalWhisperRuntime {
             model_path,
             speed_profile: Mutex::new(SpeedProfile::default()),
             #[cfg(feature = "local-whisper-runtime")]
-            context: std::sync::OnceLock::new(),
+            context: Mutex::new(None),
             #[cfg(feature = "local-whisper-runtime")]
-            context_init: Mutex::new(()),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -170,12 +172,20 @@ pub struct WhisperRuntimeCache(Mutex<WhisperRuntimeCacheState>);
 struct WhisperRuntimeCacheState {
     runtime: Option<Arc<LocalWhisperRuntime>>,
     warming_model_path: Option<std::path::PathBuf>,
+    shutting_down: bool,
 }
 
 impl WhisperRuntimeCache {
     pub fn runtime_for(&self, model_path: &std::path::Path) -> Arc<LocalWhisperRuntime> {
         let mut state = self.0.lock().expect("whisper runtime cache mutex poisoned");
-        Self::runtime_for_locked(&mut state, model_path)
+        let runtime = Self::runtime_for_locked(&mut state, model_path);
+        if state.shutting_down {
+            // A dictation task can race ExitRequested after obtaining the app
+            // handle. Return a permanently stopped runtime so it cannot create
+            // a new Metal context after shutdown has already drained the cache.
+            runtime.shutdown();
+        }
+        runtime
     }
 
     pub fn begin_warming_existing_model(
@@ -187,6 +197,9 @@ impl WhisperRuntimeCache {
         }
 
         let mut state = self.0.lock().expect("whisper runtime cache mutex poisoned");
+        if state.shutting_down {
+            return None;
+        }
         if state.warming_model_path.as_deref() == Some(model_path) {
             return None;
         }
@@ -194,6 +207,22 @@ impl WhisperRuntimeCache {
         let runtime = Self::runtime_for_locked(&mut state, model_path);
         state.warming_model_path = Some(model_path.to_path_buf());
         Some(runtime)
+    }
+
+    /// Stop accepting model warm-up work and synchronously release the cached
+    /// Whisper context. Tauri's default `run` path ends in `process::exit`, which
+    /// skips Rust destructors; explicitly dropping here is therefore required
+    /// before ggml's C++ Metal globals are torn down (slugtale-p1u).
+    pub fn shutdown(&self) {
+        let mut state = match self.0.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.shutting_down = true;
+        state.warming_model_path = None;
+        if let Some(runtime) = state.runtime.as_ref() {
+            runtime.shutdown();
+        }
     }
 
     fn runtime_for_locked(
@@ -215,88 +244,111 @@ impl WhisperRuntimeCache {
 #[cfg(feature = "local-whisper-runtime")]
 impl LocalWhisperRuntime {
     pub fn warm_up(&self) -> Result<(), AsrError> {
-        self.context().map(|_| ())
+        self.with_context(|_| Ok(()))
     }
 
-    /// Return the loaded Whisper context, reading the model file from disk only
-    /// on the first call and caching it for subsequent transcriptions.
-    fn context(&self) -> Result<&whisper_rs::WhisperContext, AsrError> {
-        if let Some(context) = self.context.get() {
-            return Ok(context);
+    /// Run an operation while owning the cached context's lifecycle lock. This
+    /// serializes shutdown with both initialization and decoding, ensuring the
+    /// Metal context is never used while it is being explicitly released.
+    fn with_context<T>(
+        &self,
+        operation: impl FnOnce(&whisper_rs::WhisperContext) -> Result<T, AsrError>,
+    ) -> Result<T, AsrError> {
+        use std::sync::atomic::Ordering;
+
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(AsrError::Runtime(
+                "local Whisper runtime is shutting down".to_string(),
+            ));
         }
 
-        let _guard = self
-            .context_init
+        let mut context = self
+            .context
             .lock()
             .map_err(|_| AsrError::Runtime("whisper context mutex poisoned".to_string()))?;
-        if let Some(context) = self.context.get() {
-            return Ok(context);
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(AsrError::Runtime(
+                "local Whisper runtime is shutting down".to_string(),
+            ));
         }
 
-        if !self.model_path.exists() {
-            return Err(AsrError::ModelMissing {
-                path: self.model_path.clone(),
-            });
+        if context.is_none() {
+            if !self.model_path.exists() {
+                return Err(AsrError::ModelMissing {
+                    path: self.model_path.clone(),
+                });
+            }
+
+            let model_path = self
+                .model_path
+                .to_str()
+                .ok_or_else(|| AsrError::Runtime("model path is not valid UTF-8".to_string()))?;
+            let initialized = whisper_rs::WhisperContext::new_with_params(
+                model_path,
+                whisper_rs::WhisperContextParameters::default(),
+            )
+            .map_err(|error| AsrError::Runtime(error.to_string()))?;
+            *context = Some(initialized);
         }
 
-        let model_path = self
-            .model_path
-            .to_str()
-            .ok_or_else(|| AsrError::Runtime("model path is not valid UTF-8".to_string()))?;
-        let context = whisper_rs::WhisperContext::new_with_params(
-            model_path,
-            whisper_rs::WhisperContextParameters::default(),
-        )
-        .map_err(|error| AsrError::Runtime(error.to_string()))?;
+        operation(context.as_ref().expect("context was just initialized"))
+    }
 
-        // If another thread won the race to initialize, keep the stored context.
-        let _ = self.context.set(context);
-        Ok(self.context.get().expect("context was just initialized"))
+    fn shutdown(&self) {
+        use std::sync::atomic::Ordering;
+
+        self.shutting_down.store(true, Ordering::Release);
+        let mut context = match self.context.lock() {
+            Ok(context) => context,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        context.take();
     }
 }
 
 #[cfg(feature = "local-whisper-runtime")]
 impl AsrRuntime for LocalWhisperRuntime {
     fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
-        let context = self.context()?;
-        let mut state = context
-            .create_state()
-            .map_err(|error| AsrError::Runtime(error.to_string()))?;
-        let decode_settings = recommended_whisper_decode_settings(self.speed_profile());
-        let mut params = whisper_rs::FullParams::new(match decode_settings.strategy {
-            WhisperDecodeStrategy::Greedy { best_of } => {
-                whisper_rs::SamplingStrategy::Greedy { best_of }
-            }
-            WhisperDecodeStrategy::BeamSearch { beam_size } => {
-                whisper_rs::SamplingStrategy::BeamSearch {
-                    beam_size,
-                    // whisper.cpp's default patience (unbounded beam pruning off).
-                    patience: -1.0,
+        self.with_context(|context| {
+            let mut state = context
+                .create_state()
+                .map_err(|error| AsrError::Runtime(error.to_string()))?;
+            let decode_settings = recommended_whisper_decode_settings(self.speed_profile());
+            let mut params = whisper_rs::FullParams::new(match decode_settings.strategy {
+                WhisperDecodeStrategy::Greedy { best_of } => {
+                    whisper_rs::SamplingStrategy::Greedy { best_of }
                 }
-            }
-        });
+                WhisperDecodeStrategy::BeamSearch { beam_size } => {
+                    whisper_rs::SamplingStrategy::BeamSearch {
+                        beam_size,
+                        // whisper.cpp's default patience (unbounded beam pruning off).
+                        patience: -1.0,
+                    }
+                }
+            });
 
-        params.set_n_threads(decode_settings.n_threads);
-        params.set_language(Some("en"));
-        params.set_translate(false);
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
+            params.set_n_threads(decode_settings.n_threads);
+            params.set_language(Some("en"));
+            params.set_translate(false);
+            params.set_print_special(false);
+            params.set_print_progress(false);
+            params.set_print_realtime(false);
+            params.set_print_timestamps(false);
 
-        state
-            .full(params, &audio.samples)
-            .map_err(|error| AsrError::Runtime(error.to_string()))?;
+            state
+                .full(params, &audio.samples)
+                .map_err(|error| AsrError::Runtime(error.to_string()))?;
 
-        let text = state
-            .as_iter()
-            .map(|segment| segment.to_string())
-            .collect::<Vec<_>>()
-            .join("")
-            .trim()
-            .to_string();
+            let text = state
+                .as_iter()
+                .map(|segment| segment.to_string())
+                .collect::<Vec<_>>()
+                .join("")
+                .trim()
+                .to_string();
 
-        Ok(FinalTranscription { text })
+            Ok(FinalTranscription { text })
+        })
     }
 }
 
@@ -311,6 +363,8 @@ impl LocalWhisperRuntime {
 
         Err(local_whisper_runtime_disabled_error())
     }
+
+    fn shutdown(&self) {}
 }
 
 #[cfg(not(feature = "local-whisper-runtime"))]
@@ -498,6 +552,40 @@ mod tests {
         assert!(duplicate.is_none());
         assert!(std::sync::Arc::ptr_eq(&warmed, &transcription_runtime));
 
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[test]
+    fn whisper_runtime_cache_rejects_warmup_after_shutdown() {
+        let cache = WhisperRuntimeCache::default();
+        let model_dir = unique_test_dir("whisper-cache-shutdown");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let model_path = model_dir.join(DEFAULT_MODEL_FILENAME);
+        std::fs::write(&model_path, b"model").unwrap();
+
+        cache.shutdown();
+
+        assert!(cache.begin_warming_existing_model(&model_path).is_none());
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[cfg(feature = "local-whisper-runtime")]
+    #[test]
+    fn runtime_returned_after_cache_shutdown_cannot_initialize_model() {
+        let cache = WhisperRuntimeCache::default();
+        let model_dir = unique_test_dir("whisper-runtime-after-shutdown");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let model_path = model_dir.join(DEFAULT_MODEL_FILENAME);
+        std::fs::write(&model_path, b"not-a-real-model").unwrap();
+
+        cache.shutdown();
+        let runtime = cache.runtime_for(&model_path);
+        let error = runtime.warm_up().unwrap_err();
+
+        assert_eq!(
+            error,
+            AsrError::Runtime("local Whisper runtime is shutting down".to_string())
+        );
         std::fs::remove_dir_all(&model_dir).ok();
     }
 

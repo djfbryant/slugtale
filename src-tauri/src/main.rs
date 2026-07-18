@@ -889,7 +889,7 @@ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
 }
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(slugtale_lib::WhisperRuntimeCache::default())
         .manage(RecordingFeedbackState::default())
         .manage(FocusTargetState::default())
@@ -935,8 +935,24 @@ fn main() {
             transcribe_captured_audio,
             dictation_event
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Slugtale");
+        .build(tauri::generate_context!())
+        .expect("error while building Slugtale");
+
+    // `App::run` terminates with `process::exit`, which skips Rust destructors.
+    // Use the returning event loop and explicitly quiesce/drop Whisper first so
+    // ggml's C++ Metal globals never tear down around live resources (p1u).
+    let exit_code = app.run_return(|app, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            app.state::<slugtale_lib::WhisperRuntimeCache>().shutdown();
+        }
+    });
+
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
 }
 
 #[cfg(test)]
