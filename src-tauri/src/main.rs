@@ -6,6 +6,9 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const DICTATION_ESCAPE_KEY: &str = "Escape";
+
 #[derive(Default)]
 struct RecordingFeedbackState(Mutex<slugtale_lib::RecordingFeedback>);
 
@@ -68,6 +71,14 @@ struct HotkeyRegistrationState(Mutex<HotkeyRegistration>);
 struct HotkeyRegistration {
     current_hotkey: Option<String>,
     adapter: Option<slugtale_lib::HotkeyDictationAdapter<TauriDictationEventSink>>,
+    key_commands: Option<std::sync::mpsc::Sender<GlobalKeyCommand>>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone, Copy)]
+enum GlobalKeyCommand {
+    Input(slugtale_lib::DictationKey, slugtale_lib::HotkeyInput),
+    SyncEscape(bool),
 }
 
 #[tauri::command]
@@ -77,18 +88,49 @@ fn show_settings(app: tauri::AppHandle) {
 
 /// Drive the recording surface (ADR-0014) from a dictation lifecycle event:
 /// play the start/stop sound and show or hide the Dictation Bar. The bar's Stop
-/// and Cancel controls and its Escape key all route here; the hotkey lifecycle
-/// (slugtale-h8z.3) will route `start` and `stop` here too once wired.
+/// and Cancel controls route here; the global hotkey lifecycle routes the
+/// configured activation hotkey and Escape here while preserving text-target
+/// focus.
 #[tauri::command]
 fn dictation_event(app: tauri::AppHandle, event: String) -> Result<(), String> {
     let event = match event.as_str() {
         "start" => slugtale_lib::DictationEvent::Start,
         "stop" => slugtale_lib::DictationEvent::Stop,
-        "cancel" => slugtale_lib::DictationEvent::Cancel,
+        "cancel" => return cancel_active_dictation(&app),
         other => return Err(format!("unknown dictation event: {other}")),
     };
 
     handle_dictation_event(&app, event)
+}
+
+/// Cancel through the same lifecycle bridge used by the global Escape handler
+/// so a click on the Dictation Bar cannot leave toggle/hold state believing a
+/// discarded dictation is still active.
+fn cancel_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let state = app.state::<HotkeyRegistrationState>();
+        let mut registration = state
+            .0
+            .lock()
+            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+        let was_dictating = registration
+            .adapter
+            .as_ref()
+            .is_some_and(|adapter| adapter.is_dictating());
+        if was_dictating {
+            if let Some(adapter) = registration.adapter.as_mut() {
+                let should_register = adapter.on_global_key(
+                    slugtale_lib::DictationKey::Escape,
+                    slugtale_lib::HotkeyInput::Pressed,
+                );
+                request_escape_registration(&registration, should_register);
+            }
+            return Ok(());
+        }
+    }
+
+    handle_dictation_event(app, slugtale_lib::DictationEvent::Cancel)
 }
 
 fn handle_dictation_event(
@@ -381,7 +423,7 @@ fn setup_configured_hotkey(app: &mut tauri::App) -> Result<(), Box<dyn std::erro
     let settings = load_current_settings(app.handle());
 
     let mut builder =
-        tauri_plugin_global_shortcut::Builder::new().with_handler(move |app, _shortcut, event| {
+        tauri_plugin_global_shortcut::Builder::new().with_handler(move |app, shortcut, event| {
             let input = match event.state {
                 tauri_plugin_global_shortcut::ShortcutState::Pressed => {
                     slugtale_lib::HotkeyInput::Pressed
@@ -394,9 +436,16 @@ fn setup_configured_hotkey(app: &mut tauri::App) -> Result<(), Box<dyn std::erro
             let state = app.state::<HotkeyRegistrationState>();
             let registration = state.0.lock();
             match registration {
-                Ok(mut registration) => {
-                    if let Some(adapter) = registration.adapter.as_mut() {
-                        adapter.on_hotkey(input);
+                Ok(registration) => {
+                    if let Some(commands) = registration.key_commands.as_ref() {
+                        let key = if shortcut.key == tauri_plugin_global_shortcut::Code::Escape
+                            && shortcut.mods.is_empty()
+                        {
+                            slugtale_lib::DictationKey::Escape
+                        } else {
+                            slugtale_lib::DictationKey::Hotkey
+                        };
+                        let _ = commands.send(GlobalKeyCommand::Input(key, input));
                     }
                 }
                 Err(_) => eprintln!("hotkey dictation adapter mutex poisoned"),
@@ -409,6 +458,129 @@ fn setup_configured_hotkey(app: &mut tauri::App) -> Result<(), Box<dyn std::erro
 
     app.handle().plugin(builder.build())?;
     set_hotkey_registration_state(app.handle(), &settings)?;
+    start_global_key_worker(app.handle())?;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn request_escape_registration(registration: &HotkeyRegistration, should_register: bool) {
+    if let Some(commands) = registration.key_commands.as_ref() {
+        let _ = commands.send(GlobalKeyCommand::SyncEscape(should_register));
+    }
+}
+
+/// Bare Escape must only be global while recording; otherwise Slugtale would
+/// steal Escape from the user's current application. A dedicated worker first
+/// registers Escape and only then starts recording, so there is no active but
+/// uncancellable window. It also keeps registration outside the plugin callback,
+/// which holds the plugin's key map while invoking us.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
+    let (commands, events) = std::sync::mpsc::channel::<GlobalKeyCommand>();
+    {
+        let state = app.state::<HotkeyRegistrationState>();
+        let mut registration = state
+            .0
+            .lock()
+            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+        registration.key_commands = Some(commands);
+    }
+
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("dictation-global-keys".to_string())
+        .spawn(move || {
+            let mut escape_registered = false;
+            for event in events {
+                match event {
+                    GlobalKeyCommand::SyncEscape(should_register) => {
+                        if let Err(error) = sync_escape_registration(
+                            &app,
+                            &mut escape_registered,
+                            should_register,
+                        ) {
+                            eprintln!("could not update global Escape key: {error}");
+                        }
+                    }
+                    GlobalKeyCommand::Input(key, input) => {
+                        let starts_dictation = matches!(
+                            (key, input),
+                            (
+                                slugtale_lib::DictationKey::Hotkey,
+                                slugtale_lib::HotkeyInput::Pressed
+                            )
+                        ) && app
+                            .state::<HotkeyRegistrationState>()
+                            .0
+                            .lock()
+                            .ok()
+                            .and_then(|registration| {
+                                registration
+                                    .adapter
+                                    .as_ref()
+                                    .map(|adapter| !adapter.is_dictating())
+                            })
+                            .unwrap_or(false);
+
+                        if starts_dictation
+                            && sync_escape_registration(&app, &mut escape_registered, true)
+                                .is_err()
+                        {
+                            eprintln!(
+                                "dictation did not start because global Escape could not be registered"
+                            );
+                            continue;
+                        }
+
+                        let should_register = app
+                            .state::<HotkeyRegistrationState>()
+                            .0
+                            .lock()
+                            .ok()
+                            .and_then(|mut registration| {
+                                registration
+                                    .adapter
+                                    .as_mut()
+                                    .map(|adapter| adapter.on_global_key(key, input))
+                            });
+                        if let Some(should_register) = should_register {
+                            if let Err(error) = sync_escape_registration(
+                                &app,
+                                &mut escape_registered,
+                                should_register,
+                            ) {
+                                eprintln!("could not update global Escape key: {error}");
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn sync_escape_registration(
+    app: &tauri::AppHandle,
+    registered: &mut bool,
+    should_register: bool,
+) -> Result<(), String> {
+    if should_register == *registered {
+        return Ok(());
+    }
+
+    if should_register {
+        app.global_shortcut()
+            .register(DICTATION_ESCAPE_KEY)
+            .map_err(|error| error.to_string())?;
+    } else {
+        app.global_shortcut()
+            .unregister(DICTATION_ESCAPE_KEY)
+            .map_err(|error| error.to_string())?;
+    }
+    *registered = should_register;
     Ok(())
 }
 
