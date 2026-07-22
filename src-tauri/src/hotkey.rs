@@ -9,6 +9,15 @@ pub enum HotkeyInput {
     Released,
 }
 
+/// Which globally observed key produced a transition. The configured Hotkey
+/// follows the user's hold/toggle setting; Escape always abandons an active
+/// dictation on its press edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictationKey {
+    Hotkey,
+    Escape,
+}
+
 /// An explicit dictation lifecycle event handed to the dictation pipeline.
 /// `Stop` ends dictation and keeps the resulting transcription; `Cancel`
 /// abandons the dictation and discards it (CONTEXT.md: Dictation Bar).
@@ -115,6 +124,18 @@ where
         if let Some(event) = self.lifecycle.on_hotkey(input) {
             self.sink.emit(event);
         }
+    }
+
+    /// Route a global key transition into the dictation lifecycle. Escape
+    /// release is deliberately ignored: cancellation happens once on press and
+    /// a later release must not become a Stop event in hold mode.
+    pub fn on_global_key(&mut self, key: DictationKey, input: HotkeyInput) -> bool {
+        match (key, input) {
+            (DictationKey::Hotkey, input) => self.on_hotkey(input),
+            (DictationKey::Escape, HotkeyInput::Pressed) => self.cancel(),
+            (DictationKey::Escape, HotkeyInput::Released) => {}
+        }
+        self.is_dictating()
     }
 
     pub fn cancel(&mut self) {
