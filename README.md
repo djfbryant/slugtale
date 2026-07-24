@@ -66,21 +66,23 @@ For macOS development you need:
 The npm scripts look for Cargo on `PATH`, then at `$HOME/.cargo/bin/cargo`. If
 Cargo is somewhere else, set `CARGO=/path/to/cargo`.
 
-## Quick Start On macOS
+## Build And Run As A Local macOS App
 
-Clone and install dependencies:
+These steps build Slugtale from source, install it as
+`/Applications/Slugtale.app`, and run it like a normal local app. The result is
+signed with a certificate created on your Mac; it is not a notarized build for
+distribution to other people.
 
-```sh
-git clone https://github.com/djfbryant/slugtale.git
-cd slugtale
-npm install
-```
+### 1. Install the build tools
 
-Install system prerequisites if needed:
+Install the Xcode Command Line Tools:
 
 ```sh
 xcode-select --install
 ```
+
+Install a current Node.js release from [nodejs.org](https://nodejs.org/) if
+`node --version` or `npm --version` does not work.
 
 Install Rust if `cargo --version` does not work:
 
@@ -88,70 +90,111 @@ Install Rust if `cargo --version` does not work:
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Create the local signing identity expected by `npm run dev`:
+Restart the terminal after installing Rust, then confirm the tools are
+available:
+
+```sh
+node --version
+npm --version
+cargo --version
+```
+
+### 2. Download the source and dependencies
+
+```sh
+git clone https://github.com/djfbryant/slugtale.git
+cd slugtale
+npm install
+```
+
+### 3. Create a local signing identity
+
+The build scripts use a stable signing identity so macOS can retain Slugtale's
+privacy permissions between rebuilds:
 
 1. Open Keychain Access.
-2. Choose `Certificate Assistant > Create a Certificate`.
-3. Name it `Slugtale Dev`.
+2. From the Keychain Access menu, choose
+   `Certificate Assistant > Create a Certificate`.
+3. Enter `Slugtale Dev` as the certificate name.
 4. Set `Identity Type` to `Self Signed Root`.
 5. Set `Certificate Type` to `Code Signing`.
-6. Create it in the login keychain.
+6. Create the certificate in the login keychain.
 
-Then run the app:
+If you already have a code-signing identity, you can use its exact name instead
+by setting `SLUGTALE_SIGN_IDENTITY` when running the build command.
 
-```sh
-npm run dev
-```
+### 4. Build, install, and open Slugtale
 
-On macOS, this builds a debug `.app`, signs it with the `Slugtale Dev` identity,
-verifies the signature, and opens the app bundle. Slugtale runs as an accessory
-app, so look for the Slugtale icon in the menu bar rather than the Dock. Use the
-menu bar item to open settings.
-
-If you already have a different code-signing identity, use it like this:
-
-```sh
-SLUGTALE_SIGN_IDENTITY="Your Code Signing Identity" npm run dev
-```
-
-## Install Locally On macOS
-
-`npm run dev` builds a debug bundle inside the repository. To install Slugtale
-as a normal Mac app you can launch from Spotlight or Launchpad, build and
-install the release bundle:
+From the repository directory, run:
 
 ```sh
 npm run macos:install
 ```
 
-This builds an optimised `.app` with Metal-accelerated Whisper, signs it with
-the `Slugtale Dev` identity, quits any running copy, replaces
-`/Applications/Slugtale.app`, and opens it. The signing identity and install
-location can be overridden:
+This command:
+
+1. Builds an optimized release app with Metal-accelerated local Whisper.
+2. Signs and verifies the app with the `Slugtale Dev` identity.
+3. Replaces any existing `/Applications/Slugtale.app`.
+4. Opens the installed app.
+
+Slugtale is a menu bar app, so it does not open a normal Dock window. Look for
+the Slugtale icon in the macOS menu bar and choose `Settings...`.
+
+### 5. Grant permissions and finish setup
+
+Open `System Settings > Privacy & Security` and grant the installed Slugtale
+app:
+
+1. Microphone access.
+2. Accessibility access, which Slugtale uses to insert dictated text.
+
+Then open Slugtale settings:
+
+1. Download the local `base.en` model.
+2. Choose a hotkey and activation mode.
+
+The app is ready when every item in the readiness checklist is marked ready.
+
+### Rebuild after making changes
+
+Run the same command after pulling or making source changes:
+
+```sh
+npm run macos:install
+```
+
+The installer quits the running copy, replaces it, verifies it, and opens the
+new build. Its stable bundle identifier and signing identity preserve the
+installed app's settings, model, and privacy permissions across reinstalls.
+
+For faster development without installing into `/Applications`, run:
+
+```sh
+npm run dev
+```
+
+That command builds, signs, verifies, and opens a debug app inside the
+repository. macOS treats this developer-run app and
+`/Applications/Slugtale.app` as separate privacy subjects, so each needs its
+own Microphone and Accessibility grants.
+
+To use a different signing identity or install location:
 
 ```sh
 SLUGTALE_SIGN_IDENTITY="Your Code Signing Identity" \
 SLUGTALE_INSTALL_DIR="$HOME/Applications" npm run macos:install
 ```
 
-To produce the signed release bundle without installing it, add `--build-only`:
+To build and sign the release bundle without installing it:
 
 ```sh
 npm run macos:install -- --build-only
 ```
 
-The installed app keeps its settings, model, and privacy permissions across
-reinstalls because the bundle identifier and signing identity stay stable.
-However, macOS treats the developer-run build from `npm run dev` and the
-installed build at `/Applications/Slugtale.app` as separate privacy subjects.
-Permissions granted to one do not carry over to the other. After
-`npm run macos:install`, open `System Settings > Privacy & Security` and grant
-the installed Slugtale app Microphone and Accessibility access, even if the
-developer-run build already had both permissions.
-
-Because the certificate is self-signed rather than notarized by Apple, this
-build is only trusted on the Mac that created it — see ADR-0022 for the planned
-distribution story.
+Because the default certificate is self-signed rather than notarized by Apple,
+the resulting build is trusted only on the Mac that created it. See ADR-0022
+for the planned distribution story.
 
 ## First Run Setup
 
@@ -238,7 +281,8 @@ PATH=$HOME/.cargo/bin:$PATH tauri build --features local-whisper-runtime,local-w
 ```
 
 `npm run macos:install` wraps that command and also signs and installs the
-result — see [Install Locally On macOS](#install-locally-on-macos).
+result — see
+[Build And Run As A Local macOS App](#build-and-run-as-a-local-macos-app).
 
 Release builds compile whisper.cpp from source, which needs an explicit macOS
 deployment target because `ggml` uses `std::filesystem`. That target is set once
