@@ -311,7 +311,6 @@
 
     function setAudioLevel(level) {
       targetLevel = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
-      document.body.dataset.voice = targetLevel > 0.08 ? "active" : "idle";
     }
 
     // A transparent window still swallows clicks, and this one is sized for the
@@ -366,6 +365,12 @@
     document.getElementById("stop").addEventListener("click", stop);
     document.getElementById("cancel").addEventListener("click", cancel);
 
+    // The poll would give the app underneath its clicks back on the next tick
+    // anyway, but that leaves up to a tick where the pointer has left the orb and
+    // the window is still swallowing input. While the pointer is on the bar the
+    // window does receive mouse events, so the moment it leaves is free to catch.
+    document.querySelector(".bar").addEventListener("mouseleave", pollPointer);
+
     // Escape cancels the dictation and discards it (ADR-0014). Once transcription
     // has begun the audio is already captured, so Escape no longer applies.
     document.addEventListener("keydown", (event) => {
@@ -386,16 +391,6 @@
       events.listen("dictation-audio-level", (event) => setAudioLevel(event.payload));
       events.listen("dictation-visibility", (event) => setVisible(event.payload === true));
     }
-
-    window.__slugtaleBar = {
-      setPhase,
-      setAppearance,
-      setAudioLevel,
-      setVisible,
-      pollPointer,
-      renderFrame,
-      isPolling: () => pointerPoll !== null
-    };
   </script>
 </body>
 </html>

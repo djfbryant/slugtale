@@ -305,6 +305,9 @@
     .swatches button {
       width: 22px;
       height: 22px;
+      /* Buttons carry a 28px min-height globally, which would stretch these
+         circles into ellipses. */
+      min-height: 0;
       padding: 0;
       border: 1px solid var(--border);
       border-radius: 999px;

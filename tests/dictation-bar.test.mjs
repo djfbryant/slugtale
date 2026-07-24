@@ -62,6 +62,7 @@ function loadDictationBar({ invoke = async () => false, reduceMotion = false } =
         }
       },
       getElementById: element,
+      querySelector: element,
       addEventListener(type, handler) {
         documentListeners.set(type, handler);
       }
@@ -93,7 +94,14 @@ function loadDictationBar({ invoke = async () => false, reduceMotion = false } =
   context.globalThis = context;
   context.window.document = context.document;
 
-  vm.runInNewContext(script, context);
+  // The bar ships no test seam of its own, so the handles are appended here —
+  // the same trick tests/settings-readiness.test.mjs uses on the settings window.
+  const testableScript = `${script}
+window.__slugtaleBar = {
+  setPhase, setAppearance, setAudioLevel, setVisible, pollPointer, renderFrame,
+  isPolling: () => pointerPoll !== null
+};`;
+  vm.runInNewContext(testableScript, context);
 
   return {
     body,
@@ -102,6 +110,7 @@ function loadDictationBar({ invoke = async () => false, reduceMotion = false } =
     intervals,
     rootStyle,
     keydown: (key) => documentListeners.get("keydown")({ key, preventDefault() {} }),
+    leaveBar: () => elements.get(".bar").listeners.get("mouseleave")(),
     api: context.window.__slugtaleBar
   };
 }
@@ -223,7 +232,6 @@ test("the halo reads from the voice level alone, with no idle drift", () => {
   bar.api.setAudioLevel(0.9);
   for (let frame = 0; frame < 60; frame += 1) bar.api.renderFrame(frame * 16);
   assert.notEqual(bar.elements.get("halo").style.transform, silent);
-  assert.equal(bar.body.dataset.voice, "active");
 });
 
 test("the elapsed clock counts the current phase", () => {
@@ -269,4 +277,20 @@ test("hiding the bar forgets a hover it can no longer see end", async () => {
 
   bar.api.setVisible(false);
   assert.equal(bar.body.dataset.expanded, "false");
+});
+
+test("leaving the orb hands clicks back at once, not on the next poll", async () => {
+  // Waiting for the tick would leave a window where the pointer has moved off the
+  // orb and the transparent surround is still swallowing clicks.
+  const bar = loadDictationBar({ invoke: async () => true });
+
+  bar.api.setVisible(true);
+  await bar.api.pollPointer();
+  assert.equal(bar.body.dataset.expanded, "true");
+
+  const before = bar.invocations.length;
+  await bar.leaveBar();
+
+  assert.equal(bar.invocations.length, before + 1);
+  assert.equal(bar.invocations.at(-1).command, "dictation_bar_pointer_over");
 });
