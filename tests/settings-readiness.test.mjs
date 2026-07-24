@@ -72,12 +72,13 @@ function loadSettingsScript({ invoke }) {
 
   const testableScript = script.replace(
     /\s*init\(\);\s*$/,
-    "\nwindow.__slugtaleTest = { loadReadiness, openReadinessAction };\n"
+    "\nwindow.__slugtaleTest = { loadReadiness, openReadinessAction, saveDictationBarSettings };\n"
   );
   vm.runInNewContext(testableScript, context);
 
   return {
     elements,
+    saveDictationBarSettings: context.window.__slugtaleTest.saveDictationBarSettings,
     async flushNextTimer() {
       for (let spin = 0; timers.length === 0 && spin < 10; spin += 1) {
         await Promise.resolve();
@@ -210,4 +211,42 @@ test("background readiness refresh does not overwrite active permission polling 
 
   assert.equal(elements.get("overall-status").textContent, "Ready");
   await action;
+});
+
+test("changing one dictation bar setting still sends the pair the backend expects", async () => {
+  const calls = [];
+  const { saveDictationBarSettings } = loadSettingsScript({
+    async invoke(command, args) {
+      calls.push({ command, args: { ...args } });
+      if (command === "save_dictation_bar_settings") {
+        return { ...args, bar_position: args.barPosition, accent_color: args.accentColor };
+      }
+      return {};
+    }
+  });
+
+  await saveDictationBarSettings({ accentColor: "violet" });
+
+  // The accent moved; the position came along at its current value rather than
+  // being sent as undefined and cleared.
+  assert.deepEqual(calls.at(-1), {
+    command: "save_dictation_bar_settings",
+    args: { barPosition: "bottom-center", accentColor: "violet" }
+  });
+});
+
+test("a failed dictation bar save reports the error instead of pretending it stuck", async () => {
+  const { elements, saveDictationBarSettings } = loadSettingsScript({
+    async invoke(command) {
+      if (command === "save_dictation_bar_settings") throw new Error("settings file is read-only");
+      return {};
+    }
+  });
+
+  await saveDictationBarSettings({ barPosition: "bottom-right" });
+
+  assert.equal(
+    elements.get("dictation-bar-message").textContent,
+    "Error: settings file is read-only"
+  );
 });

@@ -678,6 +678,9 @@ fn show_dictation_bar(app: &tauri::AppHandle, phase: DictationPhase) {
         // Same reason for the appearance: a bar that appears in the old accent or
         // aligned to the old edge and then jumps is worse than one that never did.
         let _ = window.emit("dictation-appearance", appearance.clone());
+        // The bar polls for the pointer only while it is on screen; the webview
+        // stays alive between dictations and has no other way to know.
+        let _ = window.emit("dictation-visibility", true);
         // Placing the bar reads monitor geometry, and those reads block until the
         // main thread answers them. The global-key worker calls this while holding
         // the hotkey registration lock, and the main thread takes that same lock on
@@ -701,6 +704,7 @@ fn show_dictation_bar(app: &tauri::AppHandle, phase: DictationPhase) {
 fn hide_dictation_bar(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("dictation-bar") {
         let _ = window.hide();
+        let _ = window.emit("dictation-visibility", false);
     }
 }
 

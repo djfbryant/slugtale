@@ -80,7 +80,9 @@ function loadDictationBar({ invoke = async () => false, reduceMotion = false } =
       __TAURI__: {
         core: {
           async invoke(command, args) {
-            invocations.push({ command, args });
+            // Rebuilt in this realm: objects made inside the vm carry their own
+            // prototypes, which deepEqual refuses to match.
+            invocations.push({ command, args: { ...args } });
             return invoke(command, args);
           }
         },
@@ -240,4 +242,31 @@ test("reduced motion leaves the halo alone", () => {
   bar.api.renderFrame(16);
 
   assert.equal(bar.elements.get("halo").style.transform, undefined);
+});
+
+test("the bar only watches the pointer while it is on screen", async () => {
+  const bar = loadDictationBar({ invoke: async () => false });
+
+  // The window is hidden between dictations and the webview keeps running, so
+  // polling before it is shown would ping the backend all day for nothing.
+  assert.equal(bar.api.isPolling(), false);
+  assert.equal(bar.intervals.length, 0);
+
+  bar.api.setVisible(true);
+  assert.equal(bar.api.isPolling(), true);
+  assert.equal(bar.intervals.at(-1).delay, 100);
+
+  bar.api.setVisible(false);
+  assert.equal(bar.api.isPolling(), false);
+});
+
+test("hiding the bar forgets a hover it can no longer see end", async () => {
+  const bar = loadDictationBar({ invoke: async () => true });
+
+  bar.api.setVisible(true);
+  await bar.api.pollPointer();
+  assert.equal(bar.body.dataset.expanded, "true");
+
+  bar.api.setVisible(false);
+  assert.equal(bar.body.dataset.expanded, "false");
 });

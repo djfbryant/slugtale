@@ -295,6 +295,32 @@
       box-shadow: var(--shadow);
     }
 
+    /* Accent swatches. Colour alone is not a label, so each button carries the
+       name of its colour for screen readers and keyboard users. */
+    .swatches {
+      display: inline-flex;
+      gap: 6px;
+    }
+
+    .swatches button {
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--swatch);
+      box-shadow: none;
+    }
+
+    .swatches button[aria-pressed="true"] {
+      box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--swatch);
+    }
+
+    .swatches button:focus-visible {
+      outline: 2px solid var(--text);
+      outline-offset: 3px;
+    }
+
     /* ---------- rows ---------- */
 
     .row {
@@ -509,8 +535,34 @@
               <button id="speed-accurate" type="button" data-profile="accurate" aria-pressed="false">Accurate</button>
             </span>
           </div>
+          <div class="row">
+            <span class="row-label">
+              Bar position
+              <span class="row-sub">Along the bottom of the screen</span>
+            </span>
+            <span class="segmented" role="group" aria-label="Dictation bar position">
+              <button id="position-bottom-center" type="button" data-position="bottom-center" aria-pressed="true">Centre</button>
+              <button id="position-bottom-left" type="button" data-position="bottom-left" aria-pressed="false">Left</button>
+              <button id="position-bottom-right" type="button" data-position="bottom-right" aria-pressed="false">Right</button>
+            </span>
+          </div>
+          <div class="row">
+            <span class="row-label">
+              Accent colour
+              <span class="row-sub">Shown while dictating</span>
+            </span>
+            <span class="swatches" role="group" aria-label="Accent colour">
+              <button id="accent-red" type="button" data-accent="red" aria-pressed="true" aria-label="Red" title="Red" style="--swatch: #ff5a52"></button>
+              <button id="accent-amber" type="button" data-accent="amber" aria-pressed="false" aria-label="Amber" title="Amber" style="--swatch: #f5a524"></button>
+              <button id="accent-green" type="button" data-accent="green" aria-pressed="false" aria-label="Green" title="Green" style="--swatch: #35c76a"></button>
+              <button id="accent-blue" type="button" data-accent="blue" aria-pressed="false" aria-label="Blue" title="Blue" style="--swatch: #4c9ffe"></button>
+              <button id="accent-violet" type="button" data-accent="violet" aria-pressed="false" aria-label="Violet" title="Violet" style="--swatch: #a78bfa"></button>
+              <button id="accent-graphite" type="button" data-accent="graphite" aria-pressed="false" aria-label="Graphite" title="Graphite" style="--swatch: #9aa4ad"></button>
+            </span>
+          </div>
           <p id="settings-message" class="note" aria-live="polite"></p>
           <p id="transcription-message" class="note" aria-live="polite"></p>
+          <p id="dictation-bar-message" class="note" aria-live="polite"></p>
         </section>
 
         <section id="pane-model" class="pane" aria-labelledby="pane-title" hidden>
@@ -621,8 +673,13 @@
       launch_at_login: false,
       diagnostic_logging: false,
       model: null,
-      speed_profile: "balanced"
+      speed_profile: "balanced",
+      bar_position: "bottom-center",
+      accent_color: "red"
     };
+
+    const BAR_POSITIONS = ["bottom-center", "bottom-left", "bottom-right"];
+    const ACCENT_COLORS = ["red", "amber", "green", "blue", "violet", "graphite"];
 
     // Permission guidance is worded per platform: macOS and Windows gate
     // microphone and (on macOS) text insertion behind OS permission panels,
@@ -695,6 +752,7 @@
     let downloading = false;
     let savingSettings = false;
     let savingProfile = false;
+    let savingDictationBar = false;
     let savingLaunchAtLogin = false;
     let openingReadinessAction = false;
     let capturingHotkey = false;
@@ -933,6 +991,20 @@
         button.disabled = savingProfile;
       });
 
+      const barPosition = currentSettings.bar_position || "bottom-center";
+      BAR_POSITIONS.forEach((option) => {
+        const button = document.getElementById(`position-${option}`);
+        button.setAttribute("aria-pressed", String(option === barPosition));
+        button.disabled = savingDictationBar;
+      });
+
+      const accent = currentSettings.accent_color || "red";
+      ACCENT_COLORS.forEach((option) => {
+        const button = document.getElementById(`accent-${option}`);
+        button.setAttribute("aria-pressed", String(option === accent));
+        button.disabled = savingDictationBar;
+      });
+
       const launchToggle = document.getElementById("launch-at-login-toggle");
       launchToggle.checked = Boolean(currentSettings.launch_at_login);
       launchToggle.disabled = savingLaunchAtLogin;
@@ -997,6 +1069,47 @@
         messageEl.textContent = "Saved. Applies to your next dictation.";
       } catch (error) {
         savingProfile = false;
+        renderSettings(previousSettings);
+        messageEl.classList.add("error");
+        messageEl.textContent = String(error);
+      }
+    }
+
+    // Position and accent save together: both describe how the Dictation Bar
+    // looks, and the backend applies them to a bar already on screen so the user
+    // can judge the choice while making it.
+    async function saveDictationBarSettings({ barPosition, accentColor }) {
+      const invoke = tauriInvoke();
+      const previousSettings = { ...currentSettings };
+      const nextPosition = barPosition || currentSettings.bar_position || "bottom-center";
+      const nextAccent = accentColor || currentSettings.accent_color || "red";
+      const nextSettings = {
+        ...currentSettings,
+        bar_position: nextPosition,
+        accent_color: nextAccent
+      };
+      const messageEl = document.getElementById("dictation-bar-message");
+
+      if (!invoke) {
+        renderSettings(nextSettings);
+        return;
+      }
+
+      savingDictationBar = true;
+      renderSettings(nextSettings);
+      messageEl.classList.remove("error");
+      messageEl.textContent = "Saving…";
+
+      try {
+        const saved = await invoke("save_dictation_bar_settings", {
+          barPosition: nextPosition,
+          accentColor: nextAccent
+        });
+        savingDictationBar = false;
+        renderSettings(saved);
+        messageEl.textContent = "Saved.";
+      } catch (error) {
+        savingDictationBar = false;
         renderSettings(previousSettings);
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
@@ -1307,6 +1420,20 @@
         document.getElementById(`speed-${profile}`).addEventListener("click", () => {
           if (profile === currentSettings.speed_profile) return;
           saveTranscriptionSettings(profile);
+        });
+      });
+
+      BAR_POSITIONS.forEach((position) => {
+        document.getElementById(`position-${position}`).addEventListener("click", () => {
+          if (position === currentSettings.bar_position) return;
+          saveDictationBarSettings({ barPosition: position });
+        });
+      });
+
+      ACCENT_COLORS.forEach((accent) => {
+        document.getElementById(`accent-${accent}`).addEventListener("click", () => {
+          if (accent === currentSettings.accent_color) return;
+          saveDictationBarSettings({ accentColor: accent });
         });
       });
 

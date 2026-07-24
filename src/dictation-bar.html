@@ -8,6 +8,11 @@
     :root {
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 14px;
+      /* Overwritten from the dictation-appearance event. The defaults match the
+         Red accent so the bar is never unpainted, even if the event is missed. */
+      --accent: #ff5a52;
+      --accent-soft: rgba(255, 90, 82, 0.3);
+      --accent-bed: rgba(255, 90, 82, 0.16);
     }
 
     * {
@@ -18,8 +23,8 @@
     body {
       margin: 0;
       height: 100%;
-      /* The window is transparent; only the pill paints, so it floats like the
-         resident dictation bars in FluidVoice and Wispr Flow. */
+      /* The window is transparent; only the orb paints, so it floats over
+         whatever the user is dictating into. */
       background: transparent;
       overflow: hidden;
       -webkit-user-select: none;
@@ -27,129 +32,143 @@
       cursor: default;
     }
 
+    /* The window is permanently sized for the expanded pill, because a Tauri
+       window cannot grow on hover. Body is that full-width ancestor, so the
+       shell's expanded `width: 100%` resolves against the window rather than
+       against its own collapsed 44px — the trap the prototype fell into. */
     body {
       display: flex;
       align-items: center;
       justify-content: center;
-      /* Transparent gutter on every side so the pill's drop shadow fades out
-         inside the window instead of being sliced off at the bottom edge. */
-      padding: 28px;
+      /* Transparent gutter so the pill's drop shadow fades out inside the window
+         instead of being sliced off at the edge. Matches BAR_GUTTER_PT. */
+      padding: 8px;
     }
+
+    /* The orb hugs whichever edge it was sent to, so it lands in the corner the
+       user chose and the pill grows inwards from there. */
+    body[data-position="bottom-left"] { justify-content: flex-start; }
+    body[data-position="bottom-right"] { justify-content: flex-end; }
 
     .bar {
       display: flex;
       align-items: center;
-      gap: 12px;
-      width: 100%;
-      height: 48px;
-      padding: 0 12px;
-      border-radius: 999px;
-      background: rgba(24, 27, 31, 0.92);
-      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.34);
-      color: #f3f5f6;
-    }
-
-    /* Animated recording indicator: a pulsing dot beside three bouncing bars,
-       communicating that Slugtale is capturing audio. No transcript text (v1). */
-    .indicator {
-      display: flex;
-      align-items: center;
       gap: 9px;
-      flex: 1;
-      min-width: 0;
-    }
-
-    .dot {
-      width: 10px;
-      height: 10px;
+      width: 44px;
+      height: 44px;
+      padding: 0 5px;
       border-radius: 999px;
-      background: #ff5a52;
-      box-shadow: 0 0 0 0 rgba(255, 90, 82, 0.6);
-      animation: pulse 1.4s ease-out infinite;
+      background: rgba(18, 21, 25, 0.92);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+      color: #f3f5f6;
+      overflow: hidden;
+      transition: width 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
     }
 
-    .label {
-      font-size: 12px;
-      font-weight: 500;
-      color: #d6dbdf;
-      white-space: nowrap;
+    /* Expanded on hover, and for the whole transcribing phase. Hover is resolved
+       in the backend, not by :hover — a window that ignores cursor events so
+       clicks reach the app underneath receives no mouse events to hover with. */
+    body[data-expanded="true"] .bar {
+      width: 100%;
     }
 
-    /* While transcribing, the audio is already captured: swap the red capture dot
-       for a calm spinner, relabel the bar, and hide Stop/Cancel since there is
-       nothing left to stop. The wave keeps animating to show work in progress. */
-    body[data-phase="transcribing"] .dot,
-    body[data-phase="transcribing"] .controls {
+    .orb {
+      position: relative;
+      flex: none;
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      background: var(--accent-bed);
+      color: var(--accent);
+    }
+
+    .orb svg {
+      /* Above the halo, which paints behind the glyph. */
+      position: relative;
+      width: 15px;
+      height: 15px;
+    }
+
+    /* Scaled from the voice level each frame. The recorder already emits a
+       perceptual level, so this is the level and nothing else — no idle
+       animation on top of it pretending to be speech. */
+    .halo {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      transition: transform 80ms ease-out, opacity 80ms ease-out;
+    }
+
+    /* Transcribing: the audio is already captured, so the accent and its halo go
+       quiet and a ring sweeps the glyph instead. The mic itself stays still — a
+       rotating microphone reads as an error, not as progress. */
+    body[data-phase="transcribing"] .orb {
+      background: rgba(255, 255, 255, 0.1);
+      color: #e8edf1;
+    }
+
+    body[data-phase="transcribing"] .halo {
       display: none;
     }
 
-    body[data-phase="transcribing"] .spinner {
-      display: block;
-    }
-
-    .spinner {
-      display: none;
-      width: 12px;
-      height: 12px;
+    body[data-phase="transcribing"] .orb::after {
+      content: "";
+      position: absolute;
+      inset: -3px;
       border-radius: 999px;
-      border: 2px solid rgba(255, 255, 255, 0.25);
-      border-top-color: #f3f5f6;
-      animation: spin 0.8s linear infinite;
+      border: 2px solid rgba(255, 255, 255, 0.16);
+      border-top-color: #e8edf1;
+      animation: spin 0.9s linear infinite;
     }
 
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
 
-    @keyframes pulse {
-      0% { box-shadow: 0 0 0 0 rgba(255, 90, 82, 0.55); }
-      70% { box-shadow: 0 0 0 9px rgba(255, 90, 82, 0); }
-      100% { box-shadow: 0 0 0 0 rgba(255, 90, 82, 0); }
-    }
-
-    .wave {
+    .tail {
       display: flex;
       align-items: center;
-      gap: 3px;
-      height: 20px;
+      gap: 8px;
+      flex: 1;
+      min-width: 0;
+      opacity: 0;
+      white-space: nowrap;
+      transition: opacity 120ms ease 40ms;
     }
 
-    .wave span {
-      width: 3px;
-      height: 6px;
-      border-radius: 999px;
-      background: #aeb6bc;
-      opacity: 0.55;
-      transition: height 70ms ease-out, opacity 70ms ease-out, background-color 70ms ease-out;
+    body[data-expanded="true"] .tail {
+      opacity: 1;
     }
 
-    body[data-voice="active"] .wave span {
-      background: #f3f5f6;
+    .label {
+      font-size: 11px;
+      font-weight: 600;
     }
 
-    @media (prefers-reduced-motion: reduce) {
-      .dot { animation: none; }
-      .wave span { animation: none; height: 12px; opacity: 0.8; }
-      .spinner { animation: none; }
-    }
-
-    .controls {
-      display: flex;
-      align-items: center;
-      gap: 6px;
+    .elapsed {
+      margin-left: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: #9aa4ad;
+      font-variant-numeric: tabular-nums;
     }
 
     button {
       display: grid;
       place-items: center;
-      width: 30px;
-      height: 30px;
+      width: 26px;
+      height: 26px;
+      flex: none;
       border: 0;
       border-radius: 999px;
+      padding: 0;
       background: rgba(255, 255, 255, 0.12);
       color: #f3f5f6;
       cursor: pointer;
-      padding: 0;
     }
 
     button:hover {
@@ -158,7 +177,6 @@
 
     button.stop {
       background: #2f9e5f;
-      color: #ffffff;
     }
 
     button.stop:hover {
@@ -166,49 +184,73 @@
     }
 
     button svg {
-      width: 15px;
-      height: 15px;
+      width: 12px;
+      height: 12px;
     }
 
-    .sr-only {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0, 0, 0, 0);
-      white-space: nowrap;
-      border: 0;
+    /* Nothing left to stop once the model is running. */
+    body[data-phase="transcribing"] .controls {
+      display: none;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .bar { transition: none; }
+      .tail { transition: none; }
+      .halo { display: none; }
+      body[data-phase="transcribing"] .orb::after { animation: none; }
     }
   </style>
 </head>
-<body>
+<body data-phase="recording" data-position="bottom-center" data-expanded="false">
   <div class="bar" role="group" aria-label="Dictation in progress">
-    <div class="indicator">
-      <span class="dot" aria-hidden="true"></span>
-      <span class="spinner" aria-hidden="true"></span>
-      <span class="wave" aria-hidden="true">
-        <span></span><span></span><span></span><span></span><span></span>
-      </span>
+    <span class="orb">
+      <span id="halo" class="halo" aria-hidden="true"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/>
+      </svg>
+    </span>
+    <span class="tail">
       <span id="label" class="label" aria-live="polite">Recording</span>
-    </div>
-    <div class="controls">
-      <button id="stop" class="stop" type="button" title="Stop dictation" aria-label="Stop dictation">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-      </button>
-      <button id="cancel" class="cancel" type="button" title="Cancel dictation (Esc)" aria-label="Cancel dictation">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-      </button>
-    </div>
+      <span id="elapsed" class="elapsed" aria-hidden="true">0:00</span>
+      <span class="controls">
+        <button id="stop" class="stop" type="button" title="Stop dictation" aria-label="Stop dictation">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+        </button>
+        <button id="cancel" class="cancel" type="button" title="Cancel dictation (Esc)" aria-label="Cancel dictation">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </span>
+    </span>
   </div>
 
   <script>
+    // The six-swatch palette. Accents arrive as names, never as colour values, so
+    // nothing the backend sends is interpolated into CSS.
+    const ACCENTS = {
+      red: ["#ff5a52", "rgba(255, 90, 82, 0.3)", "rgba(255, 90, 82, 0.16)"],
+      amber: ["#f5a524", "rgba(245, 165, 36, 0.3)", "rgba(245, 165, 36, 0.16)"],
+      green: ["#35c76a", "rgba(53, 199, 106, 0.3)", "rgba(53, 199, 106, 0.16)"],
+      blue: ["#4c9ffe", "rgba(76, 159, 254, 0.3)", "rgba(76, 159, 254, 0.16)"],
+      violet: ["#a78bfa", "rgba(167, 139, 250, 0.3)", "rgba(167, 139, 250, 0.16)"],
+      graphite: ["#9aa4ad", "rgba(154, 164, 173, 0.3)", "rgba(154, 164, 173, 0.16)"]
+    };
+    const POSITIONS = ["bottom-center", "bottom-left", "bottom-right"];
+    const PHASES = { recording: "Recording", transcribing: "Transcribing…" };
+    // How often the backend is asked where the pointer is. The bar cannot watch
+    // the pointer itself while it is letting clicks through to the app below.
+    const POINTER_POLL_MS = 100;
+
     function invoke(command, args) {
       const core = window.__TAURI__ && window.__TAURI__.core;
       if (!core || typeof core.invoke !== "function") return Promise.resolve();
       return core.invoke(command, args).catch((error) => {
-        console.error("dictation_event failed", error);
+        console.error(command + " failed", error);
       });
     }
 
@@ -220,68 +262,140 @@
       invoke("dictation_event", { event: "cancel" });
     }
 
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const halo = document.getElementById("halo");
+    const label = document.getElementById("label");
+    const elapsed = document.getElementById("elapsed");
+
+    let phase = "recording";
+    let phaseStart = Date.now();
+    let pointerOver = false;
+    let pointerPoll = null;
+    let targetLevel = 0;
+    let renderedLevel = 0;
+
+    // Transcribing holds the bar open for its whole duration: it is the one time
+    // the bar has something to report that the user did not ask to see.
+    function expanded() {
+      return phase === "transcribing" || pointerOver;
+    }
+
+    function renderExpansion() {
+      document.body.dataset.expanded = String(expanded());
+    }
+
+    // The backend drives the bar's state: "recording" while capturing audio,
+    // "transcribing" while the model runs after Stop (slugtale-0t4). The clock
+    // restarts with each phase, so it always reads as "how long has this been
+    // going" for whatever the bar is currently doing.
+    function setPhase(next, startedAt) {
+      phase = PHASES[next] ? next : "recording";
+      phaseStart = typeof startedAt === "number" ? startedAt : Date.now();
+      document.body.dataset.phase = phase;
+      label.textContent = PHASES[phase];
+      renderExpansion();
+    }
+
+    function setAppearance(appearance) {
+      const settings = appearance || {};
+      const position = POSITIONS.indexOf(settings.position) >= 0
+        ? settings.position
+        : POSITIONS[0];
+      const accent = ACCENTS[settings.accent] || ACCENTS.red;
+
+      document.body.dataset.position = position;
+      document.documentElement.style.setProperty("--accent", accent[0]);
+      document.documentElement.style.setProperty("--accent-soft", accent[1]);
+      document.documentElement.style.setProperty("--accent-bed", accent[2]);
+    }
+
+    function setAudioLevel(level) {
+      targetLevel = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
+      document.body.dataset.voice = targetLevel > 0.08 ? "active" : "idle";
+    }
+
+    // A transparent window still swallows clicks, and this one is sized for the
+    // expanded pill, so while collapsed most of it is invisible surface parked
+    // over the user's document. The backend hit-tests the pointer against the
+    // part that actually paints and hands the rest back to the app underneath;
+    // its answer doubles as the hover state, since a click-through window never
+    // sees a mouse event of its own.
+    async function pollPointer() {
+      const over = await invoke("dictation_bar_pointer_over", { expanded: expanded() });
+      pointerOver = over === true;
+      renderExpansion();
+    }
+
+    // The bar is hidden between dictations and the webview keeps running, so the
+    // poll is tied to visibility rather than left ticking for the life of the app.
+    function setVisible(visible) {
+      if (visible && pointerPoll === null) {
+        pointerPoll = setInterval(pollPointer, POINTER_POLL_MS);
+        return;
+      }
+      if (!visible && pointerPoll !== null) {
+        clearInterval(pointerPoll);
+        pointerPoll = null;
+        pointerOver = false;
+        renderExpansion();
+      }
+    }
+
+    function clockLabel(now) {
+      const seconds = Math.max(0, Math.floor((now - phaseStart) / 1000));
+      return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+    }
+
+    function renderFrame(_timestamp, now) {
+      const at = typeof now === "number" ? now : Date.now();
+
+      if (!reduceMotion) {
+        renderedLevel += (targetLevel - renderedLevel) * 0.28;
+        halo.style.transform = "scale(" + (0.7 + renderedLevel * 0.42).toFixed(3) + ")";
+        halo.style.opacity = (0.3 + renderedLevel * 0.5).toFixed(2);
+      }
+
+      elapsed.textContent = clockLabel(at);
+    }
+
+    function animate(timestamp) {
+      renderFrame(timestamp);
+      requestAnimationFrame(animate);
+    }
+
     document.getElementById("stop").addEventListener("click", stop);
     document.getElementById("cancel").addEventListener("click", cancel);
 
     // Escape cancels the dictation and discards it (ADR-0014). Once transcription
     // has begun the audio is already captured, so Escape no longer applies.
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && document.body.dataset.phase !== "transcribing") {
+      if (event.key === "Escape" && phase !== "transcribing") {
         event.preventDefault();
         cancel();
       }
     });
 
-    // The backend drives the bar's state: "recording" while capturing audio,
-    // "transcribing" while the model runs after Stop (slugtale-0t4).
-    const PHASES = {
-      recording: "Recording",
-      transcribing: "Transcribing…",
-    };
-    const waveBars = Array.from(document.querySelectorAll(".wave span"));
-    const waveWeights = [0.5, 0.86, 1, 0.74, 0.56];
-    let targetLevel = 0.08;
-    let renderedLevel = 0.08;
-    let reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-    function setPhase(phase) {
-      const label = PHASES[phase] || PHASES.recording;
-      document.body.dataset.phase = PHASES[phase] ? phase : "recording";
-      document.getElementById("label").textContent = label;
-      if (document.body.dataset.phase === "transcribing") {
-        targetLevel = 0.2;
-      }
-    }
-
-    function setAudioLevel(level) {
-      const next = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
-      targetLevel = document.body.dataset.phase === "transcribing" ? 0.2 : next;
-      document.body.dataset.voice = targetLevel > 0.08 ? "active" : "idle";
-    }
-
-    function animateWave(now) {
-      renderedLevel += (targetLevel - renderedLevel) * 0.28;
-      const time = now / 135;
-
-      waveBars.forEach((bar, index) => {
-        const idle = reduceMotion ? 0 : (Math.sin(time + index * 0.9) + 1) * 1.8;
-        const voice = renderedLevel * 18 * waveWeights[index];
-        const height = Math.max(5, Math.min(20, 5 + idle + voice));
-        bar.style.height = `${height.toFixed(1)}px`;
-        bar.style.opacity = String(Math.min(1, 0.5 + renderedLevel * 1.8));
-      });
-
-      requestAnimationFrame(animateWave);
-    }
-
     setPhase("recording");
-    requestAnimationFrame(animateWave);
+    setAudioLevel(0);
+    requestAnimationFrame(animate);
 
     const events = window.__TAURI__ && window.__TAURI__.event;
     if (events && typeof events.listen === "function") {
       events.listen("dictation-phase", (event) => setPhase(event.payload));
+      events.listen("dictation-appearance", (event) => setAppearance(event.payload));
       events.listen("dictation-audio-level", (event) => setAudioLevel(event.payload));
+      events.listen("dictation-visibility", (event) => setVisible(event.payload === true));
     }
+
+    window.__slugtaleBar = {
+      setPhase,
+      setAppearance,
+      setAudioLevel,
+      setVisible,
+      pollPointer,
+      renderFrame,
+      isPolling: () => pointerPoll !== null
+    };
   </script>
 </body>
 </html>
