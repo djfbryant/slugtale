@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<!--
+  THROWAWAY PROTOTYPE — not shipped, not tested, delete when it has answered its question.
+  Tracked by bd slugtale-gob. Notes live in DICTATION-BAR-PROTOTYPE-NOTES.md.
+
+  Round 2: the Orb was the interesting direction, so it is now the subject. Three orb
+  treatments (C1/C2/C3) plus the two originals (A/B) kept only as reference points.
+  Switchable via ?variant=, drawn at true pixel size over a fake desktop. Phase and audio
+  level are simulated in the browser; nothing here talks to Tauri.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PROTOTYPE — Dictation Bar</title>
+  <style>
+    :root {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+      cursor: default;
+    }
+
+    /* ---------------------------------------------------------------- backdrop */
+    .desktop {
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(1200px 700px at 20% 10%, #2b4a63 0%, transparent 60%),
+        radial-gradient(1000px 800px at 85% 90%, #3d2a4d 0%, transparent 55%),
+        linear-gradient(160deg, #16202b, #0e1116);
+    }
+
+    .editor {
+      position: absolute;
+      left: 50%;
+      top: 46%;
+      transform: translate(-50%, -50%);
+      width: min(760px, 70vw);
+      height: min(520px, 62vh);
+      border-radius: 12px;
+      background: #1c2027;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+      overflow: hidden;
+      color: #8d99a6;
+      font-size: 13px;
+      line-height: 1.9;
+    }
+
+    .editor-chrome {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 12px;
+      background: #23272f;
+    }
+    .editor-chrome i { width: 11px; height: 11px; border-radius: 999px; background: #3a4049; }
+    .editor-body { padding: 18px 22px; }
+    .editor-body p { margin: 0 0 10px; }
+    .caret {
+      display: inline-block;
+      width: 2px; height: 15px;
+      background: #6fb3ff;
+      vertical-align: -2px;
+      animation: blink 1.1s steps(1) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ------------------------------------------------------------------- stage
+       The transparent Tauri window at true size. The dashed outline is the real
+       window rect — and because a transparent window still eats mouse events over
+       its whole rect, everything inside that outline is surface taken from the app
+       underneath, whether it paints or not. */
+    .stage {
+      position: fixed;
+      display: grid;
+      place-items: center;
+      transition: width 160ms ease, height 160ms ease;
+    }
+    body[data-pos="centre"] .stage { left: 50%; bottom: 64px; transform: translateX(-50%); }
+    body[data-pos="corner"] .stage { right: 26px; bottom: 26px; }
+
+    body[data-frame="on"] .stage { outline: 1px dashed rgba(255, 255, 255, 0.28); }
+    body[data-phase="hidden"] .stage > * { display: none; }
+
+    .variant { display: none; }
+    body[data-variant="A"]  .v-a  { display: flex; }
+    body[data-variant="B"]  .v-b  { display: flex; }
+    body[data-variant="C1"] .v-c1 { display: flex; }
+    body[data-variant="C2"] .v-c2 { display: flex; }
+    body[data-variant="C3"] .v-c3 { display: flex; }
+
+    /* ====================================================== A — Ambient (reference)
+       Kept only so the orbs have something to be compared against. */
+    .v-a {
+      align-items: center; gap: 10px;
+      height: 34px; padding: 0 12px;
+      border-radius: 999px;
+      background: rgba(20, 23, 27, 0.86);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+      color: #f3f5f6;
+    }
+    .v-a .a-dot {
+      width: 7px; height: 7px; border-radius: 999px;
+      background: #ff5a52; flex: none;
+      animation: soft-pulse 1.6s ease-out infinite;
+    }
+    @keyframes soft-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    .v-a .a-text { font-size: 11px; color: #c3cad1; white-space: nowrap; display: none; }
+    body[data-phase="transcribing"][data-variant="A"] .a-text { display: block; }
+    body[data-phase="transcribing"][data-variant="A"] .a-dot { display: none; }
+    .v-a .a-controls {
+      display: flex; align-items: center; gap: 4px;
+      max-width: 0; overflow: hidden; opacity: 0;
+      transition: max-width 140ms ease, opacity 120ms ease;
+    }
+    .v-a:hover .a-controls { max-width: 70px; opacity: 1; }
+    .v-a button {
+      width: 22px; height: 22px; border: 0; padding: 0;
+      display: grid; place-items: center; border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14); color: #f3f5f6; cursor: pointer;
+    }
+    .v-a button svg { width: 11px; height: 11px; }
+
+    /* ====================================================== B — Console (reference) */
+    .v-b {
+      flex-direction: column; gap: 9px;
+      width: 100%; padding: 11px 13px 12px;
+      border-radius: 14px;
+      background: rgba(18, 21, 25, 0.94);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      color: #f3f5f6;
+    }
+    .v-b .b-head { display: flex; align-items: center; gap: 8px; }
+    .v-b .b-dot {
+      width: 8px; height: 8px; border-radius: 999px; background: #ff5a52;
+      animation: soft-pulse 1.6s ease-out infinite;
+    }
+    .v-b .b-state { font-size: 12px; font-weight: 600; }
+    .v-b .b-elapsed {
+      margin-left: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; color: #9aa4ad; font-variant-numeric: tabular-nums;
+    }
+    .v-b .b-actions { display: flex; gap: 7px; }
+    .v-b .b-actions button {
+      flex: 1; height: 26px; border: 0; border-radius: 7px;
+      font: 600 11px inherit; font-family: inherit; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      background: rgba(255, 255, 255, 0.1); color: #e6eaee;
+    }
+    .v-b .b-actions button.primary { background: #2f9e5f; color: #fff; }
+    kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9px; padding: 1px 4px; border-radius: 4px;
+      background: rgba(0, 0, 0, 0.28); opacity: 0.85;
+    }
+    body[data-phase="transcribing"][data-variant="B"] .b-actions,
+    body[data-phase="transcribing"][data-variant="B"] .b-dot { display: none; }
+
+    /* ============================================================== C1 — Halo
+       The orb as a radial waveform: bars ringed around a dark core, so the level
+       reading is the shape itself rather than a size change. Transcribing swaps the
+       bars for a sweeping arc, which is a genuinely different silhouette — the thing
+       round-one's orb could not do. */
+    .v-c1 { align-items: center; justify-content: center; flex-direction: column; gap: 5px; }
+
+    .c1-orb { position: relative; width: 68px; height: 68px; display: grid; place-items: center; }
+
+    .c1-rays { position: absolute; inset: 0; }
+    .c1-rays i {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 2.5px; height: 7px;
+      margin-left: -1.25px;
+      border-radius: 999px;
+      background: #ff6b63;
+      transform-origin: 50% 50%;
+      opacity: 0.8;
+    }
+    body[data-phase="transcribing"] .c1-rays { opacity: 0.18; }
+
+    /* Sweeping arc, transcribing only. A conic gradient masked to a ring. */
+    .c1-sweep {
+      position: absolute; inset: 4px;
+      border-radius: 999px;
+      display: none;
+      background: conic-gradient(from 0deg, transparent 0deg, transparent 250deg, rgba(255,255,255,0.9) 340deg, transparent 360deg);
+      -webkit-mask: radial-gradient(circle, transparent 25px, #000 26px, #000 30px, transparent 31px);
+      mask: radial-gradient(circle, transparent 25px, #000 26px, #000 30px, transparent 31px);
+      animation: spin 1.1s linear infinite;
+    }
+    body[data-phase="transcribing"][data-variant="C1"] .c1-sweep { display: block; }
+
+    .c1-core {
+      position: relative;
+      width: 34px; height: 34px; border-radius: 999px;
+      background: rgba(18, 21, 25, 0.95);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+      display: grid; place-items: center;
+      color: #ff6b63; cursor: pointer;
+    }
+    .c1-core svg { width: 15px; height: 15px; }
+    body[data-phase="transcribing"][data-variant="C1"] .c1-core { color: #e8edf1; }
+
+    .c1-elapsed {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px; color: rgba(255, 255, 255, 0.7);
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ============================================================== C2 — Pearl
+       The quietest thing that could possibly work: one soft blob, no ring, no bars,
+       no clock. Level drives scale and glow only. Nothing to read, only something to
+       notice in peripheral vision. */
+    .v-c2 { align-items: center; justify-content: center; }
+
+    .c2-blob {
+      width: 44px; height: 44px; border-radius: 999px;
+      background: radial-gradient(circle at 34% 30%, #ff9b78, #ff5a52 55%, #c0342e);
+      box-shadow: 0 0 0 0 rgba(255, 90, 82, 0.45), 0 6px 20px rgba(0, 0, 0, 0.45);
+      cursor: pointer;
+      transition: background 260ms ease;
+    }
+    body[data-phase="transcribing"][data-variant="C2"] .c2-blob {
+      background: radial-gradient(circle at 34% 30%, #eef3f7, #9fb0bd 55%, #5d6b78);
+      animation: c2-breathe 1.6s ease-in-out infinite;
+    }
+    @keyframes c2-breathe {
+      0%, 100% { transform: scale(0.92); }
+      50%      { transform: scale(1.06); }
+    }
+
+    /* ============================================================== C3 — Morph
+       An orb at rest, a bar when you engage. Collapsed it is a 44px circle; on hover
+       — and automatically while transcribing — it grows sideways into a pill with the
+       clock and the controls. Answers round one's discoverability complaint without
+       paying for it the other 99% of the time. */
+    /* Full-width so the shell's hover width:100% resolves against the window rather
+       than against its own collapsed 44px. Centred, so the morph grows both ways and
+       the resting orb still reads as bottom-centre. */
+    .v-c3 { align-items: center; justify-content: center; width: 100%; }
+
+    .c3-shell {
+      display: flex; align-items: center; gap: 9px;
+      height: 44px; width: 44px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: rgba(18, 21, 25, 0.92);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+      color: #f3f5f6;
+      overflow: hidden;
+      cursor: pointer;
+      transition: width 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    .v-c3:hover .c3-shell { width: 100%; }
+    body[data-phase="transcribing"][data-variant="C3"] .c3-shell { width: 100%; }
+
+    .c3-core {
+      position: relative; flex: none;
+      width: 34px; height: 34px; border-radius: 999px;
+      background: rgba(255, 90, 82, 0.16);
+      display: grid; place-items: center;
+      color: #ff6b63;
+    }
+    .c3-core svg { width: 15px; height: 15px; }
+    .c3-halo {
+      position: absolute; inset: 0; border-radius: 999px;
+      background: rgba(255, 90, 82, 0.3);
+      transition: transform 80ms ease-out, opacity 80ms ease-out;
+    }
+    body[data-phase="transcribing"][data-variant="C3"] .c3-core { color: #e8edf1; background: rgba(255,255,255,0.1); }
+    body[data-phase="transcribing"][data-variant="C3"] .c3-halo { display: none; }
+    /* Ring the mic rather than rotating it — a spinning microphone reads as an error. */
+    body[data-phase="transcribing"][data-variant="C3"] .c3-core::after {
+      content: "";
+      position: absolute; inset: -3px;
+      border-radius: 999px;
+      border: 2px solid rgba(255, 255, 255, 0.16);
+      border-top-color: #e8edf1;
+      animation: spin 0.9s linear infinite;
+    }
+
+    .c3-tail {
+      display: flex; align-items: center; gap: 8px;
+      flex: 1; min-width: 0;
+      opacity: 0; white-space: nowrap;
+      transition: opacity 120ms ease 40ms;
+    }
+    .v-c3:hover .c3-tail,
+    body[data-phase="transcribing"][data-variant="C3"] .c3-tail { opacity: 1; }
+
+    .c3-label { font-size: 11px; font-weight: 600; }
+    .c3-elapsed {
+      margin-left: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; color: #9aa4ad; font-variant-numeric: tabular-nums;
+    }
+    .c3-tail button {
+      width: 26px; height: 26px; border: 0; padding: 0;
+      display: grid; place-items: center; border-radius: 999px;
+      background: rgba(255, 255, 255, 0.12); color: #f3f5f6; cursor: pointer;
+    }
+    .c3-tail button.primary { background: #2f9e5f; }
+    .c3-tail button svg { width: 12px; height: 12px; }
+    body[data-phase="transcribing"][data-variant="C3"] .c3-tail button { display: none; }
+
+    .spin { animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* --------------------------------------------------------------- waveform
+       Linear bars, only used by the two reference variants. */
+    .wave { display: flex; align-items: center; gap: 3px; flex: 1; min-width: 0; justify-content: center; }
+    .wave b { display: block; width: 3px; height: 5px; border-radius: 999px; background: #aeb6bc; opacity: 0.5; flex: none; }
+    .v-b .wave { height: 22px; }
+    body[data-voice="active"] .wave b { background: #f3f5f6; }
+
+    /* ------------------------------------------------------------- prototype UI
+       Top of the screen on purpose: the artifact under test lives bottom-centre. */
+    .proto {
+      position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 9px; border-radius: 999px;
+      background: #fff; color: #10151b;
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.4);
+      font-size: 12px; z-index: 50;
+    }
+    .proto button {
+      border: 0; border-radius: 999px; background: #eceff2; color: #10151b;
+      font: 600 12px inherit; font-family: inherit; padding: 5px 10px; cursor: pointer;
+    }
+    .proto button:hover { background: #dde2e7; }
+    .proto button[aria-pressed="true"] { background: #10151b; color: #fff; }
+    .proto .name { min-width: 150px; text-align: center; font-weight: 600; }
+    .proto .sep { width: 1px; height: 20px; background: #e2e6ea; }
+
+    .readout {
+      position: fixed; top: 18px; left: 18px;
+      padding: 10px 12px; border-radius: 10px;
+      background: rgba(0, 0, 0, 0.66); color: #dfe5ea;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; line-height: 1.65; z-index: 50; white-space: pre;
+    }
+    .readout em { color: #7fd6a2; font-style: normal; }
+    .readout s { color: #ff8a82; text-decoration: none; }
+
+    .hint {
+      position: fixed; top: 18px; right: 18px; max-width: 250px;
+      padding: 10px 12px; border-radius: 10px;
+      background: rgba(0, 0, 0, 0.66); color: #b8c2cb;
+      font-size: 11px; line-height: 1.6; z-index: 50;
+    }
+    .hint b { color: #fff; }
+  </style>
+</head>
+<body data-variant="C1" data-phase="recording" data-voice="idle" data-frame="on" data-pos="centre">
+  <div class="desktop">
+    <div class="editor">
+      <div class="editor-chrome"><i></i><i></i><i></i></div>
+      <div class="editor-body">
+        <p>Meeting notes — Thursday</p>
+        <p>The dictation bar sits over whatever you were already typing in, so the
+          thing it must not do is steal attention or cover the line you are working on.</p>
+        <p>Dictating into this paragraph now<span class="caret"></span></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage" id="stage">
+    <!-- ============ A — Ambient (reference) ============ -->
+    <div class="variant v-a" data-visible>
+      <span class="a-dot"></span>
+      <span class="a-text">Transcribing…</span>
+      <span class="wave" data-wave data-bars="9"></span>
+      <span class="a-controls">
+        <button title="Stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>
+        <button title="Cancel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </span>
+    </div>
+
+    <!-- ============ B — Console (reference) ============ -->
+    <div class="variant v-b" data-visible>
+      <div class="b-head">
+        <span class="b-dot"></span>
+        <span class="b-state" data-state-label>Recording</span>
+        <span class="b-elapsed" data-elapsed>0:00</span>
+      </div>
+      <span class="wave" data-wave data-bars="22"></span>
+      <div class="b-actions">
+        <button class="primary">Stop <kbd>⌥space</kbd></button>
+        <button>Cancel <kbd>esc</kbd></button>
+      </div>
+    </div>
+
+    <!-- ============ C1 — Halo ============ -->
+    <div class="variant v-c1" data-visible>
+      <div class="c1-orb">
+        <span class="c1-rays" data-rays></span>
+        <span class="c1-sweep"></span>
+        <span class="c1-core">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/>
+          </svg>
+        </span>
+      </div>
+      <span class="c1-elapsed" data-elapsed>0:00</span>
+    </div>
+
+    <!-- ============ C2 — Pearl ============ -->
+    <div class="variant v-c2" data-visible>
+      <span class="c2-blob" data-blob></span>
+    </div>
+
+    <!-- ============ C3 — Morph ============ -->
+    <div class="variant v-c3" data-visible>
+      <div class="c3-shell">
+        <span class="c3-core">
+          <span class="c3-halo" data-halo></span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" data-c3-glyph>
+            <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/>
+          </svg>
+        </span>
+        <span class="c3-tail">
+          <span class="c3-label" data-state-label>Recording</span>
+          <span class="c3-elapsed" data-elapsed>0:00</span>
+          <button class="primary" title="Stop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>
+          <button title="Cancel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="proto">
+    <button id="prev">←</button>
+    <span class="name" id="variantName"></span>
+    <button id="next">→</button>
+    <span class="sep"></span>
+    <button id="phase">recording</button>
+    <button id="pos">bottom-centre</button>
+    <button id="speech" aria-pressed="true">Speech</button>
+    <button id="frame" aria-pressed="true">Frame</button>
+  </div>
+
+  <pre class="readout" id="readout"></pre>
+
+  <div class="hint">
+    <b>PROTOTYPE</b> — throwaway.<br />
+    <b>←/→</b> variant · <b>p</b> phase · <b>o</b> position · <b>s</b> speech · <b>f</b> outline<br />
+    <b>Hover the orb</b> — C3 morphs. Dead space in the readout is transparent window
+    that still swallows clicks meant for the app underneath.
+  </div>
+
+  <script>
+    // Each variant declares the transparent window it wants. Today's shipping window is
+    // 264x104 (tauri.conf.json).
+    const VARIANTS = {
+      A:  { name: "A — Ambient",  win: [180, 72],  ref: true },
+      B:  { name: "B — Console",  win: [268, 128], ref: true },
+      C1: { name: "C1 — Halo",    win: [96, 100] },
+      C2: { name: "C2 — Pearl",   win: [60, 60] },
+      C3: { name: "C3 — Morph",   win: [232, 60] },
+    };
+    const SHIPPING_WIN = [264, 104];
+    const KEYS = Object.keys(VARIANTS);
+    const PHASES = ["recording", "transcribing", "hidden"];
+
+    const params = new URLSearchParams(location.search);
+    let variant = KEYS.includes(params.get("variant")) ? params.get("variant") : "C1";
+    let phase = PHASES.includes(params.get("phase")) ? params.get("phase") : "recording";
+    let pos = params.get("pos") === "corner" ? "corner" : "centre";
+    let speechSim = true;
+    let showFrame = true;
+
+    // The recorder emits a PERCEPTUAL level (voice_level_from_rms), not raw RMS:
+    // ~0.5-0.9 while speaking, near zero in the gaps. Simulate that shape, not RMS.
+    let level = 0;
+    let target = 0;
+    let phaseStart = Date.now();
+    let nextToggle = 0;
+    let speaking = false;
+
+    document.querySelectorAll("[data-wave]").forEach((wave) => {
+      wave.innerHTML = Array.from({ length: Number(wave.dataset.bars) }, () => "<b></b>").join("");
+    });
+
+    // C1's radial bars: 24 rays around the core, each rotated into place once.
+    const RAY_COUNT = 24;
+    const rays = document.querySelector("[data-rays]");
+    rays.innerHTML = Array.from({ length: RAY_COUNT }, () => "<i></i>").join("");
+    const rayEls = Array.from(rays.children);
+    rayEls.forEach((ray, i) => { ray.dataset.angle = String((360 / RAY_COUNT) * i); });
+
+    function apply() {
+      document.body.dataset.variant = variant;
+      document.body.dataset.phase = phase;
+      document.body.dataset.pos = pos;
+      document.body.dataset.frame = showFrame ? "on" : "off";
+
+      const [w, h] = VARIANTS[variant].win;
+      const stage = document.getElementById("stage");
+      stage.style.width = w + "px";
+      stage.style.height = h + "px";
+
+      document.getElementById("variantName").textContent = VARIANTS[variant].name;
+      document.getElementById("phase").textContent = phase;
+      document.getElementById("pos").textContent = pos === "corner" ? "bottom-right" : "bottom-centre";
+      document.getElementById("speech").setAttribute("aria-pressed", String(speechSim));
+      document.getElementById("frame").setAttribute("aria-pressed", String(showFrame));
+
+      document.querySelectorAll("[data-state-label]").forEach((el) => {
+        el.textContent = phase === "transcribing" ? "Transcribing…" : "Recording";
+      });
+      const url = new URL(location.href);
+      url.searchParams.set("variant", variant);
+      url.searchParams.set("phase", phase);
+      url.searchParams.set("pos", pos);
+      history.replaceState(null, "", url);
+    }
+
+    function cycle(step) {
+      variant = KEYS[(KEYS.indexOf(variant) + step + KEYS.length) % KEYS.length];
+      phaseStart = Date.now();
+      apply();
+    }
+    function cyclePhase() {
+      phase = PHASES[(PHASES.indexOf(phase) + 1) % PHASES.length];
+      phaseStart = Date.now();
+      apply();
+    }
+
+    document.getElementById("prev").onclick = () => cycle(-1);
+    document.getElementById("next").onclick = () => cycle(1);
+    document.getElementById("phase").onclick = cyclePhase;
+    document.getElementById("pos").onclick = () => { pos = pos === "corner" ? "centre" : "corner"; apply(); };
+    document.getElementById("speech").onclick = () => { speechSim = !speechSim; apply(); };
+    document.getElementById("frame").onclick = () => { showFrame = !showFrame; apply(); };
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft") cycle(-1);
+      else if (e.key === "ArrowRight") cycle(1);
+      else if (e.key === "p") cyclePhase();
+      else if (e.key === "o") { pos = pos === "corner" ? "centre" : "corner"; apply(); }
+      else if (e.key === "s") { speechSim = !speechSim; apply(); }
+      else if (e.key === "f") { showFrame = !showFrame; apply(); }
+    });
+
+    function tick(now) {
+      // Speech envelope: bursts of 0.9-2.2s at 0.35-0.95, gaps of 0.25-0.9s near zero.
+      if (phase === "recording" && speechSim) {
+        if (now > nextToggle) {
+          speaking = !speaking;
+          nextToggle = now + (speaking ? 900 + Math.random() * 1300 : 250 + Math.random() * 650);
+        }
+        target = speaking ? 0.35 + Math.random() * 0.6 : Math.random() * 0.05;
+      } else if (phase === "transcribing") {
+        target = 0.2;
+      } else {
+        target = 0.02;
+      }
+
+      level += (target - level) * 0.28;
+      document.body.dataset.voice = level > 0.08 ? "active" : "idle";
+
+      // --- linear wave (A, B only)
+      const wave = document.querySelector(".v-" + variant.toLowerCase() + " [data-wave]");
+      if (wave) {
+        const bars = wave.querySelectorAll("b");
+        const max = variant === "B" ? 22 : 16;
+        bars.forEach((bar, i) => {
+          const centre = 1 - Math.abs(i - (bars.length - 1) / 2) / ((bars.length - 1) / 2);
+          const shimmer = phase === "transcribing" ? (Math.sin(now / 180 + i * 0.5) + 1) * 2 : 0;
+          const jitter = 0.75 + Math.sin(now / 90 + i * 1.7) * 0.25;
+          const h = 4 + level * max * (0.35 + centre * 0.65) * jitter + shimmer;
+          bar.style.height = Math.max(4, Math.min(max, h)).toFixed(1) + "px";
+          bar.style.opacity = Math.min(1, 0.45 + level * 1.6).toFixed(2);
+        });
+      }
+
+      // --- C1 radial rays: length per ray, pushed out from a 22px radius.
+      if (variant === "C1") {
+        rayEls.forEach((ray, i) => {
+          const jitter = 0.6 + (Math.sin(now / 110 + i * 0.8) + 1) * 0.35;
+          const len = 5 + level * 13 * jitter;
+          ray.style.height = len.toFixed(1) + "px";
+          ray.style.transform =
+            "rotate(" + ray.dataset.angle + "deg) translateY(-" + (22 + len / 2).toFixed(1) + "px)";
+          ray.style.opacity = Math.min(1, 0.35 + level * 1.3).toFixed(2);
+        });
+      }
+
+      // --- C2 blob: scale + glow only.
+      const blob = document.querySelector("[data-blob]");
+      if (blob && phase !== "transcribing") {
+        blob.style.transform = "scale(" + (0.86 + level * 0.26).toFixed(3) + ")";
+        blob.style.boxShadow =
+          "0 0 0 " + (level * 12).toFixed(1) + "px rgba(255, 90, 82, " + (0.28 - level * 0.16).toFixed(2) + "), " +
+          "0 6px 20px rgba(0, 0, 0, 0.45)";
+      } else if (blob) {
+        blob.style.boxShadow = "0 6px 20px rgba(0, 0, 0, 0.45)";
+      }
+
+      // --- C3 halo behind the core.
+      const halo = document.querySelector("[data-halo]");
+      if (halo) {
+        halo.style.transform = "scale(" + (0.7 + level * 0.42).toFixed(3) + ")";
+        halo.style.opacity = (0.3 + level * 0.5).toFixed(2);
+      }
+
+      const secs = Math.floor((Date.now() - phaseStart) / 1000);
+      const clock = Math.floor(secs / 60) + ":" + String(secs % 60).padStart(2, "0");
+      document.querySelectorAll("[data-elapsed]").forEach((el) => (el.textContent = clock));
+
+      // Rule 5: surface the state. Everything driving the render, every frame.
+      const [w, h] = VARIANTS[variant].win;
+      const stageArea = w * h;
+      const painted = document.querySelector(".v-" + variant.toLowerCase() + " > *");
+      let dead = "—";
+      if (painted && phase !== "hidden") {
+        const r = painted.getBoundingClientRect();
+        dead = Math.max(0, Math.round((1 - (r.width * r.height) / stageArea) * 100)) + "%";
+      }
+      const smaller = w * h < SHIPPING_WIN[0] * SHIPPING_WIN[1];
+
+      document.getElementById("readout").innerHTML =
+        "variant   " + VARIANTS[variant].name + (VARIANTS[variant].ref ? "  (reference)" : "") + "\n" +
+        "phase     " + phase + "\n" +
+        "position  bottom-" + (pos === "corner" ? "right" : "centre") + "\n" +
+        "elapsed   " + clock + "\n" +
+        "level     " + level.toFixed(3) + "  " + "▁▂▃▄▅▆▇█"[Math.min(7, Math.floor(level * 8))] + "\n" +
+        "voice     " + (level > 0.08 ? "<em>active</em>" : "idle") + "\n" +
+        "window    " + w + "×" + h + "  " + (smaller ? "<em>(" + Math.round((1 - (w*h)/(SHIPPING_WIN[0]*SHIPPING_WIN[1])) * 100) + "% smaller than today)</em>"
+                                                     : "<s>(bigger than today's 264×104)</s>") + "\n" +
+        "dead      " + dead + " of the window is transparent but still clickable";
+
+      requestAnimationFrame(tick);
+    }
+
+    apply();
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

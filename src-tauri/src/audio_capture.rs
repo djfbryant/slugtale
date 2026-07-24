@@ -120,6 +120,27 @@ pub fn audio_level_from_samples(samples: &[f32]) -> f32 {
     mean_square.sqrt().clamp(0.0, 1.0)
 }
 
+fn require_captured_microphone_signal(audio: &CapturedAudio) -> Result<(), AudioCaptureError> {
+    // A denied macOS microphone does not fail the CoreAudio stream. It supplies
+    // a correctly timed buffer of digital silence instead, which Whisper
+    // canonically transcribes as "You" (slugtale-d3k). Real microphones have a
+    // noise floor above this -100 dBFS threshold even in a quiet room.
+    const DIGITAL_SILENCE_EPSILON: f32 = 0.000_01;
+
+    let rms = audio_level_from_samples(&audio.samples);
+    let peak = audio
+        .samples
+        .iter()
+        .fold(0.0f32, |highest, sample| highest.max(sample.abs()));
+    if rms <= DIGITAL_SILENCE_EPSILON && peak <= DIGITAL_SILENCE_EPSILON {
+        return Err(AudioCaptureError::new(
+            "no microphone signal was captured; check Slugtale under System Settings > Privacy & Security > Microphone",
+        ));
+    }
+
+    Ok(())
+}
+
 /// Map a raw microphone RMS level into the 0..1 range the dictation waveform
 /// renders. Raw speech RMS is tiny (~0.06) and barely moves the bars, so the
 /// waveform looked like it drifted on its own rather than reacting to the voice
@@ -438,7 +459,9 @@ where
             }
             DictationEvent::Stop if self.active => {
                 self.active = false;
-                Ok(Some(AudioCaptureOutcome::Completed(self.recorder.stop()?)))
+                let audio = self.recorder.stop()?;
+                require_captured_microphone_signal(&audio)?;
+                Ok(Some(AudioCaptureOutcome::Completed(audio)))
             }
             DictationEvent::Cancel if self.active => {
                 self.active = false;
@@ -553,6 +576,26 @@ mod tests {
             Some(AudioCaptureOutcome::Completed(CapturedAudio::mono_16khz(
                 vec![0.0, 0.2, -0.2]
             )))
+        );
+        assert_eq!(
+            session.recorder().events.borrow().as_slice(),
+            &["start", "stop"]
+        );
+    }
+
+    #[test]
+    fn audio_capture_session_rejects_digital_silence_before_transcription() {
+        let recorder = FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.0; 80_000]));
+        let mut session = AudioCaptureSession::new(recorder);
+
+        session.on_event(DictationEvent::Start).unwrap();
+        let error = session.on_event(DictationEvent::Stop).unwrap_err();
+
+        assert_eq!(
+            error,
+            AudioCaptureError::new(
+                "no microphone signal was captured; check Slugtale under System Settings > Privacy & Security > Microphone"
+            )
         );
         assert_eq!(
             session.recorder().events.borrow().as_slice(),

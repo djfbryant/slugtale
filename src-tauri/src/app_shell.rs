@@ -5,6 +5,17 @@ use tauri::{
     App, Manager,
 };
 
+pub const REAUTHORIZE_PERMISSIONS_ARGUMENT: &str = "--reauthorize-permissions";
+
+pub fn permission_reauthorization_requested<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .any(|arg| arg.as_ref() == REAUTHORIZE_PERMISSIONS_ARGUMENT)
+}
+
 pub fn build_tray_menu_items() -> Vec<(&'static str, &'static str)> {
     vec![("settings", "Settings\u{2026}"), ("quit", "Quit Slugtale")]
 }
@@ -77,6 +88,17 @@ pub fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_app_reauthorization_mode_is_selected_by_its_launch_argument() {
+        assert!(permission_reauthorization_requested([
+            "/Applications/Slugtale.app/Contents/MacOS/slugtale",
+            "--reauthorize-permissions",
+        ]));
+        assert!(!permission_reauthorization_requested([
+            "/Applications/Slugtale.app/Contents/MacOS/slugtale",
+        ]));
+    }
 
     #[test]
     fn settings_window_hides_instead_of_closing() {

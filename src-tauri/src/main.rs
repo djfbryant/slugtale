@@ -229,15 +229,20 @@ fn handle_audio_capture_event(
                 .recorder_mut()
                 .set_level_callback(Some(dictation_audio_level_callback(app.clone())));
         }
-        match guard.on_event(event) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                record_diagnostic_event(
-                    app,
-                    slugtale_lib::DiagnosticEvent::audio_capture_failed(&error),
-                );
-                return Err(error.to_string());
-            }
+        guard.on_event(event)
+    };
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            clear_dictation_audio_level_callback(app);
+            hide_dictation_bar(app);
+            record_diagnostic_event(
+                app,
+                slugtale_lib::DiagnosticEvent::audio_capture_failed(&error),
+            );
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            let _ = slugtale_lib::notify("Slugtale could not capture audio", &error.to_string());
+            return Err(error.to_string());
         }
     };
 
@@ -647,11 +652,32 @@ fn update_registered_hotkey(
     Ok(())
 }
 
+/// The Dictation Bar's user-chosen appearance, pushed to the bar window so it can
+/// paint its accent and align its orb to the edge it was sent to.
+#[derive(Clone, serde::Serialize)]
+struct DictationBarAppearance {
+    position: slugtale_lib::BarPosition,
+    accent: slugtale_lib::AccentColor,
+}
+
+impl DictationBarAppearance {
+    fn from_settings(settings: &slugtale_lib::Settings) -> Self {
+        Self {
+            position: settings.bar_position,
+            accent: settings.accent_color,
+        }
+    }
+}
+
 fn show_dictation_bar(app: &tauri::AppHandle, phase: DictationPhase) {
     if let Some(window) = app.get_webview_window("dictation-bar") {
+        let appearance = DictationBarAppearance::from_settings(&load_current_settings(app));
         // Tell the frontend which state to render before showing, so the bar never
         // flashes a stale "recording" pill when it reappears for transcription.
         let _ = window.emit("dictation-phase", phase.as_str());
+        // Same reason for the appearance: a bar that appears in the old accent or
+        // aligned to the old edge and then jumps is worse than one that never did.
+        let _ = window.emit("dictation-appearance", appearance.clone());
         // Placing the bar reads monitor geometry, and those reads block until the
         // main thread answers them. The global-key worker calls this while holding
         // the hotkey registration lock, and the main thread takes that same lock on
@@ -659,7 +685,11 @@ fn show_dictation_bar(app: &tauri::AppHandle, phase: DictationPhase) {
         // freezes the tray. Hand the window work to the main thread instead of
         // waiting on it (slugtale-1n4).
         let _ = app.run_on_main_thread(move || {
-            position_bottom_center(&window);
+            position_dictation_bar(&window, appearance.position);
+            // Start click-through: at rest the orb covers a seventh of the window,
+            // and the pointer is somewhere else entirely. The bar takes input back
+            // only when the hit test says the pointer is genuinely over the paint.
+            let _ = window.set_ignore_cursor_events(true);
             let _ = window.show();
             if slugtale_lib::dictation_bar_should_take_focus() {
                 let _ = window.set_focus();
@@ -674,29 +704,75 @@ fn hide_dictation_bar(app: &tauri::AppHandle) {
     }
 }
 
-/// Place the Dictation Bar near the bottom-center of the active display, above
-/// the Dock, matching the resident dictation pills users know from FluidVoice
-/// and Wispr Flow.
-fn position_bottom_center(window: &tauri::WebviewWindow) {
+/// Read the display the Dictation Bar is on, in the form the pure geometry
+/// wants. Falls back to the primary monitor when the current one is unknown.
+fn dictation_bar_monitor(window: &tauri::WebviewWindow) -> Option<slugtale_lib::MonitorGeometry> {
     let monitor = match window.current_monitor() {
         Ok(Some(monitor)) => monitor,
         _ => match window.primary_monitor() {
             Ok(Some(monitor)) => monitor,
-            _ => return,
+            _ => return None,
         },
-    };
-
-    let Ok(size) = window.outer_size() else {
-        return;
     };
 
     let screen = monitor.size();
     let origin = monitor.position();
-    // ~96pt of breathing room above the bottom edge, scaled to the display.
-    let margin = (96.0 * monitor.scale_factor()) as i32;
-    let x = origin.x + (screen.width as i32 - size.width as i32) / 2;
-    let y = origin.y + screen.height as i32 - size.height as i32 - margin;
+
+    Some(slugtale_lib::MonitorGeometry {
+        origin_x: origin.x,
+        origin_y: origin.y,
+        width: screen.width,
+        height: screen.height,
+        scale_factor: monitor.scale_factor(),
+    })
+}
+
+/// Place the Dictation Bar along the bottom edge of the active display, at the
+/// corner the user chose, above the Dock. The geometry itself lives in lib.rs;
+/// this only supplies the live monitor and window reads.
+fn position_dictation_bar(window: &tauri::WebviewWindow, position: slugtale_lib::BarPosition) {
+    let Some(monitor) = dictation_bar_monitor(window) else {
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+
+    let (x, y) = slugtale_lib::dictation_bar_origin(&monitor, size.width, size.height, position);
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+/// Hand the pointer to whichever of Slugtale and the app underneath it is
+/// actually over, and tell the bar which one that is.
+///
+/// The bar window is permanently sized for the expanded pill because a Tauri
+/// window cannot grow on hover, so while collapsed most of it is transparent —
+/// and a transparent window still swallows clicks. The frontend polls this while
+/// the bar is visible: it cannot detect the pointer itself, because a window
+/// ignoring cursor events receives no mouse events to detect it with.
+#[tauri::command]
+fn dictation_bar_pointer_over(app: tauri::AppHandle, expanded: bool) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window("dictation-bar") else {
+        return Ok(false);
+    };
+
+    let position = load_current_settings(&app).bar_position;
+    let scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
+    let origin = window.outer_position().map_err(|error| error.to_string())?;
+    let pointer = app.cursor_position().map_err(|error| error.to_string())?;
+
+    let over = slugtale_lib::pointer_is_over_dictation_bar(
+        (pointer.x, pointer.y),
+        (origin.x, origin.y),
+        scale_factor,
+        position,
+        expanded,
+    );
+    window
+        .set_ignore_cursor_events(!over)
+        .map_err(|error| error.to_string())?;
+
+    Ok(over)
 }
 
 #[tauri::command]
@@ -826,6 +902,39 @@ fn save_transcription_settings(
     slugtale_lib::apply_transcription_settings(&mut settings, speed_profile);
     save_current_settings(&app, &settings)?;
     Ok(settings)
+}
+
+#[tauri::command]
+fn save_dictation_bar_settings(
+    app: tauri::AppHandle,
+    bar_position: slugtale_lib::BarPosition,
+    accent_color: slugtale_lib::AccentColor,
+) -> Result<slugtale_lib::Settings, String> {
+    let mut settings = load_current_settings(&app);
+    slugtale_lib::apply_dictation_bar_settings(&mut settings, bar_position, accent_color);
+    save_current_settings(&app, &settings)?;
+    apply_dictation_bar_appearance(&app, &settings);
+    Ok(settings)
+}
+
+/// Push a saved appearance change to a bar that is already on screen, so the user
+/// sees the choice they just made instead of waiting for the next dictation.
+/// Does nothing visible when the bar is hidden — showing it re-sends both.
+fn apply_dictation_bar_appearance(app: &tauri::AppHandle, settings: &slugtale_lib::Settings) {
+    let Some(window) = app.get_webview_window("dictation-bar") else {
+        return;
+    };
+    let appearance = DictationBarAppearance::from_settings(settings);
+    let _ = window.emit("dictation-appearance", appearance.clone());
+
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    // Repositioning reads monitor geometry, which blocks on the main thread;
+    // hand it over rather than waiting on it from here (slugtale-1n4).
+    let _ = app.run_on_main_thread(move || {
+        position_dictation_bar(&window, appearance.position);
+    });
 }
 
 /// Register or unregister the app as an OS login item to match the desired state.
@@ -1069,6 +1178,8 @@ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
 }
 
 fn main() {
+    let reauthorize_permissions =
+        slugtale_lib::permission_reauthorization_requested(std::env::args());
     let app = tauri::Builder::default()
         .manage(slugtale_lib::WhisperRuntimeCache::default())
         .manage(RecordingFeedbackState::default())
@@ -1079,7 +1190,7 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             slugtale_lib::setup_tray(app)?;
@@ -1089,6 +1200,11 @@ fn main() {
             let settings = load_current_settings(app.handle());
             let _ = set_launch_at_login_state(app.handle(), settings.launch_at_login);
             let _ = warm_ready_local_whisper_runtime(app.handle());
+            if reauthorize_permissions {
+                slugtale_lib::show_settings(app.handle().clone());
+                #[cfg(target_os = "macos")]
+                slugtale_lib::request_microphone_access().map_err(std::io::Error::other)?;
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1107,6 +1223,8 @@ fn main() {
             open_text_insertion_settings,
             save_hotkey_settings,
             save_transcription_settings,
+            save_dictation_bar_settings,
+            dictation_bar_pointer_over,
             save_launch_at_login,
             get_local_model_status,
             download_local_model,
