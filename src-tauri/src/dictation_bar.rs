@@ -11,16 +11,28 @@
 
 use crate::settings::BarPosition;
 
-/// Logical size of the Dictation Bar window, sized for the expanded pill.
-pub const BAR_WINDOW_WIDTH_PT: f64 = 232.0;
-pub const BAR_WINDOW_HEIGHT_PT: f64 = 60.0;
+/// Logical size of the Dictation Bar window, sized for the expanded pill plus
+/// the gutter its shadow needs on every side.
+pub const BAR_WINDOW_WIDTH_PT: f64 = 248.0;
+pub const BAR_WINDOW_HEIGHT_PT: f64 = 76.0;
 /// Transparent gutter inside the window so the pill's drop shadow fades out
 /// instead of being sliced off at the window edge.
-pub const BAR_GUTTER_PT: f64 = 8.0;
+///
+/// This has to cover the shadow's reach: a blurred shadow extends roughly its
+/// blur radius past the box, plus its offset on the side it is cast toward. At
+/// `0 4px 12px` that is 16pt below and 12pt elsewhere, so 16pt covers it. The
+/// gutter was 8pt against a `0 6px 22px` shadow and had never been big enough —
+/// the shadow ended in a hard rectangular cut on every edge (slugtale-3d4).
+pub const BAR_GUTTER_PT: f64 = 16.0;
 /// Diameter of the resting orb, which is also the height of the expanded pill.
 pub const BAR_ORB_SIZE_PT: f64 = 44.0;
 /// Breathing room between the bar window and the edges of the display.
-pub const BAR_SCREEN_MARGIN_PT: f64 = 96.0;
+///
+/// Paired with the gutter: what the user sees is the pill, not the window, so
+/// this is `104pt - BAR_GUTTER_PT` and the pill's own edge stays 104pt off the
+/// screen. Growing the gutter without taking it off here would shove the bar up
+/// the screen.
+pub const BAR_SCREEN_MARGIN_PT: f64 = 88.0;
 
 /// The display the bar is being placed on, in the physical pixels Tauri reports.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -149,25 +161,37 @@ mod tests {
 
     #[test]
     fn bottom_center_centres_the_bar_above_the_bottom_edge() {
-        let (x, y) = dictation_bar_origin(&monitor(), 232, 60, BarPosition::BottomCenter);
+        let (x, y) = dictation_bar_origin(&monitor(), 248, 76, BarPosition::BottomCenter);
 
-        assert_eq!(x, (1440 - 232) / 2);
-        assert_eq!(y, 900 - 60 - 96);
+        assert_eq!(x, (1440 - 248) / 2);
+        assert_eq!(y, 900 - 76 - 88);
+    }
+
+    #[test]
+    fn the_pill_sits_at_the_same_distance_from_the_screen_edge_as_its_gutter_grows() {
+        // The user sees the pill, not the window, so the gutter and the screen
+        // margin have to move together. Growing the gutter to fit the shadow
+        // without taking it off the margin would silently raise the bar
+        // (slugtale-3d4).
+        let (_, y) = dictation_bar_origin(&monitor(), 248, 76, BarPosition::BottomCenter);
+        let pill_bottom_from_screen_edge = 900 - (y + 76) + BAR_GUTTER_PT as i32;
+
+        assert_eq!(pill_bottom_from_screen_edge, 104);
     }
 
     #[test]
     fn bottom_corners_stay_inside_the_screen_with_a_non_zero_margin() {
         let monitor = monitor();
 
-        let (left_x, left_y) = dictation_bar_origin(&monitor, 232, 60, BarPosition::BottomLeft);
-        let (right_x, right_y) = dictation_bar_origin(&monitor, 232, 60, BarPosition::BottomRight);
+        let (left_x, left_y) = dictation_bar_origin(&monitor, 248, 76, BarPosition::BottomLeft);
+        let (right_x, right_y) = dictation_bar_origin(&monitor, 248, 76, BarPosition::BottomRight);
 
         assert!(left_x > 0, "left edge must not touch the screen edge");
-        assert_eq!(left_x, 96);
-        assert_eq!(right_x + 232, 1440 - 96);
-        assert!(right_x + 232 < 1440);
+        assert_eq!(left_x, 88);
+        assert_eq!(right_x + 248, 1440 - 88);
+        assert!(right_x + 248 < 1440);
         assert_eq!(left_y, right_y);
-        assert!(left_y + 60 < 900);
+        assert!(left_y + 76 < 900);
     }
 
     #[test]
@@ -182,10 +206,10 @@ mod tests {
             scale_factor: 1.0,
         };
 
-        let (x, y) = dictation_bar_origin(&secondary, 232, 60, BarPosition::BottomCenter);
+        let (x, y) = dictation_bar_origin(&secondary, 248, 76, BarPosition::BottomCenter);
 
-        assert_eq!(x, 1440 + (1920 - 232) / 2);
-        assert_eq!(y, -200 + 1080 - 60 - 96);
+        assert_eq!(x, 1440 + (1920 - 248) / 2);
+        assert_eq!(y, -200 + 1080 - 76 - 88);
     }
 
     #[test]
@@ -197,10 +221,10 @@ mod tests {
             ..monitor()
         };
 
-        let (x, y) = dictation_bar_origin(&retina, 464, 120, BarPosition::BottomLeft);
+        let (x, y) = dictation_bar_origin(&retina, 496, 152, BarPosition::BottomLeft);
 
-        assert_eq!(x, 192);
-        assert_eq!(y, 1800 - 120 - 192);
+        assert_eq!(x, 176);
+        assert_eq!(y, 1800 - 152 - 176);
     }
 
     #[test]
@@ -229,9 +253,9 @@ mod tests {
 
         assert_eq!(centre.width, 44.0);
         assert_eq!(centre.height, 44.0);
-        assert_eq!(centre.x, (232.0 - 44.0) / 2.0);
-        assert_eq!(left.x, 8.0);
-        assert_eq!(right.x + right.width, 232.0 - 8.0);
+        assert_eq!(centre.x, (248.0 - 44.0) / 2.0);
+        assert_eq!(left.x, 16.0);
+        assert_eq!(right.x + right.width, 248.0 - 16.0);
     }
 
     #[test]
@@ -242,17 +266,20 @@ mod tests {
             BarPosition::BottomRight,
         ] {
             let rect = dictation_bar_paint_rect(position, true);
-            assert_eq!(rect.width, 216.0);
-            assert_eq!(rect.x, 8.0, "the pill fills the window minus its gutter");
+            assert_eq!(
+                rect.width, 216.0,
+                "the pill itself is unchanged; only the gutter around it grew"
+            );
+            assert_eq!(rect.x, 16.0, "the pill fills the window minus its gutter");
         }
     }
 
     #[test]
     fn clicks_in_the_transparent_margin_are_not_the_bars_to_take() {
-        // The collapsed orb leaves 86% of the window transparent. A click there
+        // The collapsed orb leaves 90% of the window transparent. A click there
         // belongs to the document underneath, not to Slugtale.
-        let far_right = (200.0, 30.0);
-        let above_the_orb = (116.0, 2.0);
+        let far_right = (216.0, 38.0);
+        let above_the_orb = (124.0, 2.0);
 
         assert!(!pointer_is_over_dictation_bar(
             far_right,
@@ -274,7 +301,7 @@ mod tests {
     fn the_corners_of_a_round_orb_are_not_part_of_it() {
         // The orb is a circle inside a 44pt square. Treating the square as
         // painted would quietly steal the four corners from the app underneath.
-        let top_left_corner = (95.0, 9.0);
+        let top_left_corner = (104.0, 18.0);
 
         assert!(!pointer_is_over_dictation_bar(
             top_left_corner,
@@ -287,7 +314,7 @@ mod tests {
 
     #[test]
     fn the_rounded_ends_of_the_expanded_pill_are_not_part_of_it_either() {
-        let top_left_corner = (9.0, 9.0);
+        let top_left_corner = (17.0, 17.0);
 
         assert!(!pointer_is_over_dictation_bar(
             top_left_corner,
@@ -298,7 +325,7 @@ mod tests {
         ));
         // ...but the straight middle of the same edge is.
         assert!(pointer_is_over_dictation_bar(
-            (116.0, 9.0),
+            (124.0, 17.0),
             (0, 0),
             1.0,
             BarPosition::BottomCenter,
@@ -309,7 +336,7 @@ mod tests {
     #[test]
     fn pointer_over_the_orb_belongs_to_the_bar() {
         assert!(pointer_is_over_dictation_bar(
-            (116.0, 30.0),
+            (124.0, 38.0),
             (0, 0),
             1.0,
             BarPosition::BottomCenter,
@@ -321,7 +348,7 @@ mod tests {
     fn expanding_hands_the_rest_of_the_pill_back_to_the_bar() {
         // The same point that is dead space while collapsed is a live control
         // once the bar has grown, which is what keeps Stop and Cancel clickable.
-        let over_the_controls = (200.0, 30.0);
+        let over_the_controls = (216.0, 38.0);
 
         assert!(!pointer_is_over_dictation_bar(
             over_the_controls,
@@ -344,7 +371,7 @@ mod tests {
         // Pointer and window origin arrive in physical pixels on a 2x display;
         // the orb is described in logical points.
         let window_origin = (1000, 500);
-        let orb_centre_physical = (1000.0 + 116.0 * 2.0, 500.0 + 30.0 * 2.0);
+        let orb_centre_physical = (1000.0 + 124.0 * 2.0, 500.0 + 38.0 * 2.0);
 
         assert!(pointer_is_over_dictation_bar(
             orb_centre_physical,

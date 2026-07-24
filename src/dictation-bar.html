@@ -41,8 +41,9 @@
       align-items: center;
       justify-content: center;
       /* Transparent gutter so the pill's drop shadow fades out inside the window
-         instead of being sliced off at the edge. Matches BAR_GUTTER_PT. */
-      padding: 8px;
+         instead of being sliced off at the edge. Matches BAR_GUTTER_PT, and has
+         to stay big enough for the shadow below (slugtale-3d4). */
+      padding: 16px;
     }
 
     /* The orb hugs whichever edge it was sent to, so it lands in the corner the
@@ -60,15 +61,20 @@
       border-radius: 999px;
       background: rgba(18, 21, 25, 0.92);
       backdrop-filter: blur(14px);
-      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+      /* Reaches 16pt below and 12pt elsewhere, which is what BAR_GUTTER_PT is
+         sized to contain. A bigger shadow needs a bigger gutter or it comes back
+         sliced. */
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
       color: #f3f5f6;
       overflow: hidden;
       transition: width 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
     }
 
-    /* Expanded on hover, and for the whole transcribing phase. Hover is resolved
-       in the backend, not by :hover — a window that ignores cursor events so
-       clicks reach the app underneath receives no mouse events to hover with. */
+    /* Expanded for three reasons, and it shows something different for each:
+       hover means the user reached for the controls, voice means the bar has
+       something to say, transcribing means it is working. Hover is resolved in
+       the backend, not by :hover — a window that ignores cursor events so clicks
+       reach the app underneath receives no mouse events to hover with. */
     body[data-expanded="true"] .bar {
       width: 100%;
     }
@@ -103,32 +109,6 @@
       transition: transform 80ms ease-out, opacity 80ms ease-out;
     }
 
-    /* Transcribing: the audio is already captured, so the accent and its halo go
-       quiet and a ring sweeps the glyph instead. The mic itself stays still — a
-       rotating microphone reads as an error, not as progress. */
-    body[data-phase="transcribing"] .orb {
-      background: rgba(255, 255, 255, 0.1);
-      color: #e8edf1;
-    }
-
-    body[data-phase="transcribing"] .halo {
-      display: none;
-    }
-
-    body[data-phase="transcribing"] .orb::after {
-      content: "";
-      position: absolute;
-      inset: -3px;
-      border-radius: 999px;
-      border: 2px solid rgba(255, 255, 255, 0.16);
-      border-top-color: #e8edf1;
-      animation: spin 0.9s linear infinite;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-
     .tail {
       display: flex;
       align-items: center;
@@ -142,6 +122,44 @@
 
     body[data-expanded="true"] .tail {
       opacity: 1;
+    }
+
+    /* The waveform of the last ~2.4 seconds, and the reason the bar opens itself
+       while you are talking. It takes the whole tail: while the bar is speaking
+       for itself there is nothing else worth showing, and hovering swaps it for
+       the controls. */
+    .wave {
+      display: none;
+      flex: 1;
+      min-width: 0;
+      height: 26px;
+      overflow: hidden;
+    }
+
+    .wave svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body[data-reason="voice"] .wave { display: block; }
+    body[data-reason="voice"] .elapsed,
+    body[data-reason="voice"] .controls { display: none; }
+
+    /* The status stays in the accessibility tree in every state, so the wave
+       replacing the words costs a screen reader nothing. */
+    body[data-reason="voice"] .label,
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
     }
 
     .label {
@@ -188,6 +206,33 @@
       height: 12px;
     }
 
+    /* Transcribing: the audio is already captured, so the accent, its halo and
+       the waveform go quiet and a ring sweeps the glyph instead. The mic itself
+       stays still — a rotating microphone reads as an error, not as progress. */
+    body[data-phase="transcribing"] .orb {
+      background: rgba(255, 255, 255, 0.1);
+      color: #e8edf1;
+    }
+
+    body[data-phase="transcribing"] .halo,
+    body[data-phase="transcribing"] .wave {
+      display: none;
+    }
+
+    body[data-phase="transcribing"] .orb::after {
+      content: "";
+      position: absolute;
+      inset: -3px;
+      border-radius: 999px;
+      border: 2px solid rgba(255, 255, 255, 0.16);
+      border-top-color: #e8edf1;
+      animation: spin 0.9s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
     /* Nothing left to stop once the model is running. */
     body[data-phase="transcribing"] .controls {
       display: none;
@@ -199,15 +244,19 @@
       gap: 6px;
     }
 
+    /* Reduced motion keeps the signal and drops the decoration: the waveform
+       still rises and falls with the voice, but it stops sliding and its edges
+       stop undulating. Removing the feedback outright would leave these users
+       with no way to tell the bar is hearing them at all. */
     @media (prefers-reduced-motion: reduce) {
       .bar { transition: none; }
       .tail { transition: none; }
-      .halo { display: none; }
+      .halo { transition: none; }
       body[data-phase="transcribing"] .orb::after { animation: none; }
     }
   </style>
 </head>
-<body data-phase="recording" data-position="bottom-center" data-expanded="false">
+<body data-phase="recording" data-position="bottom-center" data-expanded="false" data-reason="none">
   <div class="bar" role="group" aria-label="Dictation in progress">
     <span class="orb">
       <span id="halo" class="halo" aria-hidden="true"></span>
@@ -216,6 +265,18 @@
       </svg>
     </span>
     <span class="tail">
+      <span class="wave" aria-hidden="true">
+        <svg viewBox="0 0 160 26" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="voice-envelope" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.25"/>
+              <stop offset="70%" stop-color="var(--accent)" stop-opacity="0.85"/>
+              <stop offset="100%" stop-color="var(--accent)" stop-opacity="1"/>
+            </linearGradient>
+          </defs>
+          <path id="envelope" fill="url(#voice-envelope)"/>
+        </svg>
+      </span>
       <span id="label" class="label" aria-live="polite">Recording</span>
       <span id="elapsed" class="elapsed" aria-hidden="true">0:00</span>
       <span class="controls">
@@ -245,6 +306,37 @@
     // How often the backend is asked where the pointer is. The bar cannot watch
     // the pointer itself while it is letting clicks through to the app below.
     const POINTER_POLL_MS = 100;
+    // The level the frontend treats as voice rather than room noise.
+    const VOICE_LEVEL = 0.08;
+    // How long the bar stays open after the last voice. Without it every gap
+    // between words would slam it shut.
+    const VOICE_HOLD_MS = 700;
+    // audio_capture.rs EMIT_INTERVAL. Used to work out how far between two
+    // levels we are, so the waveform slides continuously instead of stepping one
+    // whole sample every 33ms.
+    const LEVEL_INTERVAL_MS = 33;
+
+    // The waveform's own shape, all settled in the prototype (bd slugtale-6w6).
+    // The user space the envelope is drawn in; stretched to whatever width the
+    // tail ends up, hence preserveAspectRatio="none".
+    const VIEW_WIDTH = 160;
+    const VIEW_MIDDLE = 13;
+    // ~2.4s of history at one sample per level.
+    const HISTORY = 72;
+    // Attack is deliberately near-instant and only the release is slow: smoothing
+    // the rise is what makes a meter feel broken — you speak and nothing happens.
+    // At 0.21 the release settles in ~140ms, which is the most lag that still
+    // reads as reacting to you rather than describing what you already said.
+    const ATTACK = 0.55;
+    const RELEASE = 0.21;
+    // Half-thickness of the strip when silent. Nothing may move this line.
+    const FLOOR = 0.7;
+    // How far the two edges breathe, and how fast the undulation travels. The
+    // depth is multiplied by the level everywhere it is used, so at silence the
+    // wave is exactly flat and exactly still — there is no idle animation here
+    // pretending to be speech.
+    const FLOW_DEPTH = 0.19;
+    const FLOW_RATE = 0.00183;
 
     function invoke(command, args) {
       const core = window.__TAURI__ && window.__TAURI__.core;
@@ -266,6 +358,7 @@
     const halo = document.getElementById("halo");
     const label = document.getElementById("label");
     const elapsed = document.getElementById("elapsed");
+    const envelope = document.getElementById("envelope");
 
     let phase = "recording";
     let phaseStart = Date.now();
@@ -273,15 +366,27 @@
     let pointerPoll = null;
     let targetLevel = 0;
     let renderedLevel = 0;
+    let lastLevelAt = 0;
+    let voiceUntil = 0;
+    let history = new Array(HISTORY).fill(0);
+    let follower = 0;
+    let drift = 0;
+    let lastFrameAt = Date.now();
 
     // Transcribing holds the bar open for its whole duration: it is the one time
-    // the bar has something to report that the user did not ask to see.
-    function expanded() {
-      return phase === "transcribing" || pointerOver;
+    // the bar has something to report that the user did not ask to see. Voice
+    // holds it open too, but only while it lasts — and hover wins over both,
+    // because a pointer on the bar is a reach for Stop or Cancel.
+    function expansionReason(now) {
+      if (pointerOver) return "hover";
+      if (phase === "transcribing") return "transcribing";
+      if (now < voiceUntil) return "voice";
+      return "none";
     }
 
-    function renderExpansion() {
-      document.body.dataset.expanded = String(expanded());
+    function renderExpansion(reason) {
+      document.body.dataset.reason = reason;
+      document.body.dataset.expanded = String(reason !== "none");
     }
 
     // The backend drives the bar's state: "recording" while capturing audio,
@@ -293,7 +398,7 @@
       phaseStart = typeof startedAt === "number" ? startedAt : Date.now();
       document.body.dataset.phase = phase;
       label.textContent = PHASES[phase];
-      renderExpansion();
+      renderExpansion(expansionReason(Date.now()));
     }
 
     function setAppearance(appearance) {
@@ -309,8 +414,74 @@
       document.documentElement.style.setProperty("--accent-bed", accent[2]);
     }
 
+    // One level per emit, newest at the right of the strip. The follower rises
+    // almost instantly and falls slowly, which is what turns syllable-rate spikes
+    // into a body of sound rather than a picket fence.
     function setAudioLevel(level) {
-      targetLevel = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
+      const value = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
+      targetLevel = value;
+      lastLevelAt = Date.now();
+
+      follower += (value - follower) * (value > follower ? ATTACK : RELEASE);
+      history.push(follower);
+      history.shift();
+
+      if (value > VOICE_LEVEL) voiceUntil = lastLevelAt + VOICE_HOLD_MS;
+    }
+
+    function resetWave() {
+      history = new Array(HISTORY).fill(0);
+      follower = 0;
+      drift = 0;
+      targetLevel = 0;
+      renderedLevel = 0;
+      voiceUntil = 0;
+    }
+
+    // Catmull-Rom as cubic beziers, so the curve passes through every sample
+    // instead of cutting the corner off each one.
+    function splinePath(points, start) {
+      let d = (start === false ? "L" : "M") + points[0][0].toFixed(2) + "," + points[0][1].toFixed(2);
+      for (let i = 0; i < points.length - 1; i += 1) {
+        const before = points[Math.max(0, i - 1)];
+        const from = points[i];
+        const to = points[i + 1];
+        const after = points[Math.min(points.length - 1, i + 2)];
+        d += " C" + (from[0] + (to[0] - before[0]) / 6).toFixed(2) + "," + (from[1] + (to[1] - before[1]) / 6).toFixed(2) +
+          " " + (to[0] - (after[0] - from[0]) / 6).toFixed(2) + "," + (to[1] - (after[1] - from[1]) / 6).toFixed(2) +
+          " " + to[0].toFixed(2) + "," + to[1].toFixed(2);
+      }
+      return d;
+    }
+
+    // Half-thickness for one sample. Older samples taper, so the wave decays into
+    // the past instead of being chopped off at the left edge, and the modulation
+    // is scaled by the sample's own value so silence is exactly flat.
+    function edge(value, age, wobble) {
+      return Math.max(FLOOR, value * 11 * (0.55 + 0.45 * age) * (1 + value * wobble));
+    }
+
+    function renderWave(now) {
+      // Where we are between two levels, which is what makes the wave glide
+      // rather than teleport one sample every 33ms.
+      const step = reduceMotion
+        ? 0
+        : Math.max(0, Math.min(1, (now - lastLevelAt) / LEVEL_INTERVAL_MS));
+      const spacing = VIEW_WIDTH / (HISTORY - 2);
+      const top = [];
+      const bottom = [];
+
+      for (let i = 0; i < HISTORY; i += 1) {
+        const x = VIEW_WIDTH - ((HISTORY - 1 - i) - step) * spacing;
+        const age = i / (HISTORY - 1);
+        // Two frequencies, offset phases: the two edges never agree, and a pair
+        // that disagrees reads as a body of liquid where a mirrored pair reads as
+        // a chart.
+        top.push([x, VIEW_MIDDLE - edge(history[i], age, FLOW_DEPTH * Math.sin(age * 5.5 - drift))]);
+        bottom.push([x, VIEW_MIDDLE + edge(history[i], age, FLOW_DEPTH * Math.sin(age * 4.2 - drift * 0.75 + 2.3))]);
+      }
+
+      envelope.setAttribute("d", splinePath(top) + " " + splinePath(bottom.reverse(), false) + " Z");
     }
 
     // A transparent window still swallows clicks, and this one is sized for the
@@ -320,15 +491,19 @@
     // its answer doubles as the hover state, since a click-through window never
     // sees a mouse event of its own.
     async function pollPointer() {
-      const over = await invoke("dictation_bar_pointer_over", { expanded: expanded() });
+      const expanded = document.body.dataset.expanded === "true";
+      const over = await invoke("dictation_bar_pointer_over", { expanded });
       pointerOver = over === true;
-      renderExpansion();
+      renderExpansion(expansionReason(Date.now()));
     }
 
     // The bar is hidden between dictations and the webview keeps running, so the
     // poll is tied to visibility rather than left ticking for the life of the app.
     function setVisible(visible) {
       if (visible && pointerPoll === null) {
+        // A fresh dictation starts from silence rather than inheriting the tail
+        // of the previous one.
+        resetWave();
         pointerPoll = setInterval(pollPointer, POINTER_POLL_MS);
         return;
       }
@@ -336,7 +511,7 @@
         clearInterval(pointerPoll);
         pointerPoll = null;
         pointerOver = false;
-        renderExpansion();
+        renderExpansion(expansionReason(Date.now()));
       }
     }
 
@@ -347,12 +522,20 @@
 
     function renderFrame(_timestamp, now) {
       const at = typeof now === "number" ? now : Date.now();
+      const sinceLastFrame = Math.min(100, at - lastFrameAt);
+      lastFrameAt = at;
 
-      if (!reduceMotion) {
-        renderedLevel += (targetLevel - renderedLevel) * 0.28;
-        halo.style.transform = "scale(" + (0.7 + renderedLevel * 0.42).toFixed(3) + ")";
-        halo.style.opacity = (0.3 + renderedLevel * 0.5).toFixed(2);
-      }
+      renderedLevel += (targetLevel - renderedLevel) * 0.28;
+      halo.style.transform = "scale(" + (0.7 + renderedLevel * 0.42).toFixed(3) + ")";
+      halo.style.opacity = (0.3 + renderedLevel * 0.5).toFixed(2);
+
+      // Time-based rather than per-frame, so the undulation travels at the same
+      // speed on a 120Hz display as on a 60Hz one.
+      if (!reduceMotion) drift += FLOW_RATE * sinceLastFrame;
+
+      const reason = expansionReason(at);
+      renderExpansion(reason);
+      if (reason === "voice") renderWave(at);
 
       elapsed.textContent = clockLabel(at);
     }
@@ -382,6 +565,7 @@
 
     setPhase("recording");
     setAudioLevel(0);
+    resetWave();
     requestAnimationFrame(animate);
 
     const events = window.__TAURI__ && window.__TAURI__.event;

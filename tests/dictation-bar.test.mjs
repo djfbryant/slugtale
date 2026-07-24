@@ -20,6 +20,7 @@ function loadDictationBar({ invoke = async () => false, reduceMotion = false } =
 
   function createElement(id = "") {
     const listeners = new Map();
+    const attributes = new Map();
     return {
       id,
       dataset: {},
@@ -28,6 +29,13 @@ function loadDictationBar({ invoke = async () => false, reduceMotion = false } =
       textContent: "",
       style: {},
       listeners,
+      attributes,
+      setAttribute(name, value) {
+        attributes.set(name, value);
+      },
+      getAttribute(name) {
+        return attributes.has(name) ? attributes.get(name) : null;
+      },
       addEventListener(type, handler) {
         listeners.set(type, handler);
       },
@@ -113,6 +121,14 @@ window.__slugtaleBar = {
     leaveBar: () => elements.get(".bar").listeners.get("mouseleave")(),
     api: context.window.__slugtaleBar
   };
+}
+
+// The envelope's y coordinates, which are where its amplitude lives. Comparing
+// the whole path would be useless: the wave slides continuously, so every x
+// changes on every frame even when the shape is dead still.
+function amplitudes(bar) {
+  const d = bar.elements.get("envelope").getAttribute("d") || "";
+  return (d.match(/-?\d+\.\d+,(-?\d+\.\d+)/g) || []).map((pair) => Number(pair.split(",")[1]));
 }
 
 test("the bar rests as an orb and expands for the whole transcribing phase", () => {
@@ -243,13 +259,92 @@ test("the elapsed clock counts the current phase", () => {
   assert.equal(bar.elements.get("elapsed").textContent, "1:07");
 });
 
-test("reduced motion leaves the halo alone", () => {
+test("reduced motion keeps the level signal and drops only the travel", () => {
+  // The bar used to hide the halo outright under prefers-reduced-motion, which
+  // left those users with no way at all to tell it was hearing them. The signal
+  // now stays and the decoration goes: the wave still rises and falls, but it
+  // does not slide sideways or undulate.
   const bar = loadDictationBar({ reduceMotion: true });
 
   bar.api.setAudioLevel(0.9);
   bar.api.renderFrame(16);
+  assert.notEqual(bar.elements.get("halo").style.transform, undefined);
 
-  assert.equal(bar.elements.get("halo").style.transform, undefined);
+  const before = amplitudes(bar);
+  bar.api.renderFrame(600);
+
+  assert.deepEqual(amplitudes(bar), before, "no drift and no glide between frames");
+});
+
+test("the bar opens itself while it hears you, and closes again after", () => {
+  const bar = loadDictationBar();
+  const now = Date.now();
+
+  bar.api.setPhase("recording");
+  bar.api.setAudioLevel(0.4);
+  bar.api.renderFrame(0, now);
+  assert.equal(bar.body.dataset.expanded, "true");
+  assert.equal(bar.body.dataset.reason, "voice");
+
+  // Held open across the gaps between words...
+  bar.api.setAudioLevel(0);
+  bar.api.renderFrame(0, now + 400);
+  assert.equal(bar.body.dataset.expanded, "true");
+
+  // ...but not indefinitely.
+  bar.api.renderFrame(0, now + 1_500);
+  assert.equal(bar.body.dataset.expanded, "false");
+  assert.equal(bar.body.dataset.reason, "none");
+});
+
+test("room noise is not voice, so a quiet room leaves the bar shut", () => {
+  const bar = loadDictationBar();
+
+  bar.api.setPhase("recording");
+  bar.api.setAudioLevel(0.05);
+  bar.api.renderFrame(0, Date.now());
+
+  assert.equal(bar.body.dataset.expanded, "false");
+});
+
+test("a pointer on the bar beats the voice, because it is a reach for the controls", async () => {
+  const bar = loadDictationBar({ invoke: async () => true });
+
+  bar.api.setPhase("recording");
+  bar.api.setAudioLevel(0.9);
+  await bar.api.pollPointer();
+
+  assert.equal(bar.body.dataset.reason, "hover");
+});
+
+test("the waveform is flat and dead still while the room is silent", () => {
+  // The rule the old drifting waveform broke (slugtale-hla): every part of the
+  // wave's movement is scaled by the level, so silence is a flat, motionless
+  // line rather than something that looks like it can hear a quiet room.
+  const bar = loadDictationBar();
+  const now = Date.now();
+
+  bar.api.setPhase("recording");
+  // Open it with real voice, then flush the whole history back to silence while
+  // the hold keeps the wave on screen.
+  bar.api.setAudioLevel(0.9);
+  for (let sample = 0; sample < 120; sample += 1) bar.api.setAudioLevel(0);
+
+  bar.api.renderFrame(0, now);
+  const silent = amplitudes(bar);
+  bar.api.renderFrame(0, now + 500);
+
+  assert.deepEqual(amplitudes(bar), silent, "silence must not move the wave");
+  // The strip is a filled shape, so a flat line is two edges: every point sits
+  // exactly the floor thickness from the centre line, top or bottom.
+  assert.ok(
+    silent.every((y) => Math.abs(Math.abs(y - 13) - 0.7) < 0.01),
+    "silence must be a flat line at the floor thickness"
+  );
+
+  bar.api.setAudioLevel(0.9);
+  bar.api.renderFrame(0, now + 520);
+  assert.notDeepEqual(amplitudes(bar), silent);
 });
 
 test("the bar only watches the pointer while it is on screen", async () => {
