@@ -114,6 +114,38 @@ If you already have a different code-signing identity, use it like this:
 SLUGTALE_SIGN_IDENTITY="Your Code Signing Identity" npm run dev
 ```
 
+## Install Locally On macOS
+
+`npm run dev` builds a debug bundle inside the repository. To install Slugtale
+as a normal Mac app you can launch from Spotlight or Launchpad, build and
+install the release bundle:
+
+```sh
+npm run macos:install
+```
+
+This builds an optimised `.app` with Metal-accelerated Whisper, signs it with
+the `Slugtale Dev` identity, quits any running copy, replaces
+`/Applications/Slugtale.app`, and opens it. The signing identity and install
+location can be overridden:
+
+```sh
+SLUGTALE_SIGN_IDENTITY="Your Code Signing Identity" \
+SLUGTALE_INSTALL_DIR="$HOME/Applications" npm run macos:install
+```
+
+To produce the signed release bundle without installing it, add `--build-only`:
+
+```sh
+npm run macos:install -- --build-only
+```
+
+The installed app keeps its settings, model, and privacy permissions across
+reinstalls because the bundle identifier and signing identity stay stable.
+Because the certificate is self-signed rather than notarized by Apple, this
+build is only trusted on the Mac that created it — see ADR-0022 for the planned
+distribution story.
+
 ## First Run Setup
 
 Open Slugtale from the menu bar and complete the readiness checklist:
@@ -198,7 +230,16 @@ build with both runtime features:
 PATH=$HOME/.cargo/bin:$PATH tauri build --features local-whisper-runtime,local-whisper-runtime-metal
 ```
 
-Release packaging is not the first target yet. Signing, notarization, installer
+`npm run macos:install` wraps that command and also signs and installs the
+result — see [Install Locally On macOS](#install-locally-on-macos).
+
+Release builds compile whisper.cpp from source, which needs an explicit macOS
+deployment target because `ggml` uses `std::filesystem`. That target is set once
+in `src-tauri/tauri.conf.json` as `bundle.macOS.minimumSystemVersion`; lowering
+it below `10.15` breaks the build. On Apple Silicon the Rust target raises the
+real floor to macOS 11.0 regardless of that setting.
+
+Signing here means a local self-signed identity. Apple notarization, installer
 polish, and release distribution still need product work before this is a
 friendlier end-user install.
 

@@ -7,6 +7,7 @@
     "dev": "node scripts/run-dev.js",
     "dev:raw": "PATH=$HOME/.cargo/bin:$PATH tauri dev --features local-whisper-runtime",
     "build": "PATH=$HOME/.cargo/bin:$PATH tauri build --features local-whisper-runtime",
+    "macos:install": "node scripts/install-macos-app.js",
     "macos:reset-permissions": "node scripts/reset-dev-permissions.js",
     "test": "node --test && npm run test:rust",
     "test:rust": "node scripts/run-cargo.js test --lib"

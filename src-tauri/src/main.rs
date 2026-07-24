@@ -652,11 +652,19 @@ fn show_dictation_bar(app: &tauri::AppHandle, phase: DictationPhase) {
         // Tell the frontend which state to render before showing, so the bar never
         // flashes a stale "recording" pill when it reappears for transcription.
         let _ = window.emit("dictation-phase", phase.as_str());
-        position_bottom_center(&window);
-        let _ = window.show();
-        if slugtale_lib::dictation_bar_should_take_focus() {
-            let _ = window.set_focus();
-        }
+        // Placing the bar reads monitor geometry, and those reads block until the
+        // main thread answers them. The global-key worker calls this while holding
+        // the hotkey registration lock, and the main thread takes that same lock on
+        // the next key transition — doing the work inline deadlocks both threads and
+        // freezes the tray. Hand the window work to the main thread instead of
+        // waiting on it (slugtale-1n4).
+        let _ = app.run_on_main_thread(move || {
+            position_bottom_center(&window);
+            let _ = window.show();
+            if slugtale_lib::dictation_bar_should_take_focus() {
+                let _ = window.set_focus();
+            }
+        });
     }
 }
 
