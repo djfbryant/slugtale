@@ -156,6 +156,18 @@ Then open Slugtale settings:
 
 The app is ready when every item in the readiness checklist is marked ready.
 
+If the installed app does not appear under Microphone, or macOS will not ask
+again after access was denied, reset only Slugtale's grants and relaunch the
+installed app in permission-recovery mode:
+
+```sh
+npm run macos:reauthorize
+```
+
+Accept the fresh Microphone prompt, then use `Open Accessibility` in Slugtale
+settings and enable the installed app. This command intentionally clears both
+existing grants for `com.slugtale.desktop`; normal builds and reinstalls do not.
+
 ### Rebuild after making changes
 
 Run the same command after pulling or making source changes:
@@ -374,6 +386,16 @@ The developer-run build from `npm run dev` and the installed build at
 `/Applications/Slugtale.app` have separate grants, so make sure you enable the
 copy you are currently running. Quit and reopen that copy after changing the
 permission.
+
+If the installed app is missing from the Microphone list or macOS will not
+prompt again, run:
+
+```sh
+npm run macos:reauthorize
+```
+
+This quits the installed app, resets its Microphone and Accessibility grants,
+and relaunches it to produce a fresh Microphone prompt.
 
 ### Text insertion or Accessibility permission stays missing
 

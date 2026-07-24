@@ -5,28 +5,71 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Slugtale Settings</title>
   <style>
+    /* Colour lives in tokens so the window can follow the system appearance
+       without a second copy of the stylesheet. There is no in-app theme
+       selector: the OS decides. */
     :root {
-      color: #1f2933;
-      background: #f6f7f5;
+      --bg: #eef0ef;
+      --surface: #ffffff;
+      --surface-sunken: #f6f7f5;
+      --rail: #e9ebec;
+      --text: #1f2933;
+      --text-dim: #6c757d;
+      --text-faint: #8a929a;
+      --border: #e3e6e8;
+      --border-strong: #d4d9dc;
+      --accent: #2674a6;
+      --accent-soft: #eaf2f8;
+      --ok: #2f9e5f;
+      --ok-text: #1f7a44;
+      --warn: #e08c2e;
+      --warn-soft: #fdf6ec;
+      --warn-text: #946212;
+      --danger: #9a3726;
+      --shadow: 0 1px 2px rgba(24, 34, 44, 0.06);
+      /* Text drawn on top of an accent/ok/warn fill, in both appearances. */
+      --on-fill: #ffffff;
+
+      color-scheme: light dark;
+      color: var(--text);
+      background: var(--bg);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 14px;
       line-height: 1.45;
     }
 
-    * {
-      box-sizing: border-box;
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #17191c;
+        --surface: #212529;
+        --surface-sunken: #1a1d20;
+        --rail: #141619;
+        --text: #e9edf0;
+        --text-dim: #9aa4ad;
+        --text-faint: #79838c;
+        --border: #2c3238;
+        --border-strong: #3a4148;
+        --accent: #4a9fd8;
+        --accent-soft: #1b2a35;
+        --ok: #3fbb75;
+        --ok-text: #5ccb8b;
+        /* Amber needs its own warm-dark tint here — a dimmed light amber glows. */
+        --warn: #d9a03f;
+        --warn-soft: #2a2115;
+        --warn-text: #e0b165;
+        --danger: #e08072;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+      }
     }
+
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      min-height: 100vh;
-      background: #f6f7f5;
-    }
-
-    main {
-      width: min(100%, 560px);
-      margin: 0 auto;
-      padding: 24px;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
     }
 
     .sr-only {
@@ -41,244 +84,327 @@
       border: 0;
     }
 
-    header {
+    /* ---------- shell: icon rail + content ---------- */
+
+    .shell {
+      display: grid;
+      grid-template-columns: 62px minmax(0, 1fr);
+      height: 100%;
+    }
+
+    .rail {
       display: flex;
+      flex-direction: column;
       align-items: center;
+      gap: 4px;
+      padding: 10px 0;
+      background: var(--rail);
+      border-right: 1px solid var(--border);
+    }
+
+    .rail-button {
+      position: relative;
+      display: grid;
+      place-items: center;
+      gap: 3px;
+      width: 48px;
+      padding: 7px 0 6px;
+      border: 0;
+      border-radius: 10px;
+      background: none;
+      color: var(--text-dim);
+      font: inherit;
+      font-size: 0.62rem;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+    }
+
+    .rail-button svg { width: 18px; height: 18px; }
+    .rail-button[data-active="true"] { background: var(--accent-soft); color: var(--accent); }
+    .rail-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    .rail-badge {
+      position: absolute;
+      top: 5px;
+      right: 9px;
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--warn);
+      border: 1.5px solid var(--rail);
+    }
+
+    .rail-badge[hidden] { display: none; }
+
+    .content {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: var(--surface);
+    }
+
+    .content-head {
+      display: flex;
+      align-items: flex-start;
       justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 24px;
+      gap: 12px;
+      padding: 20px 22px 12px;
     }
 
-    h1 {
+    .content-head h1 {
       margin: 0;
-      font-size: 1.45rem;
-      font-weight: 650;
-    }
-
-    h2 {
-      margin: 0 0 10px;
-      font-size: 0.78rem;
-      font-weight: 650;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color: #8a929a;
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
     }
 
     .summary {
-      margin: 4px 0 0;
-      color: #5b6770;
+      margin: 3px 0 0;
+      color: var(--text-dim);
+      font-size: 0.84rem;
     }
+
+    .content-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding: 0 22px 20px;
+    }
+
+    /* ---------- atoms ---------- */
 
     .status-pill {
       display: inline-flex;
       align-items: center;
-      gap: 7px;
-      padding: 5px 12px;
-      border: 1px solid #d6dadd;
+      gap: 6px;
+      flex: 0 0 auto;
+      margin-top: 4px;
+      padding: 3px 10px;
+      border: 1px solid var(--border-strong);
       border-radius: 999px;
-      background: #ffffff;
-      color: #5b6770;
-      font-weight: 600;
-      font-size: 0.85rem;
+      background: var(--surface);
+      color: var(--text-dim);
+      font-size: 0.76rem;
+      font-weight: 650;
       white-space: nowrap;
     }
 
     .status-pill::before {
       content: "";
-      width: 8px;
-      height: 8px;
+      width: 7px;
+      height: 7px;
       border-radius: 999px;
-      background: #b3bbc2;
+      background: var(--text-faint);
     }
 
     .status-pill[data-ready="true"] {
-      border-color: #cfe6d8;
-      color: #1f7a44;
+      border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+      color: var(--ok-text);
     }
 
-    .status-pill[data-ready="true"]::before {
-      background: #2f9e5f;
-    }
+    .status-pill[data-ready="true"]::before { background: var(--ok); }
 
     .status-pill[data-ready="false"] {
-      border-color: #efd3a3;
-      color: #946212;
+      border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+      color: var(--warn-text);
     }
 
-    .status-pill[data-ready="false"]::before {
-      background: #e08c2e;
-    }
+    .status-pill[data-ready="false"]::before { background: var(--warn); }
 
-    .section {
-      margin-top: 26px;
-    }
-
-    .checklist {
-      display: grid;
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       gap: 6px;
-      margin: 0;
-      padding: 0;
-      list-style: none;
+      min-height: 28px;
+      border: 1px solid var(--border-strong);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.84rem;
+      font-weight: 600;
+      padding: 3px 11px;
+      cursor: pointer;
     }
+
+    button svg { width: 14px; height: 14px; flex: 0 0 auto; }
+    button.primary { border-color: var(--accent); background: var(--accent); color: var(--on-fill); }
+    button.ghost { border-color: transparent; background: none; color: var(--accent); padding: 3px 7px; }
+    button.danger { border-color: color-mix(in srgb, var(--danger) 40%, transparent); color: var(--danger); }
+    button:disabled { cursor: not-allowed; opacity: 0.5; }
+    button[hidden] { display: none; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    input[type="text"] {
+      min-height: 28px;
+      width: 160px;
+      border: 1px solid var(--accent);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.84rem;
+      padding: 3px 8px;
+    }
+
+    input[type="text"][hidden] { display: none; }
+    input[type="checkbox"] { width: 36px; height: 20px; accent-color: var(--accent); }
+
+    .keys { display: inline-flex; gap: 4px; }
+
+    .keys kbd {
+      display: grid;
+      place-items: center;
+      min-width: 23px;
+      height: 23px;
+      padding: 0 6px;
+      /* The border does the work in dark mode; a fill alone reads as flat text. */
+      border: 1px solid var(--border-strong);
+      border-bottom-width: 2px;
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.8rem;
+      font-weight: 650;
+    }
+
+    .segmented {
+      display: inline-flex;
+      padding: 2px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface-sunken);
+    }
+
+    .segmented button {
+      min-height: 24px;
+      padding: 2px 10px;
+      border: 0;
+      border-radius: 6px;
+      background: none;
+      color: var(--text-dim);
+      font-size: 0.8rem;
+    }
+
+    .segmented button[aria-pressed="true"] {
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: var(--shadow);
+    }
+
+    /* ---------- rows ---------- */
+
+    .row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+      padding: 13px 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .row:first-child { border-top: 0; }
+    .row[hidden] { display: none; }
+
+    .row-label { font-size: 0.9rem; font-weight: 600; }
+
+    .row-sub {
+      display: block;
+      margin-top: 1px;
+      color: var(--text-dim);
+      font-size: 0.79rem;
+      font-weight: 400;
+      overflow-wrap: anywhere;
+    }
+
+    .row-control { display: inline-flex; align-items: center; gap: 8px; }
+
+    .note {
+      margin: 12px 0 0;
+      color: var(--text-dim);
+      font-size: 0.79rem;
+    }
+
+    .note.error { color: var(--danger); }
+
+    /* ---------- readiness ---------- */
+
+    .checklist { display: grid; margin: 0; padding: 0; list-style: none; }
 
     .item {
       display: grid;
-      grid-template-columns: 22px minmax(0, 1fr) auto;
+      grid-template-columns: 18px minmax(0, 1fr) auto;
       align-items: center;
-      gap: 12px;
-      padding: 11px 14px;
-      border: 1px solid #e7eaec;
-      border-radius: 10px;
-      background: #ffffff;
+      gap: 11px;
+      padding: 11px 0;
+      border-top: 1px solid var(--border);
     }
 
-    /* Completed: calm green so the eye can skip past it. */
-    .item[data-ready="true"] {
-      border-color: #d3e7da;
-      background: #f2f8f4;
-    }
-
-    /* Required and outstanding: amber, the only rows that ask for action. */
-    .item[data-ready="false"][data-required="true"] {
-      border-color: #efd3a3;
-      background: #fdf6ec;
-    }
+    .item:first-child { border-top: 0; }
 
     .icon {
       display: grid;
       place-items: center;
-      width: 22px;
-      height: 22px;
+      width: 18px;
+      height: 18px;
       border-radius: 999px;
-      background: #e7eaec;
-      color: #7b828a;
+      background: var(--border);
+      color: var(--text-dim);
     }
 
-    .icon svg {
-      width: 14px;
-      height: 14px;
-    }
+    .icon svg { width: 12px; height: 12px; }
+    .item[data-ready="true"] .icon { background: var(--ok); color: var(--on-fill); }
+    .item[data-ready="false"][data-required="true"] .icon { background: var(--warn); color: var(--on-fill); }
 
-    .item[data-ready="true"] .icon {
-      background: #2f9e5f;
-      color: #ffffff;
-    }
-
-    .item[data-ready="false"][data-required="true"] .icon {
-      background: #e08c2e;
-      color: #ffffff;
-    }
-
-    .copy {
-      min-width: 0;
-    }
-
-    .copy strong {
-      display: block;
-      color: #1f2933;
-      font-size: 0.95rem;
-      font-weight: 600;
-    }
+    .copy { min-width: 0; }
+    .copy strong { display: block; font-size: 0.88rem; font-weight: 600; }
 
     .copy small {
       display: block;
-      margin-top: 2px;
-      color: #6c757d;
-      font-size: 0.83rem;
+      margin-top: 1px;
+      color: var(--text-dim);
+      font-size: 0.78rem;
     }
 
-    .item-action {
-      min-height: 30px;
-      padding: 5px 10px;
-      white-space: nowrap;
-    }
+    /* ---------- blocker banner ---------- */
 
-    .controls {
+    .blocker {
       display: grid;
-      gap: 14px;
-    }
-
-    .field {
-      display: grid;
-      gap: 6px;
-      color: #3a424a;
-      font-weight: 600;
-      font-size: 0.9rem;
-    }
-
-    input,
-    select {
-      width: 100%;
-      min-height: 38px;
-      border: 1px solid #d4d9dc;
-      border-radius: 9px;
-      background: #ffffff;
-      color: #1f2933;
-      font: inherit;
-      padding: 8px 10px;
-    }
-
-    input:disabled,
-    select:disabled {
-      background: #f4f5f4;
-      color: #8a929a;
-    }
-
-    .model-panel {
-      display: grid;
-      gap: 12px;
-      padding: 14px;
-      border: 1px solid #e7eaec;
-      border-radius: 10px;
-      background: #ffffff;
-    }
-
-    .model-head {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
       gap: 10px;
+      margin-bottom: 12px;
+      padding: 9px 11px;
+      border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+      border-radius: 9px;
+      background: var(--warn-soft);
+      font-size: 0.84rem;
     }
 
-    .model-head strong {
-      font-size: 0.95rem;
-      font-weight: 600;
-    }
+    .blocker[hidden] { display: none; }
+    .blocker strong { display: block; font-weight: 650; }
+    .blocker small { color: var(--warn-text); }
 
-    .model-state {
-      font-size: 0.82rem;
-      font-weight: 600;
-      color: #6c757d;
-    }
-
-    .model-state[data-present="true"] {
-      color: #1f7a44;
-    }
-
-    .model-path {
-      display: block;
-      color: #6c757d;
-      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
-      font-size: 0.8rem;
-      overflow-wrap: anywhere;
-    }
+    /* ---------- model ---------- */
 
     .progress {
       height: 6px;
+      margin: 10px 0 0;
       border-radius: 999px;
-      background: #e7eaec;
+      background: var(--border);
       overflow: hidden;
     }
 
-    .progress[hidden] {
-      display: none;
-    }
+    .progress[hidden] { display: none; }
 
     .progress-bar {
       height: 100%;
       width: 0;
       border-radius: inherit;
-      background: #2674a6;
+      background: var(--accent);
       transition: width 0.15s ease;
     }
 
@@ -288,213 +414,160 @@
     }
 
     @keyframes progress-slide {
-      0% {
-        transform: translateX(-100%);
-      }
-      100% {
-        transform: translateX(285%);
-      }
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(285%); }
     }
 
-    .model-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
+    .mono {
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 0.76rem;
     }
 
-    .settings-actions {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }
-
-    .toggle {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      color: #3a424a;
-      font-weight: 600;
-      font-size: 0.9rem;
-    }
-
-    .toggle input {
-      width: 40px;
-      min-height: 22px;
-      accent-color: #2674a6;
-    }
-
-    .actions {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-top: 26px;
-      padding-top: 18px;
-      border-top: 1px solid #e3e6e8;
-    }
-
-    button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 7px;
-      min-height: 38px;
-      border: 0;
-      border-radius: 9px;
-      background: #2674a6;
-      color: #ffffff;
-      font: inherit;
-      font-weight: 650;
-      padding: 8px 16px;
-      cursor: pointer;
-    }
-
-    button svg {
-      width: 16px;
-      height: 16px;
-      flex: 0 0 auto;
-    }
-
-    button.secondary {
-      border: 1px solid #cdd3d7;
-      background: #ffffff;
-      color: #3a424a;
-    }
-
-    button.danger {
-      border: 1px solid #e0c0bb;
-      background: #ffffff;
-      color: #9a3726;
-    }
-
-    button:disabled {
-      cursor: not-allowed;
-      background: #aeb6bc;
-      color: #f3f5f6;
-    }
-
-    button.secondary:disabled,
-    button.danger:disabled {
-      border-color: #e1e5e7;
-      background: #f4f5f4;
-      color: #9aa1a8;
-    }
-
-    .note {
-      max-width: 280px;
-      color: #6c757d;
-      font-size: 0.84rem;
-    }
-
-    .note.error {
-      color: #9a3726;
-    }
-
-    @media (max-width: 520px) {
-      main {
-        padding: 18px;
-      }
-
-      header,
-      .actions,
-      .settings-actions {
-        align-items: stretch;
-        flex-direction: column;
-      }
-
-      .status-pill,
-      .item-action,
-      .actions button,
-      .settings-actions button,
-      .note {
-        width: 100%;
-      }
-    }
+    .pane[hidden] { display: none; }
   </style>
 </head>
 <body>
-  <main>
-    <header>
-      <div>
-        <h1>Slugtale</h1>
-        <p id="summary" class="summary">Checking dictation readiness…</p>
+  <div class="shell">
+    <nav class="rail" aria-label="Settings sections">
+      <button id="rail-status" class="rail-button" type="button" data-pane="status" data-active="true">
+        <span id="rail-icon-status" class="rail-icon"></span>
+        <span>Status</span>
+        <span id="badge-status" class="rail-badge" hidden></span>
+      </button>
+      <button id="rail-dictation" class="rail-button" type="button" data-pane="dictation" data-active="false">
+        <span id="rail-icon-dictation" class="rail-icon"></span>
+        <span>Dictation</span>
+        <span id="badge-dictation" class="rail-badge" hidden></span>
+      </button>
+      <button id="rail-model" class="rail-button" type="button" data-pane="model" data-active="false">
+        <span id="rail-icon-model" class="rail-icon"></span>
+        <span>Model</span>
+        <span id="badge-model" class="rail-badge" hidden></span>
+      </button>
+      <button id="rail-general" class="rail-button" type="button" data-pane="general" data-active="false">
+        <span id="rail-icon-general" class="rail-icon"></span>
+        <span>General</span>
+        <span id="badge-general" class="rail-badge" hidden></span>
+      </button>
+    </nav>
+
+    <main class="content">
+      <div class="content-head">
+        <div>
+          <h1 id="pane-title">Status</h1>
+          <p id="summary" class="summary">Checking dictation readiness…</p>
+        </div>
+        <div id="overall-status" class="status-pill" data-ready="false">Not ready</div>
       </div>
-      <div id="overall-status" class="status-pill" data-ready="false">Not ready</div>
-    </header>
 
-    <section class="section" aria-labelledby="readiness-title">
-      <h2 id="readiness-title">Readiness</h2>
-      <ul id="readiness-list" class="checklist" aria-live="polite"></ul>
-    </section>
-
-    <section class="section" aria-labelledby="settings-title">
-      <h2 id="settings-title">Setup</h2>
-      <div class="controls">
-        <div class="model-panel">
-          <div class="model-head">
-            <strong>Local model</strong>
-            <span id="model-state" class="model-state" data-present="false">Checking…</span>
+      <div class="content-scroll">
+        <!-- The first outstanding step follows the user onto whichever pane they
+             are on, so setup never depends on visiting Status. -->
+        <div id="blocker-banner" class="blocker" hidden>
+          <div>
+            <strong id="blocker-title"></strong>
+            <small id="blocker-detail"></small>
           </div>
-          <code id="model-path" class="model-path">Checking model path…</code>
+          <button id="blocker-action" type="button" class="primary"></button>
+        </div>
+
+        <section id="pane-status" class="pane" aria-labelledby="pane-title">
+          <ul id="readiness-list" class="checklist" aria-live="polite"></ul>
+        </section>
+
+        <section id="pane-dictation" class="pane" aria-labelledby="pane-title" hidden>
+          <div class="row">
+            <span class="row-label">
+              Shortcut
+              <span class="row-sub">While another app has focus</span>
+            </span>
+            <span class="row-control">
+              <span id="hotkey-display" class="keys"></span>
+              <input id="hotkey-input" type="text" hidden placeholder="Press a shortcut" autocomplete="off" spellcheck="false" aria-label="Hotkey" />
+              <button id="hotkey-record-button" type="button" class="ghost"></button>
+              <button id="clear-hotkey-button" type="button" class="ghost"></button>
+            </span>
+          </div>
+          <div class="row">
+            <span class="row-label">
+              Activation
+              <span class="row-sub">How the hotkey behaves</span>
+            </span>
+            <span class="segmented" role="group" aria-label="Activation mode">
+              <button id="mode-toggle" type="button" data-mode="toggle" aria-pressed="true">Toggle</button>
+              <button id="mode-hold" type="button" data-mode="hold" aria-pressed="false">Hold</button>
+            </span>
+          </div>
+          <div class="row">
+            <span class="row-label">
+              Speed vs. accuracy
+              <span class="row-sub">Applies to every dictation</span>
+            </span>
+            <span class="segmented" role="group" aria-label="Speed versus accuracy">
+              <button id="speed-fast" type="button" data-profile="fast" aria-pressed="false">Fast</button>
+              <button id="speed-balanced" type="button" data-profile="balanced" aria-pressed="true">Balanced</button>
+              <button id="speed-accurate" type="button" data-profile="accurate" aria-pressed="false">Accurate</button>
+            </span>
+          </div>
+          <p id="settings-message" class="note" aria-live="polite"></p>
+          <p id="transcription-message" class="note" aria-live="polite"></p>
+        </section>
+
+        <section id="pane-model" class="pane" aria-labelledby="pane-title" hidden>
+          <div class="row">
+            <span class="row-label">
+              <span id="model-name">base.en</span>
+              <span id="model-state" class="row-sub" data-present="false">Checking…</span>
+            </span>
+            <span class="row-control">
+              <button id="download-model-button" type="button" class="primary"></button>
+            </span>
+          </div>
           <div id="model-progress" class="progress" hidden>
             <div class="progress-bar"></div>
           </div>
-          <div class="model-actions">
-            <button id="download-model-button" type="button" class="secondary"></button>
-            <button id="reveal-model-button" type="button" class="secondary"></button>
-            <button id="delete-model-button" type="button" class="danger" disabled></button>
+          <div id="model-location-row" class="row">
+            <span class="row-label">
+              Location
+              <code id="model-path" class="row-sub mono">Checking model path…</code>
+            </span>
+            <span class="row-control">
+              <button id="reveal-model-button" type="button" class="ghost"></button>
+            </span>
           </div>
-          <div id="model-message" class="note">Captured audio and transcriptions stay on this machine.</div>
-        </div>
-        <label class="field">
-          Hotkey
-          <input id="hotkey-input" type="text" value="" placeholder="Click and press a shortcut" autocomplete="off" spellcheck="false" />
-        </label>
-        <label class="field">
-          Activation mode
-          <select id="activation-mode-select">
-            <option value="toggle">Toggle to dictate</option>
-            <option value="hold">Hold to dictate</option>
-          </select>
-        </label>
-        <div class="settings-actions">
-          <button id="clear-hotkey-button" type="button" class="secondary">Clear hotkey</button>
-          <div id="settings-message" class="note" aria-live="polite"></div>
-        </div>
-        <label class="toggle">
-          Launch at login
-          <input id="launch-at-login-toggle" type="checkbox" />
-        </label>
-        <div id="launch-at-login-message" class="note" aria-live="polite">
-          Start Slugtale automatically when you sign in.
-        </div>
-      </div>
-    </section>
+          <div id="model-delete-row" class="row">
+            <span class="row-label">
+              Remove model
+              <span class="row-sub">Dictation stops working until it is downloaded again.</span>
+            </span>
+            <span class="row-control">
+              <button id="delete-model-button" type="button" class="danger" disabled></button>
+            </span>
+          </div>
+          <p id="model-message" class="note">Captured audio and transcriptions stay on this machine.</p>
+        </section>
 
-    <section class="section" aria-labelledby="transcription-title">
-      <h2 id="transcription-title">Transcription</h2>
-      <div class="controls">
-        <label class="field">
-          Speed vs. accuracy
-          <select id="speed-profile-select">
-            <option value="fast">Fast — quickest, less accurate</option>
-            <option value="balanced">Balanced — recommended</option>
-            <option value="accurate">Accurate — slowest, most accurate</option>
-          </select>
-        </label>
-        <div id="transcription-message" class="note" aria-live="polite">
-          Applies to every dictation. Faster settings trade some accuracy for speed.
-        </div>
+        <section id="pane-general" class="pane" aria-labelledby="pane-title" hidden>
+          <div class="row">
+            <span class="row-label">
+              Launch at login
+              <span class="row-sub">Start Slugtale automatically when you sign in.</span>
+            </span>
+            <span class="row-control">
+              <input id="launch-at-login-toggle" type="checkbox" aria-label="Launch at login" />
+            </span>
+          </div>
+          <div class="row">
+            <span class="row-label">
+              Appearance
+              <span class="row-sub">Slugtale follows your system light and dark setting.</span>
+            </span>
+          </div>
+          <p id="launch-at-login-message" class="note" aria-live="polite"></p>
+        </section>
       </div>
-    </section>
-
-    <div class="actions">
-      <button id="dictation-button" type="button" disabled>Start Dictation</button>
-      <div id="dictation-note" class="note">Complete required setup before dictation is available.</div>
-    </div>
-  </main>
+    </main>
+  </div>
 
   <script>
     // Iconography uses Lucide (https://lucide.dev, ISC licensed) so glyphs render
@@ -508,7 +581,11 @@
       trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
       folder: '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/>',
       x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
-      external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
+      external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+      activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+      keyboard: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>',
+      cpu: '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/>',
+      sliders: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>'
     };
 
     function iconSvg(name, size = 16) {
@@ -596,11 +673,34 @@
 
     const readinessActions = READINESS_ACTIONS_BY_PLATFORM[PLATFORM] || {};
 
+    // Readiness items without a system-settings action are fixed on one of the
+    // panes instead, so the banner and the checklist can send the user there.
+    const PANE_FOR_ITEM = {
+      hotkey: "dictation",
+      local_model: "model",
+      launch_at_login: "general"
+    };
+
+    // Status and Dictation report readiness in the subtitle; the other panes
+    // describe themselves, because readiness is not what you came to them for.
+    const PANES = [
+      { id: "status", title: "Status", icon: "activity" },
+      { id: "dictation", title: "Dictation", icon: "keyboard" },
+      { id: "model", title: "Model", icon: "cpu", subtitle: "Runs locally. Nothing leaves this machine." },
+      { id: "general", title: "General", icon: "sliders", subtitle: "How Slugtale behaves in the background." }
+    ];
+
+    const HOTKEY_GLYPHS = { Cmd: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧" };
+
     let downloading = false;
     let savingSettings = false;
     let savingProfile = false;
     let savingLaunchAtLogin = false;
     let openingReadinessAction = false;
+    let capturingHotkey = false;
+    let activePane = "status";
+    let latestReport = fallbackReport;
+    let readinessSummary = "Checking dictation readiness…";
     let currentSettings = { ...fallbackSettings };
 
     function stateWord(item) {
@@ -612,23 +712,78 @@
       return (bytes / 1024 / 1024).toFixed(0);
     }
 
+    function keycapsHtml(hotkey) {
+      if (!hotkey) return "";
+      return hotkey
+        .split("+")
+        .map((key) => `<kbd>${HOTKEY_GLYPHS[key] || key}</kbd>`)
+        .join("");
+    }
+
+    function blockersOf(report) {
+      return report.items.filter((item) => item.required && !item.ready);
+    }
+
+    function selectPane(paneId) {
+      activePane = paneId;
+
+      PANES.forEach((pane) => {
+        document.getElementById(`rail-${pane.id}`).dataset.active = String(pane.id === paneId);
+        document.getElementById(`pane-${pane.id}`).hidden = pane.id !== paneId;
+      });
+
+      renderHead();
+      renderBlocker(latestReport);
+    }
+
+    function renderHead() {
+      const pane = PANES.find((entry) => entry.id === activePane) || PANES[0];
+      document.getElementById("pane-title").textContent = pane.title;
+      document.getElementById("summary").textContent = pane.subtitle || readinessSummary;
+    }
+
+    // Status is a pane like any other, so the outstanding step is repeated as a
+    // banner everywhere else. On Status itself the checklist already says it.
+    function renderBlocker(report) {
+      const banner = document.getElementById("blocker-banner");
+      const blocker = blockersOf(report)[0];
+
+      if (!blocker || activePane === "status") {
+        banner.hidden = true;
+        return;
+      }
+
+      const action = readinessActions[blocker.id];
+      const button = document.getElementById("blocker-action");
+      banner.hidden = false;
+      document.getElementById("blocker-title").textContent = blocker.label;
+      document.getElementById("blocker-detail").textContent = guidance[blocker.id] || "";
+      button.dataset.item = blocker.id;
+      button.textContent = action ? action.label : "Set up";
+    }
+
+    function renderBadges(report) {
+      const outstanding = blockersOf(report);
+      const has = (id) => outstanding.some((item) => item.id === id);
+
+      document.getElementById("badge-status").hidden = outstanding.length === 0;
+      document.getElementById("badge-dictation").hidden = !has("hotkey");
+      document.getElementById("badge-model").hidden = !has("local_model");
+      document.getElementById("badge-general").hidden = true;
+    }
+
     function render(report) {
+      latestReport = report;
       const ready = report.dictation_available;
       const list = document.getElementById("readiness-list");
       const status = document.getElementById("overall-status");
-      const summary = document.getElementById("summary");
-      const button = document.getElementById("dictation-button");
-      const note = document.getElementById("dictation-note");
 
       status.dataset.ready = String(ready);
       status.textContent = ready ? "Ready" : "Not ready";
-      summary.textContent = ready
+      readinessSummary = ready
         ? "Dictation can start from the configured hotkey."
         : "Finish the highlighted steps to enable dictation.";
-      button.disabled = !ready;
-      note.textContent = ready
-        ? "Dictation is available."
-        : "Complete required setup before dictation is available.";
+      renderHead();
 
       list.replaceChildren(...report.items.map((item) => {
         const row = document.createElement("li");
@@ -638,7 +793,7 @@
 
         const icon = document.createElement("span");
         icon.className = "icon";
-        icon.innerHTML = iconSvg(item.ready ? "check" : item.required ? "alert" : "minus", 14);
+        icon.innerHTML = iconSvg(item.ready ? "check" : item.required ? "alert" : "minus", 12);
 
         const copy = document.createElement("div");
         copy.className = "copy";
@@ -664,33 +819,50 @@
         }
 
         const action = readinessActions[item.id];
+        const pane = PANE_FOR_ITEM[item.id];
+
         if (!item.ready && action) {
           const button = document.createElement("button");
           button.type = "button";
-          button.className = "secondary item-action";
           button.innerHTML = `${iconSvg("external", 14)}<span>${action.label}</span>`;
           button.addEventListener("click", () => openReadinessAction(item.id));
+          row.append(icon, copy, button);
+        } else if (!item.ready && pane) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "Set up";
+          button.addEventListener("click", () => selectPane(pane));
           row.append(icon, copy, button);
         } else {
           row.append(icon, copy);
         }
         return row;
       }));
+
+      renderBadges(report);
+      renderBlocker(report);
     }
 
     function renderModel(status, message, isError = false) {
       const path = document.getElementById("model-path");
       const state = document.getElementById("model-state");
+      const name = document.getElementById("model-name");
       const messageEl = document.getElementById("model-message");
       const downloadButton = document.getElementById("download-model-button");
       const deleteButton = document.getElementById("delete-model-button");
-      const size = status.bytes ? ` · ${formatMb(status.bytes)} MB` : "";
+      const size = status.bytes ? `${formatMb(status.bytes)} MB` : null;
 
+      name.textContent = status.id;
       path.textContent = status.path;
       state.dataset.present = String(status.present);
-      state.textContent = status.present ? `Ready${size}` : "Not downloaded";
+      state.textContent = status.present
+        ? `Installed${size ? ` · ${size}` : ""}`
+        : "Not downloaded";
       downloadButton.disabled = status.present || downloading;
+      downloadButton.hidden = status.present && !downloading;
       deleteButton.disabled = !status.present || downloading;
+      document.getElementById("model-location-row").hidden = !status.present;
+      document.getElementById("model-delete-row").hidden = !status.present;
       messageEl.classList.toggle("error", isError);
       messageEl.textContent = message || (status.present
         ? "Captured audio and transcriptions stay on this machine."
@@ -727,21 +899,39 @@
     function renderSettings(settings, message = "", isError = false) {
       currentSettings = { ...fallbackSettings, ...settings };
       const hotkeyInput = document.getElementById("hotkey-input");
-      const modeSelect = document.getElementById("activation-mode-select");
+      const hotkeyDisplay = document.getElementById("hotkey-display");
+      const recordButton = document.getElementById("hotkey-record-button");
       const clearButton = document.getElementById("clear-hotkey-button");
       const messageEl = document.getElementById("settings-message");
 
       hotkeyInput.value = currentSettings.hotkey || "";
-      modeSelect.value = currentSettings.activation_mode || "toggle";
+      hotkeyInput.hidden = !capturingHotkey;
       hotkeyInput.disabled = savingSettings;
-      modeSelect.disabled = savingSettings;
+      hotkeyDisplay.hidden = capturingHotkey;
+      hotkeyDisplay.innerHTML = currentSettings.hotkey
+        ? keycapsHtml(currentSettings.hotkey)
+        : `<span class="row-sub">Not set</span>`;
+      recordButton.textContent = capturingHotkey
+        ? "Cancel"
+        : currentSettings.hotkey ? "Change" : "Record";
+      recordButton.disabled = savingSettings;
+      clearButton.hidden = !currentSettings.hotkey || capturingHotkey;
       clearButton.disabled = savingSettings || !currentSettings.hotkey;
       messageEl.classList.toggle("error", isError);
       messageEl.textContent = message;
 
-      const profileSelect = document.getElementById("speed-profile-select");
-      profileSelect.value = currentSettings.speed_profile || "balanced";
-      profileSelect.disabled = savingProfile;
+      const mode = currentSettings.activation_mode || "toggle";
+      document.getElementById("mode-toggle").setAttribute("aria-pressed", String(mode === "toggle"));
+      document.getElementById("mode-hold").setAttribute("aria-pressed", String(mode === "hold"));
+      document.getElementById("mode-toggle").disabled = savingSettings;
+      document.getElementById("mode-hold").disabled = savingSettings;
+
+      const profile = currentSettings.speed_profile || "balanced";
+      ["fast", "balanced", "accurate"].forEach((option) => {
+        const button = document.getElementById(`speed-${option}`);
+        button.setAttribute("aria-pressed", String(option === profile));
+        button.disabled = savingProfile;
+      });
 
       const launchToggle = document.getElementById("launch-at-login-toggle");
       launchToggle.checked = Boolean(currentSettings.launch_at_login);
@@ -773,7 +963,7 @@
         toggle.disabled = false;
         messageEl.textContent = currentSettings.launch_at_login
           ? "Slugtale will launch when you sign in."
-          : "Start Slugtale automatically when you sign in.";
+          : "";
       } catch (error) {
         savingLaunchAtLogin = false;
         currentSettings = { ...previousSettings };
@@ -791,29 +981,23 @@
       const messageEl = document.getElementById("transcription-message");
 
       if (!invoke) {
-        currentSettings = { ...fallbackSettings, ...nextSettings };
-        document.getElementById("speed-profile-select").value = speedProfile;
+        renderSettings(nextSettings);
         return;
       }
 
       savingProfile = true;
-      document.getElementById("speed-profile-select").disabled = true;
+      renderSettings(nextSettings);
       messageEl.classList.remove("error");
       messageEl.textContent = "Saving…";
 
       try {
         const saved = await invoke("save_transcription_settings", { speedProfile });
         savingProfile = false;
-        currentSettings = { ...fallbackSettings, ...saved };
-        document.getElementById("speed-profile-select").value = currentSettings.speed_profile;
-        document.getElementById("speed-profile-select").disabled = false;
+        renderSettings(saved);
         messageEl.textContent = "Saved. Applies to your next dictation.";
       } catch (error) {
         savingProfile = false;
-        currentSettings = { ...previousSettings };
-        const select = document.getElementById("speed-profile-select");
-        select.value = currentSettings.speed_profile || "balanced";
-        select.disabled = false;
+        renderSettings(previousSettings);
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
       }
@@ -842,6 +1026,17 @@
       return { hotkey: [...modifiers, hotkeyKeyToken(event)].join("+") };
     }
 
+    function startHotkeyCapture() {
+      capturingHotkey = true;
+      renderSettings(currentSettings, "Press the shortcut you want to use.");
+      document.getElementById("hotkey-input").focus();
+    }
+
+    function stopHotkeyCapture(message = "") {
+      capturingHotkey = false;
+      renderSettings(currentSettings, message);
+    }
+
     async function loadSettings() {
       const invoke = tauriInvoke();
       if (!invoke) {
@@ -857,14 +1052,16 @@
       }
     }
 
-    async function saveHotkeySettings(hotkey) {
+    async function saveHotkeySettings(hotkey, activationMode) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };
       const nextSettings = {
         ...currentSettings,
         hotkey: hotkey || null,
-        activation_mode: document.getElementById("activation-mode-select").value
+        activation_mode: activationMode || currentSettings.activation_mode || "toggle"
       };
+
+      capturingHotkey = false;
 
       if (!invoke) {
         renderSettings(nextSettings);
@@ -1015,13 +1212,13 @@
         const status = await invoke("download_local_model", channel ? { onProgress: channel } : {});
         downloading = false;
         hideProgress();
-        setButton(button, "download", "Download base.en");
+        setButton(button, "download", "Download");
         renderModel(status, "base.en is ready.");
         await loadReadiness();
       } catch (error) {
         downloading = false;
         hideProgress();
-        setButton(button, "download", "Download base.en");
+        setButton(button, "download", "Download");
         await loadModelStatus();
         showMessageError(String(error));
       }
@@ -1056,28 +1253,37 @@
     }
 
     function init() {
-      setButton(document.getElementById("download-model-button"), "download", "Download base.en");
-      setButton(document.getElementById("reveal-model-button"), "folder", "Show in Finder");
-      setButton(document.getElementById("delete-model-button"), "trash", "Delete model");
-      setButton(document.getElementById("clear-hotkey-button"), "x", "Clear hotkey");
+      PANES.forEach((pane) => {
+        const button = document.getElementById(`rail-${pane.id}`);
+        document.getElementById(`rail-icon-${pane.id}`).innerHTML = iconSvg(pane.icon, 18);
+        button.addEventListener("click", () => selectPane(pane.id));
+      });
+
+      document.getElementById("clear-hotkey-button").textContent = "Clear";
+      setButton(document.getElementById("download-model-button"), "download", "Download");
+      setButton(document.getElementById("reveal-model-button"), "folder", "Reveal");
+      setButton(document.getElementById("delete-model-button"), "trash", "Delete");
 
       document.getElementById("download-model-button").addEventListener("click", downloadModel);
       document.getElementById("reveal-model-button").addEventListener("click", revealModel);
       document.getElementById("delete-model-button").addEventListener("click", deleteModel);
-      document.getElementById("activation-mode-select").addEventListener("change", () => {
-        saveHotkeySettings(currentSettings.hotkey);
-      });
-      document.getElementById("speed-profile-select").addEventListener("change", (event) => {
-        saveTranscriptionSettings(event.target.value);
-      });
-      document.getElementById("launch-at-login-toggle").addEventListener("change", (event) => {
-        saveLaunchAtLogin(event.target.checked);
+
+      document.getElementById("hotkey-record-button").addEventListener("click", () => {
+        if (capturingHotkey) {
+          stopHotkeyCapture();
+          return;
+        }
+        startHotkeyCapture();
       });
       document.getElementById("clear-hotkey-button").addEventListener("click", () => {
         saveHotkeySettings(null);
       });
       document.getElementById("hotkey-input").addEventListener("keydown", (event) => {
         event.preventDefault();
+        if (event.key === "Escape") {
+          stopHotkeyCapture();
+          return;
+        }
         const captured = hotkeyFromKeyboardEvent(event);
         if (!captured) return;
         if (captured.error) {
@@ -1086,6 +1292,38 @@
         }
         saveHotkeySettings(captured.hotkey);
       });
+      document.getElementById("hotkey-input").addEventListener("blur", () => {
+        if (capturingHotkey) stopHotkeyCapture();
+      });
+
+      ["toggle", "hold"].forEach((mode) => {
+        document.getElementById(`mode-${mode}`).addEventListener("click", () => {
+          if (mode === currentSettings.activation_mode) return;
+          saveHotkeySettings(currentSettings.hotkey, mode);
+        });
+      });
+
+      ["fast", "balanced", "accurate"].forEach((profile) => {
+        document.getElementById(`speed-${profile}`).addEventListener("click", () => {
+          if (profile === currentSettings.speed_profile) return;
+          saveTranscriptionSettings(profile);
+        });
+      });
+
+      document.getElementById("launch-at-login-toggle").addEventListener("change", (event) => {
+        saveLaunchAtLogin(event.target.checked);
+      });
+
+      document.getElementById("blocker-action").addEventListener("click", (event) => {
+        const itemId = event.currentTarget.dataset.item;
+        if (!itemId) return;
+        if (readinessActions[itemId]) {
+          openReadinessAction(itemId);
+          return;
+        }
+        if (PANE_FOR_ITEM[itemId]) selectPane(PANE_FOR_ITEM[itemId]);
+      });
+
       window.addEventListener("focus", () => loadReadiness({ background: true }));
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") {
@@ -1093,6 +1331,7 @@
         }
       });
 
+      selectPane("status");
       refreshSetup();
     }
 

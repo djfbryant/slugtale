@@ -30,6 +30,10 @@ function loadSettingsScript({ invoke }) {
       textContent: "",
       value: "",
       addEventListener() {},
+      // The settings window drives segmented controls through aria-pressed and
+      // focuses the hotkey field when capture starts; both are no-ops here.
+      setAttribute() {},
+      focus() {},
       append(...children) {
         this.children.push(...children);
       },

@@ -363,7 +363,7 @@ impl MicrophonePermissionSetup for MacosMicrophonePermissionSetup {
     }
 }
 
-fn request_microphone_access() -> Result<(), String> {
+pub fn request_microphone_access() -> Result<(), String> {
     unsafe {
         let audio = AVMediaTypeAudio.expect("AVMediaTypeAudio constant is always present");
         match AVCaptureDevice::authorizationStatusForMediaType(audio) {

@@ -28,6 +28,46 @@ impl Default for SpeedProfile {
     }
 }
 
+/// Where the Dictation Bar sits on the active display. All three options ride
+/// the bottom edge; the orb is small enough that a corner no longer covers the
+/// line being dictated into (slugtale-z7a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BarPosition {
+    /// Today's placement, and the default.
+    BottomCenter,
+    BottomLeft,
+    BottomRight,
+}
+
+impl Default for BarPosition {
+    fn default() -> Self {
+        Self::BottomCenter
+    }
+}
+
+/// The colour the Dictation Bar paints its orb in. A fixed palette rather than a
+/// user-supplied hex: the accent sits on a dark translucent pill where arbitrary
+/// colours can be illegible, and an enum never reaches CSS as interpolated text.
+/// Each entry maps to a hex in the bar frontend, not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccentColor {
+    /// Today's recording-dot red, and the default.
+    Red,
+    Amber,
+    Green,
+    Blue,
+    Violet,
+    Graphite,
+}
+
+impl Default for AccentColor {
+    fn default() -> Self {
+        Self::Red
+    }
+}
+
 /// The local non-secret Settings File (ADR-0018): user preferences such as
 /// hotkey, activation mode, model choice, launch-at-login, and diagnostic logging.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +81,13 @@ pub struct Settings {
     /// Older Settings Files predate this field, so it defaults to Balanced.
     #[serde(default)]
     pub speed_profile: SpeedProfile,
+    /// Where the Dictation Bar appears. Older Settings Files predate this field.
+    #[serde(default)]
+    pub bar_position: BarPosition,
+    /// The colour the Dictation Bar orb paints in. Older Settings Files predate
+    /// this field.
+    #[serde(default)]
+    pub accent_color: AccentColor,
 }
 
 impl Default for Settings {
@@ -52,6 +99,8 @@ impl Default for Settings {
             diagnostic_logging: false,
             model: None,
             speed_profile: SpeedProfile::default(),
+            bar_position: BarPosition::default(),
+            accent_color: AccentColor::default(),
         }
     }
 }
@@ -80,6 +129,18 @@ pub fn apply_hotkey_settings(
 /// restarts, applying to all future transcriptions (CONTEXT.md).
 pub fn apply_transcription_settings(settings: &mut Settings, speed_profile: SpeedProfile) {
     settings.speed_profile = speed_profile;
+}
+
+/// Update the Dictation Bar's appearance: where it sits on screen and which
+/// accent it paints. Both apply to the bar currently on screen as well as to
+/// future dictations, so the user can judge the choice while making it.
+pub fn apply_dictation_bar_settings(
+    settings: &mut Settings,
+    bar_position: BarPosition,
+    accent_color: AccentColor,
+) {
+    settings.bar_position = bar_position;
+    settings.accent_color = accent_color;
 }
 
 /// Update the launch-at-login preference stored in the Settings File. The stored
@@ -143,6 +204,8 @@ mod tests {
             diagnostic_logging: true,
             model: Some("whisper-base.en".to_string()),
             speed_profile: SpeedProfile::Accurate,
+            bar_position: BarPosition::BottomLeft,
+            accent_color: AccentColor::Green,
         };
 
         save_settings(&path, &settings).unwrap();
@@ -247,6 +310,76 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
         assert_eq!(loaded.speed_profile, SpeedProfile::Balanced);
+    }
+    #[test]
+    fn dictation_bar_appearance_defaults_match_todays_bar() {
+        // Today's bar sits bottom-centre and paints a #ff5a52 recording dot, so
+        // existing users see no change until they choose otherwise.
+        assert_eq!(BarPosition::default(), BarPosition::BottomCenter);
+        assert_eq!(AccentColor::default(), AccentColor::Red);
+        assert_eq!(Settings::default().bar_position, BarPosition::BottomCenter);
+        assert_eq!(Settings::default().accent_color, AccentColor::Red);
+    }
+    #[test]
+    fn apply_dictation_bar_settings_stores_position_and_accent() {
+        let mut settings = Settings::default();
+
+        apply_dictation_bar_settings(&mut settings, BarPosition::BottomRight, AccentColor::Violet);
+
+        assert_eq!(settings.bar_position, BarPosition::BottomRight);
+        assert_eq!(settings.accent_color, AccentColor::Violet);
+    }
+    #[test]
+    fn dictation_bar_appearance_persists_as_stable_strings() {
+        for (position, token) in [
+            (BarPosition::BottomCenter, "\"bar_position\":\"bottom-center\""),
+            (BarPosition::BottomLeft, "\"bar_position\":\"bottom-left\""),
+            (BarPosition::BottomRight, "\"bar_position\":\"bottom-right\""),
+        ] {
+            let settings = Settings {
+                bar_position: position,
+                ..Settings::default()
+            };
+            let json = serde_json::to_string(&settings).unwrap();
+            assert!(json.contains(token), "got: {json}");
+        }
+
+        for (accent, token) in [
+            (AccentColor::Red, "\"accent_color\":\"red\""),
+            (AccentColor::Amber, "\"accent_color\":\"amber\""),
+            (AccentColor::Green, "\"accent_color\":\"green\""),
+            (AccentColor::Blue, "\"accent_color\":\"blue\""),
+            (AccentColor::Violet, "\"accent_color\":\"violet\""),
+            (AccentColor::Graphite, "\"accent_color\":\"graphite\""),
+        ] {
+            let settings = Settings {
+                accent_color: accent,
+                ..Settings::default()
+            };
+            let json = serde_json::to_string(&settings).unwrap();
+            assert!(json.contains(token), "got: {json}");
+        }
+    }
+    #[test]
+    fn settings_file_without_dictation_bar_appearance_loads_as_defaults() {
+        // Settings Files written before the Dictation Bar gained an accent and a
+        // position omit both fields; loading must fall back rather than fail.
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-settings-legacy-bar-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"hotkey":null,"activation_mode":"toggle","launch_at_login":false,"diagnostic_logging":false,"model":null,"speed_profile":"fast"}"#,
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        assert_eq!(loaded.speed_profile, SpeedProfile::Fast);
+        assert_eq!(loaded.bar_position, BarPosition::BottomCenter);
+        assert_eq!(loaded.accent_color, AccentColor::Red);
     }
     #[test]
     fn activation_mode_persists_as_stable_lowercase_strings() {

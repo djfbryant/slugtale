@@ -30,6 +30,11 @@ pub use text_insertion::*;
 mod settings;
 pub use settings::*;
 
+/// Dictation Bar geometry: where the bar sits on screen and which part of its
+/// transparent window actually paints (slugtale-z7a).
+mod dictation_bar;
+pub use dictation_bar::*;
+
 mod local_model;
 pub use local_model::*;
 
@@ -57,8 +62,8 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{
     accessibility_trusted, activate_app, frontmost_app_pid, notify, open_accessibility_settings,
-    MacosInsertionRescue, MacosMicrophonePermissionSetup, MacosPlatform, MacosTextInsertion,
-    MacosTextInsertionPermissionSetup,
+    request_microphone_access, MacosInsertionRescue, MacosMicrophonePermissionSetup, MacosPlatform,
+    MacosTextInsertion, MacosTextInsertionPermissionSetup,
 };
 
 /// Windows implementation of platform adapters (ADR-0021, PRD slugtale-5pc).
