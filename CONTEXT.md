@@ -77,8 +77,20 @@ The state where Slugtale can actually start dictation. Dictation readiness requi
 _Avoid_: Setup complete, onboarding complete
 
 **Dictation Bar**:
-A small on-screen surface shown while dictation is active. It communicates that Slugtale is recording and gives the user explicit stop and cancel controls.
+A small on-screen surface shown while dictation is active. It communicates that Slugtale is recording and gives the user explicit stop and cancel controls. It rests as the **Orb** and grows into the **Pill** to show those controls when the user reaches for them (slugtale-z7a).
 _Avoid_: Overlay, live preview
+
+**Orb**:
+The Dictation Bar at rest: a small circle carrying the mic glyph in the user's chosen Accent Colour, with a halo that reads the voice level. It is the whole of the app's presence during a normal dictation.
+_Avoid_: Blob, dot, bubble
+
+**Pill**:
+The Dictation Bar expanded: the Orb plus the state label, elapsed clock, and the stop and cancel controls. Shown while the pointer is on the bar, and for the whole transcribing phase.
+_Avoid_: Panel, toolbar, expanded bar
+
+**Accent Colour**:
+The user's chosen colour from a fixed six-swatch palette, painted by the Orb. Once the resting state carries no label, the colour is the app's identity in use.
+_Avoid_: Theme, brand colour, highlight
 
 **Local-Only Processing**:
 The product promise that captured speech, transcriptions, and optional enhancement stay on the user's machine unless the user explicitly exports them.

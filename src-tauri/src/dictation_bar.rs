@@ -42,8 +42,21 @@ pub struct PaintRect {
 }
 
 impl PaintRect {
+    /// Whether a point is on the painted shape — a capsule, not its bounding
+    /// box. The bar is fully rounded (`border-radius: 999px`), so at rest it is
+    /// a circle in a 44pt square; claiming that square would take the four
+    /// corners from the app underneath even though nothing paints there.
     fn contains(&self, x: f64, y: f64) -> bool {
-        x >= self.x && x <= self.x + self.width && y >= self.y && y <= self.y + self.height
+        let radius = self.height / 2.0;
+        // The straight run between the two end caps. Zero-length while collapsed,
+        // which reduces the capsule to a circle.
+        let cap_left = self.x + radius;
+        let cap_right = self.x + self.width - radius;
+
+        let dx = x - x.clamp(cap_left, cap_right);
+        let dy = y - (self.y + radius);
+
+        dx * dx + dy * dy <= radius * radius
     }
 }
 
@@ -191,6 +204,24 @@ mod tests {
     }
 
     #[test]
+    fn the_bar_window_is_configured_at_the_size_the_hit_test_assumes() {
+        // The hit test describes the paint in window-local points, so a window
+        // sized differently from these constants would silently hand clicks to
+        // the wrong side. tauri.conf.json is the only other place it is stated.
+        let config = std::fs::read_to_string("tauri.conf.json").expect("tauri.conf.json exists");
+        let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+        let window = config["app"]["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|window| window["label"] == "dictation-bar")
+            .expect("the dictation-bar window is configured");
+
+        assert_eq!(window["width"], BAR_WINDOW_WIDTH_PT);
+        assert_eq!(window["height"], BAR_WINDOW_HEIGHT_PT);
+    }
+
+    #[test]
     fn collapsed_bar_paints_an_orb_against_its_chosen_edge() {
         let centre = dictation_bar_paint_rect(BarPosition::BottomCenter, false);
         let left = dictation_bar_paint_rect(BarPosition::BottomLeft, false);
@@ -236,6 +267,42 @@ mod tests {
             1.0,
             BarPosition::BottomCenter,
             false
+        ));
+    }
+
+    #[test]
+    fn the_corners_of_a_round_orb_are_not_part_of_it() {
+        // The orb is a circle inside a 44pt square. Treating the square as
+        // painted would quietly steal the four corners from the app underneath.
+        let top_left_corner = (95.0, 9.0);
+
+        assert!(!pointer_is_over_dictation_bar(
+            top_left_corner,
+            (0, 0),
+            1.0,
+            BarPosition::BottomCenter,
+            false
+        ));
+    }
+
+    #[test]
+    fn the_rounded_ends_of_the_expanded_pill_are_not_part_of_it_either() {
+        let top_left_corner = (9.0, 9.0);
+
+        assert!(!pointer_is_over_dictation_bar(
+            top_left_corner,
+            (0, 0),
+            1.0,
+            BarPosition::BottomCenter,
+            true
+        ));
+        // ...but the straight middle of the same edge is.
+        assert!(pointer_is_over_dictation_bar(
+            (116.0, 9.0),
+            (0, 0),
+            1.0,
+            BarPosition::BottomCenter,
+            true
         ));
     }
 
