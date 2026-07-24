@@ -179,8 +179,15 @@ console.log("");
 console.log(`Slugtale is installed at ${installedAppPath} and running.`);
 console.log("Look for the Slugtale icon in the menu bar, not the Dock.");
 console.log("");
-console.log("If this is the first install, open settings and complete setup:");
-console.log("1. Grant Microphone access.");
-console.log("2. Grant Accessibility access for text insertion.");
-console.log("3. Download the local base.en model.");
-console.log("4. Choose a hotkey and activation mode.");
+console.log(
+  "macOS treats this installed app and the developer-run build from npm run dev as separate privacy subjects.",
+);
+console.log(
+  "Even if you granted the developer build access, open System Settings > Privacy & Security and grant Slugtale:",
+);
+console.log("1. Microphone access.");
+console.log("2. Accessibility access for text insertion.");
+console.log("");
+console.log("Then open Slugtale settings and complete setup:");
+console.log("1. Download the local base.en model.");
+console.log("2. Choose a hotkey and activation mode.");

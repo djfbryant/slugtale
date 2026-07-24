@@ -142,6 +142,13 @@ npm run macos:install -- --build-only
 
 The installed app keeps its settings, model, and privacy permissions across
 reinstalls because the bundle identifier and signing identity stay stable.
+However, macOS treats the developer-run build from `npm run dev` and the
+installed build at `/Applications/Slugtale.app` as separate privacy subjects.
+Permissions granted to one do not carry over to the other. After
+`npm run macos:install`, open `System Settings > Privacy & Security` and grant
+the installed Slugtale app Microphone and Accessibility access, even if the
+developer-run build already had both permissions.
+
 Because the certificate is self-signed rather than notarized by Apple, this
 build is only trusted on the Mac that created it — see ADR-0022 for the planned
 distribution story.
@@ -319,11 +326,16 @@ Slugtale is a menu bar resident app. Look in the macOS menu bar and choose
 ### Microphone permission stays missing
 
 Open `System Settings > Privacy & Security > Microphone` and allow Slugtale.
-Quit and rerun `npm run dev` after changing the permission.
+The developer-run build from `npm run dev` and the installed build at
+`/Applications/Slugtale.app` have separate grants, so make sure you enable the
+copy you are currently running. Quit and reopen that copy after changing the
+permission.
 
 ### Text insertion or Accessibility permission stays missing
 
 Open `System Settings > Privacy & Security > Accessibility` and allow Slugtale.
+The developer-run and installed builds have separate grants, so make sure you
+enable the copy you are currently running.
 If stale entries remain from older developer builds, reset the grant:
 
 ```sh
