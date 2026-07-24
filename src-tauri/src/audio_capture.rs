@@ -226,9 +226,19 @@ impl LevelEmitter {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputStreamIdentity {
+    device_id: Option<cpal::DeviceId>,
+    sample_format: cpal::SampleFormat,
+    sample_rate_hz: u32,
+    channels: u16,
+}
+
 #[derive(Default)]
 pub struct CpalAudioRecorder {
     stream: Option<cpal::Stream>,
+    stream_identity: Option<InputStreamIdentity>,
+    stream_active: bool,
     buffer: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
     level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
     level_emitter: Option<LevelEmitter>,
@@ -296,6 +306,59 @@ impl CpalAudioRecorder {
         Ok(stream)
     }
 
+    fn build_stream_for_format(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        sample_format: cpal::SampleFormat,
+        buffer: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+        level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) -> Result<cpal::Stream, AudioCaptureError> {
+        match sample_format {
+            cpal::SampleFormat::I8 => Self::build_stream::<i8>(device, config, buffer, level_bits),
+            cpal::SampleFormat::I16 => {
+                Self::build_stream::<i16>(device, config, buffer, level_bits)
+            }
+            cpal::SampleFormat::I32 => {
+                Self::build_stream::<i32>(device, config, buffer, level_bits)
+            }
+            cpal::SampleFormat::U8 => Self::build_stream::<u8>(device, config, buffer, level_bits),
+            cpal::SampleFormat::U16 => {
+                Self::build_stream::<u16>(device, config, buffer, level_bits)
+            }
+            cpal::SampleFormat::U32 => {
+                Self::build_stream::<u32>(device, config, buffer, level_bits)
+            }
+            cpal::SampleFormat::F32 => {
+                Self::build_stream::<f32>(device, config, buffer, level_bits)
+            }
+            cpal::SampleFormat::F64 => {
+                Self::build_stream::<f64>(device, config, buffer, level_bits)
+            }
+            other => Err(AudioCaptureError::new(format!(
+                "unsupported input sample format: {other}"
+            ))),
+        }
+    }
+
+    fn pause_active_stream(&mut self) {
+        use cpal::traits::StreamTrait;
+
+        if !self.stream_active {
+            return;
+        }
+
+        if let Some(stream) = self.stream.as_ref() {
+            if let Err(error) = stream.pause() {
+                // Dropping the stream still stops capture. Forget its identity so
+                // the next start builds fresh rather than reusing the failed one.
+                eprintln!("could not pause audio input stream; rebuilding next time: {error}");
+                self.stream.take();
+                self.stream_identity = None;
+            }
+        }
+        self.stream_active = false;
+    }
+
     fn stop_level_emitter(&mut self) {
         if let Some(emitter) = self.level_emitter.take() {
             emitter.stop();
@@ -309,7 +372,9 @@ impl AudioRecorder for CpalAudioRecorder {
     fn start(&mut self) -> Result<(), AudioCaptureError> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-        self.cancel().ok();
+        self.pause_active_stream();
+        self.stop_level_emitter();
+
         let host = cpal::default_host();
         let device = host
             .default_input_device()
@@ -319,6 +384,12 @@ impl AudioRecorder for CpalAudioRecorder {
             .map_err(|error| AudioCaptureError::new(error.to_string()))?;
         let sample_format = supported_config.sample_format();
         let config: cpal::StreamConfig = supported_config.into();
+        let identity = InputStreamIdentity {
+            device_id: device.id().ok(),
+            sample_format,
+            sample_rate_hz: config.sample_rate,
+            channels: config.channels,
+        };
 
         self.sample_rate_hz = config.sample_rate;
         self.channels = config.channels;
@@ -329,66 +400,49 @@ impl AudioRecorder for CpalAudioRecorder {
 
         self.level_bits
             .store(0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
-        let stream = match sample_format {
-            cpal::SampleFormat::I8 => Self::build_stream::<i8>(
-                &device,
-                &config,
-                self.buffer.clone(),
-                self.level_bits.clone(),
-            ),
-            cpal::SampleFormat::I16 => Self::build_stream::<i16>(
-                &device,
-                &config,
-                self.buffer.clone(),
-                self.level_bits.clone(),
-            ),
-            cpal::SampleFormat::I32 => Self::build_stream::<i32>(
-                &device,
-                &config,
-                self.buffer.clone(),
-                self.level_bits.clone(),
-            ),
-            cpal::SampleFormat::U8 => Self::build_stream::<u8>(
-                &device,
-                &config,
-                self.buffer.clone(),
-                self.level_bits.clone(),
-            ),
-            cpal::SampleFormat::U16 => Self::build_stream::<u16>(
-                &device,
-                &config,
-                self.buffer.clone(),
-                self.level_bits.clone(),
-            ),
-            cpal::SampleFormat::U32 => Self::build_stream::<u32>(
-                &device,
-                &config,
-                self.buffer.clone(),
-                self.level_bits.clone(),
-            ),
-            cpal::SampleFormat::F32 => Self::build_stream::<f32>(
-                &device,
-                &config,
-                self.buffer.clone(),
-                self.level_bits.clone(),
-            ),
-            cpal::SampleFormat::F64 => Self::build_stream::<f64>(
-                &device,
-                &config,
-                self.buffer.clone(),
-                self.level_bits.clone(),
-            ),
-            other => {
-                return Err(AudioCaptureError::new(format!(
-                    "unsupported input sample format: {other}"
-                )))
-            }
-        }?;
 
-        stream
-            .play()
-            .map_err(|error| AudioCaptureError::new(error.to_string()))?;
-        self.stream = Some(stream);
+        // Building a CoreAudio stream costs hundreds of milliseconds and was
+        // paid on every hotkey press. Keep the paused stream when the default
+        // device and format are unchanged; `stop`/`cancel` pause it, and `play`
+        // resumes it in roughly 40 ms on the reference Mac (slugtale-op3).
+        let reused_stream =
+            self.stream.is_some() && self.stream_identity.as_ref() == Some(&identity);
+        if !reused_stream {
+            self.stream.take();
+            self.stream = Some(Self::build_stream_for_format(
+                &device,
+                &config,
+                sample_format,
+                self.buffer.clone(),
+                self.level_bits.clone(),
+            )?);
+            self.stream_identity = Some(identity.clone());
+        }
+
+        if let Err(error) = self.stream.as_ref().expect("audio stream exists").play() {
+            if !reused_stream {
+                return Err(AudioCaptureError::new(error.to_string()));
+            }
+
+            // A retained stream can become unusable after a device interruption
+            // without its identity changing. Fall back to a cold start once so a
+            // stale stream never strands dictation.
+            self.stream.take();
+            self.stream = Some(Self::build_stream_for_format(
+                &device,
+                &config,
+                sample_format,
+                self.buffer.clone(),
+                self.level_bits.clone(),
+            )?);
+            self.stream_identity = Some(identity);
+            self.stream
+                .as_ref()
+                .expect("rebuilt audio stream exists")
+                .play()
+                .map_err(|error| AudioCaptureError::new(error.to_string()))?;
+        }
+        self.stream_active = true;
 
         if let Some(callback) = self.level_callback.clone() {
             match LevelEmitter::spawn(self.level_bits.clone(), callback) {
@@ -401,7 +455,7 @@ impl AudioRecorder for CpalAudioRecorder {
     }
 
     fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
-        self.stream.take();
+        self.pause_active_stream();
         self.stop_level_emitter();
         let samples = {
             let mut guard = self
@@ -415,7 +469,7 @@ impl AudioRecorder for CpalAudioRecorder {
     }
 
     fn cancel(&mut self) -> Result<(), AudioCaptureError> {
-        self.stream.take();
+        self.pause_active_stream();
         self.stop_level_emitter();
         self.buffer
             .lock()

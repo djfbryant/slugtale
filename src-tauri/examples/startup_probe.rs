@@ -15,11 +15,7 @@ fn main() {
         .unwrap_or(6);
     let max_warm_start_ms: u128 = args
         .next()
-        .map(|value| {
-            value
-                .parse()
-                .expect("max-warm-start-ms must be an integer")
-        })
+        .map(|value| value.parse().expect("max-warm-start-ms must be an integer"))
         .unwrap_or(75);
 
     assert!(starts >= 2, "at least two starts are required");
@@ -32,7 +28,11 @@ fn main() {
         let elapsed = started.elapsed();
         startup_times.push(elapsed);
         println!("start {}: {:.1} ms", index + 1, millis(elapsed));
-        recorder.cancel().expect("cancel capture");
+        // Let the real callback run, then end through the normal completed-
+        // dictation path. This verifies that the retained stream survives
+        // `stop` draining the capture buffer, not only the cheaper cancel path.
+        std::thread::sleep(Duration::from_millis(20));
+        let _ = recorder.stop().expect("stop capture");
     }
 
     let slowest_warm_start = startup_times[1..]
