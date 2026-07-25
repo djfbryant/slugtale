@@ -41,8 +41,26 @@ pub use local_model::*;
 mod permission_setup;
 pub use permission_setup::*;
 
+/// The Transcription Engine boundary (CONTEXT.md): the seam every local speech
+/// recognizer sits behind, and the non-content vocabulary Settings and the
+/// Second Opinion router share (slugtale-vjs).
+mod transcription_engine;
+pub use transcription_engine::*;
+
 mod asr;
 pub use asr::*;
+
+/// NVIDIA Parakeet TDT v2 0.6B as a Transcription Engine (slugtale-vjs.1).
+/// Portable: the ONNX artefacts run on macOS, Windows, and Linux, so the
+/// provider is compiled everywhere and only its inference is feature-gated.
+mod parakeet;
+pub use parakeet::*;
+
+/// Apple SpeechTranscriber as a Transcription Engine (slugtale-vjs.2). The
+/// provider type exists on every platform so Settings can explain why the
+/// engine is unavailable; only the macOS build can actually transcribe.
+mod apple_speech;
+pub use apple_speech::*;
 
 mod dictation_workflow;
 pub use dictation_workflow::*;
