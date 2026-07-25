@@ -14,6 +14,18 @@ pub enum AsrError {
     ModelMissing { path: std::path::PathBuf },
     UnsupportedAudio(String),
     Runtime(String),
+    /// A Transcription Engine was asked to transcribe on a machine or a build
+    /// where it cannot run. Kept distinct from [`AsrError::Runtime`] so the
+    /// Second Opinion router can tell "this engine is not for you" from "this
+    /// engine broke", and fall back without reporting a failure to the user.
+    EngineUnavailable {
+        engine: crate::TranscriptionEngine,
+        reason: crate::EngineUnavailable,
+    },
+    /// A second opinion ran past its bounded budget. The router keeps the first
+    /// usable transcript when this happens, so the user never waits on a slow
+    /// engine (slugtale-vjs.3).
+    Timeout { engine: crate::TranscriptionEngine },
 }
 
 impl std::fmt::Display for AsrError {
@@ -24,6 +36,10 @@ impl std::fmt::Display for AsrError {
             }
             Self::UnsupportedAudio(message) => write!(f, "unsupported captured audio: {message}"),
             Self::Runtime(message) => write!(f, "local transcription failed: {message}"),
+            Self::EngineUnavailable { engine, reason } => {
+                write!(f, "{engine} is unavailable: {reason}")
+            }
+            Self::Timeout { engine } => write!(f, "{engine} did not finish in time"),
         }
     }
 }
@@ -385,6 +401,73 @@ fn local_whisper_runtime_disabled_error() -> AsrError {
     AsrError::Runtime(
         "local Whisper runtime was built without the local-whisper-runtime feature".to_string(),
     )
+}
+
+/// Presents the established Whisper runtime through the Transcription Engine
+/// boundary so the Second Opinion router can treat it like any other engine.
+///
+/// This adapter adds no decoding work: it times the existing call and reports
+/// no confidence, because whisper.cpp's segment iterator gives Slugtale plain
+/// text today. That is why Whisper can only ever be escalated *from* on the
+/// anomaly rules (empty output, repetition, implausibly short text), never on a
+/// confidence threshold — see [`crate::EngineConfidence`].
+pub struct WhisperTranscriptionProvider {
+    runtime: Arc<LocalWhisperRuntime>,
+}
+
+impl WhisperTranscriptionProvider {
+    pub fn new(runtime: Arc<LocalWhisperRuntime>) -> Self {
+        Self { runtime }
+    }
+}
+
+impl crate::TranscriptionProvider for WhisperTranscriptionProvider {
+    fn engine(&self) -> crate::TranscriptionEngine {
+        crate::TranscriptionEngine::Whisper
+    }
+
+    fn metadata(&self) -> crate::EngineMetadata {
+        crate::EngineMetadata {
+            engine: crate::TranscriptionEngine::Whisper,
+            model_id: crate::DEFAULT_MODEL_ID,
+            revision: "ggerganov/whisper.cpp@main",
+            approximate_bytes: Some(148 * 1024 * 1024),
+            source_url: Some(crate::DEFAULT_MODEL_DOWNLOAD_URL),
+            license: "MIT",
+            license_url: "https://github.com/openai/whisper/blob/main/LICENSE",
+            attribution: None,
+            modifications: Some("Converted to the GGML format by the whisper.cpp project."),
+            system_managed: false,
+            supported_platforms: "macOS, Windows, and Linux",
+        }
+    }
+
+    fn availability(&self) -> crate::EngineAvailability {
+        if !cfg!(feature = "local-whisper-runtime") {
+            return crate::EngineAvailability::Unavailable(crate::EngineUnavailable::RuntimeNotBuilt);
+        }
+        if !self.runtime.model_path().exists() {
+            return crate::EngineAvailability::Unavailable(
+                crate::EngineUnavailable::AssetsMissing {
+                    detail: "The Whisper model has not been downloaded yet.".to_string(),
+                },
+            );
+        }
+        crate::EngineAvailability::Available
+    }
+
+    fn transcribe(&self, audio: &CapturedAudio) -> Result<crate::EngineTranscription, AsrError> {
+        let started = std::time::Instant::now();
+        // The runtime still owns its audio, so this clone is the cost of giving
+        // every provider a borrowing signature. It only happens on the Whisper
+        // leg; the router never clones for the engines that borrow natively.
+        let transcription = self.runtime.transcribe(audio.clone())?;
+        Ok(crate::EngineTranscription::plain(
+            crate::TranscriptionEngine::Whisper,
+            transcription,
+            started.elapsed(),
+        ))
+    }
 }
 
 #[cfg(test)]

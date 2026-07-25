@@ -4,10 +4,26 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+# Every Transcription Engine past Whisper is opt-in at build time (slugtale-vjs).
+# Each one drags in a native toolchain — ONNX Runtime for Parakeet, the Swift
+# compiler for Apple SpeechTranscriber — that a plain `cargo test` on any
+# platform should not need. With none of them enabled the app behaves exactly as
+# it did before: one engine, no router, no extra work on the dictation path.
 [features]
 default = []
 local-whisper-runtime = ["dep:whisper-rs", "dep:num_cpus"]
 local-whisper-runtime-metal = ["local-whisper-runtime", "whisper-rs/metal"]
+# NVIDIA Parakeet TDT v2 0.6B via ONNX Runtime (slugtale-vjs.1). Portable across
+# macOS, Windows, and Linux, unlike the Core ML/Swift path the original design
+# assumed, so the Linux port inherits it for free.
+local-parakeet-runtime = ["dep:parakeet-rs"]
+# Parakeet on the Apple Neural Engine / GPU through ONNX Runtime's Core ML
+# execution provider. macOS-only; the CPU provider stays the portable default.
+local-parakeet-runtime-coreml = ["local-parakeet-runtime", "parakeet-rs/coreml"]
+# Apple SpeechTranscriber (slugtale-vjs.2). macOS 26+ only, and gated by
+# `cfg(target_os = "macos")` on top of this feature so enabling it on Linux or
+# Windows is a no-op rather than a build failure.
+apple-speech-runtime = []
 
 [lib]
 name = "slugtale_lib"
@@ -29,6 +45,10 @@ ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
 whisper-rs = { version = "0.16.0", optional = true }
 cpal = "0.18.1"
 num_cpus = { version = "1.17.0", optional = true }
+# Parakeet TDT v2 through ONNX Runtime (slugtale-vjs.1). MIT OR Apache-2.0; the
+# NVIDIA model weights it loads are CC BY 4.0 and are installed separately by an
+# explicit user action, never bundled.
+parakeet-rs = { version = "0.3.6", optional = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2.3.2"
