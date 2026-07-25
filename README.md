@@ -58,11 +58,13 @@ written: text insertion, permission readiness, focus targeting, and audible
 feedback all have implementations on each platform.
 
 macOS is the only platform verified end to end on real hardware. Every push
-compiles and unit-tests the full crate on Ubuntu, Windows, and macOS, but the
-Windows adapter's runtime behaviour — hold-to-dictate key-up, WASAPI capture,
-and insertion into a live app — has not yet been exercised on a Windows
-machine. Treat Windows as buildable and unvalidated. See PRD `slugtale-5pc`
-for what remains.
+builds and unit-tests the library target on Ubuntu, Windows, and macOS with
+default features, so the engine runtimes behind the opt-in Cargo features are
+not compiled by that check; Windows additionally builds the Whisper runtime.
+The Windows adapter's runtime behaviour — hold-to-dictate key-up, WASAPI
+capture, and insertion into a live app — has not been exercised on a Windows
+machine at all. Treat Windows as buildable and unvalidated. See PRD
+`slugtale-5pc` for what remains.
 
 For macOS development you need:
 

@@ -13,6 +13,7 @@
     "macos:reset-permissions": "node scripts/reset-dev-permissions.js",
     "test": "cd tests && node --test && cd .. && npm run test:rust",
     "test:rust": "node scripts/run-cargo.js test --lib",
+    "test:whisper-build": "node scripts/run-cargo.js build --lib --features local-whisper-runtime",
     "test:asr-research": "node scripts/run-cargo.js test --example asr_research",
     "asr:research": "node scripts/run-cargo.js run --example asr_research --",
     "asr:research:whisper": "node scripts/run-cargo.js run --release --example asr_research --features local-whisper-runtime --",
