@@ -289,7 +289,7 @@ For a macOS release build with local Whisper acceleration enabled, run the Tauri
 build with both runtime features:
 
 ```sh
-PATH=$HOME/.cargo/bin:$PATH tauri build --features local-whisper-runtime,local-whisper-runtime-metal
+node scripts/run-tauri.js build --features local-whisper-runtime,local-whisper-runtime-metal --ci
 ```
 
 `npm run macos:install` wraps that command and also signs and installs the
@@ -298,9 +298,10 @@ result — see
 
 Release builds compile whisper.cpp from source, which needs an explicit macOS
 deployment target because `ggml` uses `std::filesystem`. That target is set once
-in `src-tauri/tauri.conf.json` as `bundle.macOS.minimumSystemVersion`; lowering
-it below `10.15` breaks the build. On Apple Silicon the Rust target raises the
-real floor to macOS 11.0 regardless of that setting.
+in `src-tauri/tauri.conf.json` as `bundle.macOS.minimumSystemVersion`; the build
+launchers pass the same value to CMake. Lowering it below `10.15` breaks the
+build. On Apple Silicon the Rust target raises the real floor to macOS 11.0
+regardless of that setting.
 
 Signing here means a local self-signed identity. Apple notarization, installer
 polish, and release distribution still need product work before this is a

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 const { existsSync } = require("node:fs");
-const { delimiter, join } = require("node:path");
+const { join } = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { createTauriEnvironment } = require("./run-tauri.js");
 
 const root = join(__dirname, "..");
 const tauri = process.platform === "win32" ? "tauri.cmd" : "tauri";
@@ -12,15 +13,7 @@ const macosSignIdentity =
   process.env.SLUGTALE_SIGN_IDENTITY || defaultMacosSignIdentity;
 const installRoot = process.env.SLUGTALE_INSTALL_DIR || "/Applications";
 const buildOnly = process.argv.includes("--build-only");
-const pathEntries = [
-  join(root, "node_modules", ".bin"),
-  process.env.HOME ? join(process.env.HOME, ".cargo", "bin") : null,
-  process.env.PATH,
-].filter(Boolean);
-const env = {
-  ...process.env,
-  PATH: pathEntries.join(delimiter),
-};
+const env = createTauriEnvironment({ projectRoot: root });
 const whisperRuntimeFeatures =
   "local-whisper-runtime,local-whisper-runtime-metal";
 
