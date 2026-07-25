@@ -3,7 +3,10 @@
 const { existsSync } = require("node:fs");
 const { join } = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { createTauriEnvironment } = require("./run-tauri.js");
+const {
+  createTauriEnvironment,
+  resolveRuntimeFeatures,
+} = require("./run-tauri.js");
 
 const root = join(__dirname, "..");
 const tauri = process.platform === "win32" ? "tauri.cmd" : "tauri";
@@ -14,8 +17,7 @@ const macosSignIdentity =
 const installRoot = process.env.SLUGTALE_INSTALL_DIR || "/Applications";
 const buildOnly = process.argv.includes("--build-only");
 const env = createTauriEnvironment({ projectRoot: root });
-const whisperRuntimeFeatures =
-  "local-whisper-runtime,local-whisper-runtime-metal";
+const runtimeFeatures = resolveRuntimeFeatures();
 
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -113,10 +115,15 @@ if (process.platform !== "darwin") {
 
 requireMacosCodeSigningIdentity(macosSignIdentity);
 
+// Printed because a Transcription Engine that was not compiled in shows up in
+// Settings as an unexplained "Unavailable" row, and this line is the only place
+// the answer is visible before the build starts.
+console.log(`Building with Cargo features: ${runtimeFeatures}`);
+
 run(tauri, [
   "build",
   "--features",
-  whisperRuntimeFeatures,
+  runtimeFeatures,
   "--bundles",
   "app",
 ]);

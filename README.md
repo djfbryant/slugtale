@@ -218,6 +218,34 @@ Because the default certificate is self-signed rather than notarized by Apple,
 the resulting build is trusted only on the Mac that created it. See ADR-0022
 for the planned distribution story.
 
+### Building the optional Transcription Engines
+
+Both `npm run dev` and `npm run macos:install` compile Whisper only. Parakeet
+and Apple SpeechTranscriber each need a native toolchain that an everyday build
+should not pay for — ONNX Runtime and the Swift compiler respectively — so they
+are opt-in. A build without them shows the engine in settings as `Unavailable`
+with the reason `this build was compiled without support for this engine`.
+
+Name the ones you want in `SLUGTALE_ENGINE_FEATURES`; Whisper is always
+included:
+
+```sh
+SLUGTALE_ENGINE_FEATURES=apple-speech-runtime,local-parakeet-runtime \
+  npm run macos:install
+```
+
+| Feature | Engine | Requires |
+| --- | --- | --- |
+| `apple-speech-runtime` | Apple SpeechTranscriber | macOS 26 or later |
+| `local-parakeet-runtime` | Parakeet TDT v2 on CPU | Model assets, installed from settings |
+| `local-parakeet-runtime-coreml` | Parakeet TDT v2 on the Neural Engine or GPU | macOS, plus the same assets |
+
+Each launcher prints the feature list it is building with before it starts.
+
+Apple SpeechTranscriber installs its speech assets per application, so the
+`/Applications` copy asks for its own download even if the `npm run dev` build
+already has them. The install takes well under a second.
+
 ## First Run Setup
 
 Open Slugtale from the menu bar and complete the readiness checklist:

@@ -41,6 +41,32 @@ function createTauriEnvironment({
   return buildEnvironment;
 }
 
+// Whisper is the baseline every developer-run build carries: it is the only
+// engine available on every platform, and Metal costs nothing extra on macOS.
+// Every engine past it is opt-in at compile time (src-tauri/Cargo.toml) because
+// each drags in a native toolchain — ONNX Runtime for Parakeet, the Swift
+// compiler for Apple SpeechTranscriber — so they are compiled in only when a
+// developer names them in SLUGTALE_ENGINE_FEATURES. Without that, Settings
+// reports those engines as `RuntimeNotBuilt`, which is the truth about the
+// binary rather than about the machine.
+function resolveRuntimeFeatures({
+  platform = process.platform,
+  environment = process.env,
+} = {}) {
+  const baseline =
+    platform === "darwin"
+      ? ["local-whisper-runtime", "local-whisper-runtime-metal"]
+      : ["local-whisper-runtime"];
+  const requested = (environment.SLUGTALE_ENGINE_FEATURES || "")
+    .split(",")
+    .map((feature) => feature.trim())
+    .filter(Boolean);
+
+  // Cargo rejects an unknown feature name with a clear message of its own, so
+  // this deliberately does not second-guess the list in Cargo.toml.
+  return [...new Set([...baseline, ...requested])].join(",");
+}
+
 function runTauri({
   args = process.argv.slice(2),
   platform = process.platform,
@@ -86,5 +112,6 @@ if (require.main === module) {
 
 module.exports = {
   createTauriEnvironment,
+  resolveRuntimeFeatures,
   runTauri,
 };
