@@ -52,9 +52,15 @@ cp -rf source dest          # NOT: cp -r source dest
 Use npm scripts for checks instead of bare `cargo ...` commands:
 
 ```bash
-npm test             # frontend tests, then Rust unit tests
-npm run test:rust    # Rust-only tests via scripts/run-cargo.js
+npm test                    # frontend tests, then Rust unit tests
+npm run test:rust           # Rust-only tests via scripts/run-cargo.js
+npm run test:whisper-build  # compile the Whisper runtime (CI runs this on Windows)
 ```
+
+Frontend tests live in `tests/` as `*.test.mjs`; `npm test` discovers them from
+that directory, so a test placed elsewhere is silently skipped. Rust unit tests
+live in a `#[cfg(test)] mod tests` in the module they cover — a module gated to
+one platform must test from inside itself, since `lib.rs` cannot reach it.
 
 The runner looks for Cargo on `PATH`, then at `$HOME/.cargo/bin/cargo`. If
 Cargo is installed somewhere else, set `CARGO=/path/to/cargo`.

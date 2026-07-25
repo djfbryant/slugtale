@@ -74,7 +74,7 @@ jobs:
       # if it does not build under MSVC then Local-Only Processing (ADR-0001)
       # does not hold on Windows at all. Building the lib with the feature on is
       # the cheapest automated signal; acceleration backends stay manual.
-      run: node scripts/run-cargo.js build --lib --features local-whisper-runtime
+      run: npm run test:whisper-build
 
   checks-macos:
     # macOS is the primary supported platform, but until now the maintainer's

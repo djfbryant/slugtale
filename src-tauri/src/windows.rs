@@ -8,17 +8,21 @@
 //! Windows issues have since filled every body, so the adapter surface is
 //! complete:
 //!
-//! * 5pc.2 — `WindowsPlatform` readiness (implemented: mic ConsentStore read;
-//!   insertion is effectively always granted, since Windows has no
-//!   synthesized-input trust gate — the analogous failure is UIPI against an
-//!   elevated target).
+//! * 5pc.2 — `WindowsPlatform` readiness (implemented: both microphone
+//!   ConsentStore toggles are read — the global one and the `NonPackaged` one
+//!   that gates unpackaged desktop apps — and both must allow; insertion is
+//!   effectively always granted, since Windows has no synthesized-input trust
+//!   gate — the analogous failure is UIPI against an elevated target).
 //! * 5pc.3 — `WindowsTextInsertionSystem` (implemented: SendInput with
 //!   KEYEVENTF_UNICODE for clipboard-free insertion, and CF_UNICODETEXT +
-//!   SendInput Ctrl+V for the clipboard-paste fallback).
+//!   SendInput Ctrl+V for the clipboard-paste fallback). Note the Unicode path
+//!   does not carry line breaks; see slugtale-z81.
 //! * 5pc.4 — `WindowsInsertionRescueSystem` (implemented: CF_UNICODETEXT
-//!   clipboard copy shared with the paste fallback, and a detached-thread
-//!   MessageBox notification — the OQ-2 fallback for unpackaged dev-run builds,
-//!   which cannot post WinRT toasts without an AUMID/shortcut).
+//!   clipboard copy shared with the paste fallback — both take the global
+//!   clipboard lock with a short retry, since ordinary contention is not an
+//!   error — and a detached-thread MessageBox notification, the OQ-2 fallback
+//!   for unpackaged dev-run builds, which cannot post WinRT toasts without an
+//!   AUMID/shortcut).
 //! * 5pc.5 — focus targeting (implemented: `frontmost_app_pid` via
 //!   `GetForegroundWindow` + `GetWindowThreadProcessId`, `activate_app` via
 //!   `EnumWindows` + `SetForegroundWindow`, both wired in main.rs alongside
@@ -64,8 +68,15 @@ const MICROPHONE_CONSENT_KEY: &str =
     r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
 /// The "let desktop apps access your microphone" toggle, which is a *separate*
 /// switch from the global one above. Slugtale is an unpackaged Win32 app, so
-/// this is the gate that actually decides whether WASAPI capture returns audio;
-/// the global key alone can read `Allow` while desktop apps are blocked.
+/// the global key alone can read `Allow` while desktop apps are blocked, and
+/// readiness has to consult this one too.
+///
+/// Not the whole story: Windows also records *per-app* consent under this key,
+/// in a subkey named for the executable's path. A user who allows desktop apps
+/// broadly but denies Slugtale specifically still reads `Allow` from both
+/// values here. Reading the per-app entry needs the exact path-mangling scheme
+/// confirmed on a real machine, so it is tracked separately (slugtale-q7a) and
+/// folded into the 5pc.9 hardware validation rather than guessed at.
 const MICROPHONE_CONSENT_NON_PACKAGED_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged";
 
 const MICROPHONE_CONSENT_VALUE: &str = "Value";

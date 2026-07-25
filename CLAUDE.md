@@ -64,11 +64,12 @@ Requires Rust stable (install via `rustup`). The Tauri CLI is installed as an np
 Use npm scripts for project checks; they find Cargo from `PATH`, `CARGO`, or the standard rustup location.
 
 ```bash
-npm install          # install Tauri CLI
-npm test             # frontend tests, then Rust unit tests without app launch
-npm run test:rust    # Rust-only tests via scripts/run-cargo.js
-npm run dev          # cargo tauri dev (starts the tray app with hot reload)
-npm run build        # cargo tauri build (not needed for developer-run builds)
+npm install                 # install Tauri CLI
+npm test                    # frontend tests, then Rust unit tests without app launch
+npm run test:rust           # Rust-only tests via scripts/run-cargo.js
+npm run test:whisper-build  # compile the Whisper runtime (CI runs this on Windows)
+npm run dev                 # cargo tauri dev (starts the tray app with hot reload)
+npm run build               # cargo tauri build (not needed for developer-run builds)
 ```
 
 Prerequisites on macOS: Xcode Command Line Tools (`xcode-select --install`).
@@ -94,5 +95,6 @@ Key design rule: `lib.rs` contains only plain Rust — no `#[tauri::command]` ma
 
 - Domain vocabulary is defined in `CONTEXT.md` — use it in code and test names.
 - Platform-specific OS behavior (hotkeys, permissions, audio) lives behind a **Platform Adapter** boundary (ADR-0021).
-- Unit tests go in `lib.rs` under `#[cfg(test)]` using the public interface only.
+- Rust unit tests live in a `#[cfg(test)] mod tests` in the module they cover, preferring that module's public interface. `lib.rs` keeps only the tests for behavior it owns itself. A module gated to one platform (`macos.rs`, `windows.rs`, `linux.rs`) must test from inside itself — its code does not exist on the other platforms, so `lib.rs` cannot reach it — and may reach a private policy function there rather than leave it uncovered.
+- Frontend tests live in `tests/` as `*.test.mjs`. `npm test` discovers them from that directory, so a test placed elsewhere is silently skipped.
 - Tauri commands in `main.rs` are thin wrappers that delegate to `lib.rs` functions.
