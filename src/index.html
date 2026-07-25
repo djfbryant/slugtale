@@ -452,6 +452,91 @@
       font-size: 0.76rem;
     }
 
+    /* ---------- transcription engines ---------- */
+
+    .engine-list {
+      display: grid;
+      margin: 10px 0 0;
+      padding: 0;
+      list-style: none;
+      gap: 10px;
+    }
+
+    .engine-item {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 11px 12px;
+      background: var(--surface-sunken);
+    }
+
+    .engine-head {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .engine-head input[type="radio"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+    }
+
+    .engine-head input[type="radio"]:disabled { cursor: not-allowed; }
+
+    .engine-name { font-size: 0.88rem; font-weight: 650; }
+
+    .engine-availability {
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--border);
+      color: var(--text-dim);
+      font-size: 0.72rem;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .engine-availability[data-available="true"] {
+      background: color-mix(in srgb, var(--ok) 20%, transparent);
+      color: var(--ok-text);
+    }
+
+    .engine-availability[data-available="false"] {
+      background: color-mix(in srgb, var(--warn) 20%, transparent);
+      color: var(--warn-text);
+    }
+
+    .engine-reason {
+      margin: 5px 0 0;
+      color: var(--warn-text);
+      font-size: 0.78rem;
+    }
+
+    .engine-detail {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+      display: grid;
+      gap: 3px;
+    }
+
+    .engine-detail-line {
+      margin: 0;
+      color: var(--text-dim);
+      font-size: 0.78rem;
+      overflow-wrap: anywhere;
+    }
+
+    .engine-detail-line a { color: var(--accent); }
+
+    .engine-actions {
+      margin-top: 9px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .engine-progress { margin-top: 8px; }
+
     .pane[hidden] { display: none; }
   </style>
 </head>
@@ -538,6 +623,24 @@
               <button id="speed-accurate" type="button" data-profile="accurate" aria-pressed="false">Accurate</button>
             </span>
           </div>
+          <div class="row">
+            <span class="row-label">
+              Transcription engines
+              <span class="row-sub">On-device only. Audio and transcripts never leave this machine, and there is no cloud fallback.</span>
+            </span>
+          </div>
+          <ul id="engine-list" class="engine-list" aria-live="polite"></ul>
+          <div class="row">
+            <span class="row-label">
+              Second opinion
+              <span class="row-sub">Automatic runs a second local engine only when the first result looks uncertain, and always inserts exactly one transcript.</span>
+            </span>
+            <span class="segmented" role="group" aria-label="Second opinion mode">
+              <button id="second-opinion-off" type="button" data-second-opinion="off" aria-pressed="true">Off</button>
+              <button id="second-opinion-automatic" type="button" data-second-opinion="automatic" aria-pressed="false">Automatic</button>
+            </span>
+          </div>
+          <p id="engine-message" class="note" aria-live="polite"></p>
           <div class="row">
             <span class="row-label">
               Bar position
@@ -678,11 +781,40 @@
       model: null,
       speed_profile: "balanced",
       bar_position: "bottom-center",
-      accent_color: "red"
+      accent_color: "red",
+      primary_engine: "whisper",
+      second_opinion: "off"
     };
+
+    // Shown only outside the desktop app (no Tauri bridge), so the pane is never
+    // blank. Mirrors what a fresh install's Whisper-only Settings File reports.
+    const fallbackEngines = [
+      {
+        id: "whisper",
+        display_name: "Whisper base.en",
+        is_primary: true,
+        metadata: {
+          engine: "whisper",
+          model_id: "base.en",
+          revision: "ggerganov/whisper.cpp@main",
+          approximate_bytes: 155189248,
+          source_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+          license: "MIT",
+          license_url: "https://github.com/openai/whisper/blob/main/LICENSE",
+          attribution: null,
+          modifications: "Converted to the GGML format by the whisper.cpp project.",
+          system_managed: false,
+          supported_platforms: "macOS, Windows, and Linux"
+        },
+        unavailable_reason: null,
+        installable: false,
+        assets: { installed_bytes: null, present: false }
+      }
+    ];
 
     const BAR_POSITIONS = ["bottom-center", "bottom-left", "bottom-right"];
     const ACCENT_COLORS = ["red", "amber", "green", "blue", "violet", "graphite"];
+    const SECOND_OPINION_MODES = ["off", "automatic"];
 
     // Permission guidance is worded per platform: macOS and Windows gate
     // microphone and (on macOS) text insertion behind OS permission panels,
@@ -763,6 +895,14 @@
     let latestReport = fallbackReport;
     let readinessSummary = "Checking dictation readiness…";
     let currentSettings = { ...fallbackSettings };
+    let latestEngines = fallbackEngines;
+    // Saving the primary engine or the Second Opinion mode share one command, so
+    // one flag disables both controls while either is in flight.
+    let savingEngineSelection = false;
+    // The engine id currently installing or being removed, or null. Only one
+    // install/remove runs at a time, same discipline as `downloading` above.
+    let installingEngine = null;
+    let installProgress = null;
 
     function stateWord(item) {
       if (item.ready) return "ready";
@@ -1008,6 +1148,13 @@
         button.disabled = savingDictationBar;
       });
 
+      const secondOpinion = currentSettings.second_opinion || "off";
+      SECOND_OPINION_MODES.forEach((option) => {
+        const button = document.getElementById(`second-opinion-${option}`);
+        button.setAttribute("aria-pressed", String(option === secondOpinion));
+        button.disabled = savingEngineSelection;
+      });
+
       const launchToggle = document.getElementById("launch-at-login-toggle");
       launchToggle.checked = Boolean(currentSettings.launch_at_login);
       launchToggle.disabled = savingLaunchAtLogin;
@@ -1116,6 +1263,288 @@
         renderSettings(previousSettings);
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
+      }
+    }
+
+    // One line of a Transcription Engine's compliance surface: model identity,
+    // pinned revision, size, source, licence, attribution, and modifications.
+    // Built from `EngineMetadata` rather than retyped, so the CC BY 4.0 wording
+    // Parakeet requires can only ever change in one place (parakeet.rs).
+    function engineDetailLines(engine) {
+      const meta = engine.metadata;
+      const lines = [];
+
+      const sizeText = engine.assets.installed_bytes
+        ? `${formatMb(engine.assets.installed_bytes)} MB installed`
+        : meta.approximate_bytes
+          ? `~${formatMb(meta.approximate_bytes)} MB`
+          : null;
+      const modelLine = document.createElement("p");
+      modelLine.className = "engine-detail-line";
+      modelLine.textContent = [`Model: ${meta.model_id}`, meta.revision, sizeText]
+        .filter(Boolean)
+        .join(" · ");
+      lines.push(modelLine);
+
+      if (meta.source_url) {
+        const sourceLine = document.createElement("p");
+        sourceLine.className = "engine-detail-line";
+        const link = document.createElement("a");
+        link.href = meta.source_url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.textContent = "View source";
+        sourceLine.append("Source: ", link);
+        lines.push(sourceLine);
+      }
+
+      const licenceLine = document.createElement("p");
+      licenceLine.className = "engine-detail-line";
+      const licenceLink = document.createElement("a");
+      licenceLink.href = meta.license_url;
+      licenceLink.target = "_blank";
+      licenceLink.rel = "noreferrer";
+      licenceLink.textContent = meta.license;
+      licenceLine.append("Licence: ", licenceLink);
+      lines.push(licenceLine);
+
+      if (meta.attribution) {
+        const attributionLine = document.createElement("p");
+        attributionLine.className = "engine-detail-line";
+        attributionLine.textContent = meta.attribution;
+        lines.push(attributionLine);
+      }
+
+      if (meta.modifications) {
+        const modificationsLine = document.createElement("p");
+        modificationsLine.className = "engine-detail-line";
+        modificationsLine.textContent = meta.modifications;
+        lines.push(modificationsLine);
+      }
+
+      if (meta.system_managed) {
+        // Apple SpeechTranscriber only: state plainly that macOS owns these
+        // assets so nothing here can be read as Slugtale bundling or shipping
+        // Apple's model.
+        const systemLine = document.createElement("p");
+        systemLine.className = "engine-detail-line";
+        systemLine.textContent =
+          `Available only on ${meta.supported_platforms}. Installed and updated by macOS — ` +
+          "Slugtale does not bundle, download, or redistribute these assets.";
+        lines.push(systemLine);
+      }
+
+      return lines;
+    }
+
+    function buildEngineItem(engine) {
+      const row = document.createElement("li");
+      row.className = "engine-item";
+      row.dataset.engine = engine.id;
+
+      const head = document.createElement("div");
+      head.className = "engine-head";
+
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "primary-engine";
+      radio.value = engine.id;
+      radio.checked = engine.is_primary;
+      radio.disabled = savingEngineSelection || Boolean(engine.unavailable_reason);
+      radio.setAttribute("aria-label", `Make ${engine.display_name} the primary transcription engine`);
+      radio.addEventListener("change", () => {
+        if (radio.checked) selectPrimaryEngine(engine.id);
+      });
+
+      const name = document.createElement("span");
+      name.className = "engine-name";
+      name.textContent = engine.display_name;
+
+      const pill = document.createElement("span");
+      pill.className = "engine-availability";
+      pill.dataset.available = String(!engine.unavailable_reason);
+      pill.textContent = engine.unavailable_reason ? "Unavailable" : "Available";
+
+      head.append(radio, name, pill);
+      row.append(head);
+
+      if (engine.unavailable_reason) {
+        const reason = document.createElement("p");
+        reason.className = "engine-reason";
+        reason.textContent = engine.unavailable_reason;
+        row.append(reason);
+      }
+
+      const detail = document.createElement("div");
+      detail.className = "engine-detail";
+      detail.append(...engineDetailLines(engine));
+      row.append(detail);
+
+      const installing = installingEngine === engine.id;
+      const actions = document.createElement("div");
+      actions.className = "engine-actions";
+
+      // Only a missing-assets engine earns an Install button (mirrors
+      // `EngineUnavailable::is_user_resolvable` — an unsupported OS or a build
+      // without the feature has nothing here to fix).
+      if (engine.installable) {
+        const installButton = document.createElement("button");
+        installButton.type = "button";
+        installButton.className = "primary";
+        installButton.disabled = installingEngine !== null;
+        installButton.textContent = installing ? "Installing…" : "Install";
+        installButton.addEventListener("click", () => installEngine(engine.id));
+        actions.append(installButton);
+      }
+
+      if (engine.assets.present) {
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "danger";
+        removeButton.disabled = installingEngine !== null;
+        removeButton.textContent = "Remove";
+        removeButton.addEventListener("click", () => removeEngine(engine.id));
+        actions.append(removeButton);
+      }
+
+      if (actions.children.length) row.append(actions);
+
+      if (installing && installProgress) {
+        const wrap = document.createElement("div");
+        wrap.className = "progress engine-progress";
+        const bar = document.createElement("div");
+        bar.className = "progress-bar";
+        if (installProgress.total) {
+          const pct = Math.min(100, Math.round((installProgress.downloaded / installProgress.total) * 100));
+          bar.style.width = `${pct}%`;
+        } else {
+          wrap.classList.add("indeterminate");
+        }
+        wrap.append(bar);
+        row.append(wrap);
+      }
+
+      return row;
+    }
+
+    function renderEngines(engines, message = "", isError = false) {
+      latestEngines = engines;
+      const list = document.getElementById("engine-list");
+      const messageEl = document.getElementById("engine-message");
+
+      list.replaceChildren(...engines.map(buildEngineItem));
+
+      messageEl.classList.toggle("error", isError);
+      messageEl.textContent =
+        message || "Transcription runs entirely on this device. There is no cloud fallback.";
+    }
+
+    async function loadEngines(message = "", isError = false) {
+      const invoke = tauriInvoke();
+      if (!invoke) {
+        renderEngines(fallbackEngines, message, isError);
+        return;
+      }
+
+      try {
+        renderEngines(await invoke("transcription_engines"), message, isError);
+      } catch (error) {
+        console.error("Could not load transcription engines", error);
+        renderEngines(latestEngines, String(error), true);
+      }
+    }
+
+    // The primary engine and Second Opinion mode are one Settings File update
+    // (`set_transcription_engines`), so changing either one sends the pair —
+    // the other rides along at its current value, same discipline as
+    // `saveDictationBarSettings` above.
+    async function saveEngineSettings({ primaryEngine, secondOpinion } = {}) {
+      const invoke = tauriInvoke();
+      const previousSettings = { ...currentSettings };
+      const previousEngines = latestEngines;
+      const nextPrimary = primaryEngine || currentSettings.primary_engine || "whisper";
+      const nextSecondOpinion = secondOpinion || currentSettings.second_opinion || "off";
+      const nextSettings = {
+        ...currentSettings,
+        primary_engine: nextPrimary,
+        second_opinion: nextSecondOpinion
+      };
+      const optimisticEngines = latestEngines.map((engine) => ({
+        ...engine,
+        is_primary: engine.id === nextPrimary
+      }));
+
+      if (!invoke) {
+        renderSettings(nextSettings);
+        renderEngines(optimisticEngines);
+        return;
+      }
+
+      savingEngineSelection = true;
+      renderSettings(nextSettings);
+      renderEngines(optimisticEngines, "Saving…");
+
+      try {
+        const saved = await invoke("set_transcription_engines", {
+          primaryEngine: nextPrimary,
+          secondOpinion: nextSecondOpinion
+        });
+        savingEngineSelection = false;
+        renderSettings(saved);
+        await loadEngines(
+          nextSecondOpinion === "automatic"
+            ? "Saved. A second engine now runs only when the first result looks uncertain."
+            : "Saved. Applies to your next dictation."
+        );
+      } catch (error) {
+        savingEngineSelection = false;
+        renderSettings(previousSettings);
+        renderEngines(previousEngines, String(error), true);
+      }
+    }
+
+    function selectPrimaryEngine(engineId) {
+      if (engineId === currentSettings.primary_engine) return;
+      saveEngineSettings({ primaryEngine: engineId });
+    }
+
+    async function installEngine(engineId) {
+      const invoke = tauriInvoke();
+      if (!invoke || installingEngine) return;
+
+      installingEngine = engineId;
+      installProgress = { downloaded: 0, total: null };
+      renderEngines(latestEngines, "Installing…");
+
+      const channel = makeChannel((progress) => {
+        installProgress = progress;
+        renderEngines(latestEngines, "Installing…");
+      });
+
+      try {
+        await invoke(
+          "install_engine_assets",
+          channel ? { engine: engineId, onProgress: channel } : { engine: engineId }
+        );
+        installingEngine = null;
+        installProgress = null;
+        await loadEngines("Installed. Ready to use.");
+      } catch (error) {
+        installingEngine = null;
+        installProgress = null;
+        await loadEngines(String(error), true);
+      }
+    }
+
+    async function removeEngine(engineId) {
+      const invoke = tauriInvoke();
+      if (!invoke || installingEngine) return;
+
+      try {
+        await invoke("remove_engine_assets", { engine: engineId });
+        await loadEngines("Removed.");
+      } catch (error) {
+        await loadEngines(String(error), true);
       }
     }
 
@@ -1302,7 +1731,7 @@
     }
 
     async function refreshSetup() {
-      await Promise.all([loadReadiness(), loadModelStatus(), loadSettings()]);
+      await Promise.all([loadReadiness(), loadModelStatus(), loadSettings(), loadEngines()]);
     }
 
     function showMessageError(text) {
@@ -1437,6 +1866,13 @@
         document.getElementById(`accent-${accent}`).addEventListener("click", () => {
           if (accent === currentSettings.accent_color) return;
           saveDictationBarSettings({ accentColor: accent });
+        });
+      });
+
+      SECOND_OPINION_MODES.forEach((mode) => {
+        document.getElementById(`second-opinion-${mode}`).addEventListener("click", () => {
+          if (mode === currentSettings.second_opinion) return;
+          saveEngineSettings({ secondOpinion: mode });
         });
       });
 

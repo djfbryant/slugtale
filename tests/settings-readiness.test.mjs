@@ -72,13 +72,14 @@ function loadSettingsScript({ invoke }) {
 
   const testableScript = script.replace(
     /\s*init\(\);\s*$/,
-    "\nwindow.__slugtaleTest = { loadReadiness, openReadinessAction, saveDictationBarSettings };\n"
+    "\nwindow.__slugtaleTest = { loadReadiness, openReadinessAction, saveDictationBarSettings, saveEngineSettings };\n"
   );
   vm.runInNewContext(testableScript, context);
 
   return {
     elements,
     saveDictationBarSettings: context.window.__slugtaleTest.saveDictationBarSettings,
+    saveEngineSettings: context.window.__slugtaleTest.saveEngineSettings,
     async flushNextTimer() {
       for (let spin = 0; timers.length === 0 && spin < 10; spin += 1) {
         await Promise.resolve();
@@ -247,6 +248,70 @@ test("a failed dictation bar save reports the error instead of pretending it stu
 
   assert.equal(
     elements.get("dictation-bar-message").textContent,
+    "Error: settings file is read-only"
+  );
+});
+
+test("changing the primary engine still sends the current second opinion mode", async () => {
+  const calls = [];
+  const { saveEngineSettings } = loadSettingsScript({
+    async invoke(command, args) {
+      calls.push({ command, args: { ...args } });
+      if (command === "set_transcription_engines") {
+        return {
+          primary_engine: args.primaryEngine,
+          second_opinion: args.secondOpinion
+        };
+      }
+      if (command === "transcription_engines") return [];
+      return {};
+    }
+  });
+
+  await saveEngineSettings({ primaryEngine: "parakeet" });
+
+  // The primary engine moved; Second Opinion (Off by default) came along at
+  // its current value rather than being sent as undefined.
+  const call = calls.find((entry) => entry.command === "set_transcription_engines");
+  assert.deepEqual(call.args, { primaryEngine: "parakeet", secondOpinion: "off" });
+});
+
+test("choosing Automatic second opinion still sends the current primary engine", async () => {
+  const calls = [];
+  const { saveEngineSettings } = loadSettingsScript({
+    async invoke(command, args) {
+      calls.push({ command, args: { ...args } });
+      if (command === "set_transcription_engines") {
+        return {
+          primary_engine: args.primaryEngine,
+          second_opinion: args.secondOpinion
+        };
+      }
+      if (command === "transcription_engines") return [];
+      return {};
+    }
+  });
+
+  await saveEngineSettings({ secondOpinion: "automatic" });
+
+  const call = calls.find((entry) => entry.command === "set_transcription_engines");
+  assert.deepEqual(call.args, { primaryEngine: "whisper", secondOpinion: "automatic" });
+});
+
+test("a failed engine settings save reports the error instead of pretending it stuck", async () => {
+  const { elements, saveEngineSettings } = loadSettingsScript({
+    async invoke(command) {
+      if (command === "set_transcription_engines") {
+        throw new Error("settings file is read-only");
+      }
+      return [];
+    }
+  });
+
+  await saveEngineSettings({ primaryEngine: "parakeet" });
+
+  assert.equal(
+    elements.get("engine-message").textContent,
     "Error: settings file is read-only"
   );
 });
