@@ -109,11 +109,18 @@ public func slugtale_apple_speech_probe(
         return STATUS_UNSUPPORTED_OS
     }
     guard let requested = readString(localeIdentifier) else {
-        outDetail?.pointee = copyToC("no Dictation Language was supplied")
+        outDetail?.pointee = copyToC("No Dictation Language was supplied.")
         return STATUS_FAILED
     }
 
-    let outcome = runBlocking { await probeLocale(requested) }
+    guard
+        let outcome = runBlocking(timeoutSeconds: PROBE_TIMEOUT_SECONDS, {
+            await probeLocale(requested)
+        })
+    else {
+        outDetail?.pointee = copyToC("macOS did not answer whether it can transcribe in time.")
+        return STATUS_FAILED
+    }
     outDetail?.pointee = outcome.detail.map(copyToC)
     return outcome.status
 }
@@ -157,11 +164,11 @@ public func slugtale_apple_speech_transcribe(
         return STATUS_UNSUPPORTED_OS
     }
     guard let requested = readString(localeIdentifier) else {
-        outDetail?.pointee = copyToC("no Dictation Language was supplied")
+        outDetail?.pointee = copyToC("No Dictation Language was supplied.")
         return STATUS_FAILED
     }
     guard let samples, sampleCount > 0, sampleRateHz > 0 else {
-        outDetail?.pointee = copyToC("the recording was empty")
+        outDetail?.pointee = copyToC("The recording was empty.")
         return STATUS_FAILED
     }
 
@@ -170,8 +177,14 @@ public func slugtale_apple_speech_transcribe(
     // that outlives the frame — is what keeps that borrow honest.
     let owned = Array(UnsafeBufferPointer(start: samples, count: sampleCount))
 
-    let outcome = runBlocking {
-        await transcribeSamples(owned, sampleRateHz: sampleRateHz, localeIdentifier: requested)
+    let timeout = transcriptionTimeoutSeconds(sampleCount: sampleCount, sampleRateHz: sampleRateHz)
+    guard
+        let outcome = runBlocking(timeoutSeconds: timeout, {
+            await transcribeSamples(owned, sampleRateHz: sampleRateHz, localeIdentifier: requested)
+        })
+    else {
+        outDetail?.pointee = copyToC("The transcriber did not finish in time.")
+        return STATUS_FAILED
     }
 
     outDetail?.pointee = outcome.detail.map(copyToC)
@@ -206,11 +219,18 @@ public func slugtale_apple_speech_install_assets(
         return STATUS_UNSUPPORTED_OS
     }
     guard let requested = readString(localeIdentifier) else {
-        outDetail?.pointee = copyToC("no Dictation Language was supplied")
+        outDetail?.pointee = copyToC("No Dictation Language was supplied.")
         return STATUS_FAILED
     }
 
-    let outcome = runBlocking { await installAssets(requested) }
+    guard
+        let outcome = runBlocking(timeoutSeconds: INSTALL_TIMEOUT_SECONDS, {
+            await installAssets(requested)
+        })
+    else {
+        outDetail?.pointee = copyToC("macOS did not finish installing the speech assets.")
+        return STATUS_FAILED
+    }
     outDetail?.pointee = outcome.detail.map(copyToC)
     return outcome.status
 }
@@ -273,7 +293,7 @@ private func probeLocale(_ identifier: String) async -> Outcome {
     guard SpeechTranscriber.isAvailable else {
         return .failure(
             STATUS_UNSUPPORTED_HARDWARE,
-            "this Mac's hardware cannot run the on-device transcriber")
+            "This Mac's hardware cannot run the on-device transcriber.")
     }
     guard let locale = await resolveLocale(identifier) else {
         return .failure(STATUS_UNSUPPORTED_LOCALE, identifier)
@@ -285,11 +305,11 @@ private func probeLocale(_ identifier: String) async -> Outcome {
     case .downloading:
         return .failure(
             STATUS_ASSETS_MISSING,
-            "macOS is still downloading the speech assets for this language")
+            "macOS is still downloading the speech assets for this language.")
     case .supported:
         return .failure(
             STATUS_ASSETS_MISSING,
-            "macOS has not installed the speech assets for this language yet")
+            "macOS has not installed the speech assets for this language yet.")
     case .unsupported:
         return .failure(STATUS_UNSUPPORTED_LOCALE, identifier)
     @unknown default:
@@ -297,7 +317,7 @@ private func probeLocale(_ identifier: String) async -> Outcome {
         // guessing, so the router falls back instead of transcribing blind.
         return .failure(
             STATUS_ASSETS_MISSING,
-            "macOS reports an unrecognised state for this language's speech assets")
+            "macOS reports an unrecognised state for this language's speech assets.")
     }
 }
 
@@ -306,7 +326,7 @@ private func installAssets(_ identifier: String) async -> Outcome {
     guard SpeechTranscriber.isAvailable else {
         return .failure(
             STATUS_UNSUPPORTED_HARDWARE,
-            "this Mac's hardware cannot run the on-device transcriber")
+            "This Mac's hardware cannot run the on-device transcriber.")
     }
     guard let locale = await resolveLocale(identifier) else {
         return .failure(STATUS_UNSUPPORTED_LOCALE, identifier)
@@ -332,6 +352,13 @@ private func transcribeSamples(
     sampleRateHz: Double,
     localeIdentifier: String
 ) async -> Outcome {
+    // Probe again even though Rust caches an availability answer. The cache is
+    // what keeps the dictation fast path off the system asset inventory, but it
+    // can be stale — macOS may have evicted a language since the last check —
+    // and "never transcribe without installed on-device assets" is a promise
+    // that has to hold at the moment of transcription, not at the moment of the
+    // last probe. Measured at a few tens of milliseconds against a decode that
+    // takes seconds.
     let probe = await probeLocale(localeIdentifier)
     guard probe.status == STATUS_OK else { return probe }
     guard let locale = await resolveLocale(localeIdentifier) else {
@@ -348,7 +375,7 @@ private func transcribeSamples(
             transcriber
         ])
     else {
-        return .failure(STATUS_FAILED, "the transcriber offered no compatible audio format")
+        return .failure(STATUS_FAILED, "The transcriber offered no compatible audio format.")
     }
 
     let buffer: AVAudioPCMBuffer
@@ -366,16 +393,19 @@ private func transcribeSamples(
     // stream's completion and could drop the only result we care about.
     let collector = Task { () -> Result<Outcome, Error> in
         do {
-            var collected = Outcome(status: STATUS_OK)
             var finalText = AttributedString()
-            var alternatives: [String] = []
+            var segments: [Segment] = []
             for try await result in transcriber.results where result.isFinal {
                 finalText.append(result.text)
-                alternatives.append(
-                    contentsOf: result.alternatives.map { String($0.characters) })
+                segments.append(
+                    Segment(
+                        text: String(result.text.characters),
+                        alternatives: result.alternatives.map { String($0.characters) }))
             }
+
+            var collected = Outcome(status: STATUS_OK)
             collected.text = String(finalText.characters)
-            collected.alternatives = alternatives
+            collected.alternatives = wholeTranscriptAlternatives(segments)
             let (mean, minimum) = confidenceOf(finalText)
             collected.meanConfidence = mean
             collected.minimumConfidence = minimum
@@ -418,7 +448,7 @@ private func makeBuffer(
             channels: 1,
             interleaved: false)
     else {
-        throw BridgeError("the recording's audio format is not representable")
+        throw BridgeError("The recording's audio format is not representable.")
     }
 
     let frameCount = AVAudioFrameCount(samples.count)
@@ -426,7 +456,7 @@ private func makeBuffer(
         let source = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frameCount),
         let channel = source.floatChannelData
     else {
-        throw BridgeError("could not allocate an audio buffer for the recording")
+        throw BridgeError("Could not allocate an audio buffer for the recording.")
     }
     source.frameLength = frameCount
     samples.withUnsafeBufferPointer { input in
@@ -440,14 +470,14 @@ private func makeBuffer(
     }
 
     guard let converter = AVAudioConverter(from: sourceFormat, to: format) else {
-        throw BridgeError("could not convert the recording to the transcriber's audio format")
+        throw BridgeError("Could not convert the recording to the transcriber's audio format.")
     }
     // Round up so the last partial frame of a resample survives, and add a
     // frame of slack for converters that emit a priming sample.
     let ratio = format.sampleRate / sourceFormat.sampleRate
     let capacity = AVAudioFrameCount((Double(samples.count) * ratio).rounded(.up)) + 1
     guard let converted = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
-        throw BridgeError("could not allocate a converted audio buffer")
+        throw BridgeError("Could not allocate a converted audio buffer.")
     }
 
     var supplied = false
@@ -462,9 +492,60 @@ private func makeBuffer(
         return source
     }
     if status == .error {
-        throw conversionError ?? BridgeError("the recording could not be converted")
+        throw conversionError ?? BridgeError("The recording could not be converted.")
     }
     return converted
+}
+
+/// One `SpeechTranscriber.Result`: a stretch of the recording the engine
+/// finalized in one go, plus the readings it considered for that stretch.
+private struct Segment {
+    let text: String
+    /// Ranked best-first, and — as observed on macOS 26.5 — the chosen reading
+    /// is itself the first entry rather than being excluded.
+    let alternatives: [String]
+}
+
+/// How many whole-transcript alternatives to hand back. The Second Opinion
+/// router picks between complete transcripts, and a handful of near-misses is
+/// all a selection policy can meaningfully weigh; the cross-product of every
+/// segment's readings would be unbounded on a long dictation and would cost real
+/// memory on the 8 GB reference machine.
+private let MAX_ALTERNATIVES = 8
+
+/// Turn Apple's *per-segment* alternatives into the *whole-transcript*
+/// alternatives the Transcription Engine boundary carries.
+///
+/// `SpeechTranscriber` finalizes a recording in several results and offers
+/// competing readings for each one separately — "Slugtail" vs "Slug tail" for
+/// the first second of speech, and nothing at all for the rest. Slugtale selects
+/// between complete transcripts rather than merging words, so each alternative
+/// here is the full transcription with exactly one segment swapped for one of
+/// its other readings. Substituting one segment at a time (rather than taking
+/// the cross product) keeps the list short, keeps every entry a reading the
+/// engine actually proposed, and keeps the mapping inspectable.
+///
+/// Ordering is by rank first, then by position: every segment's second-best
+/// reading comes before any segment's third-best, so the list stays roughly
+/// best-first the way the boundary promises.
+private func wholeTranscriptAlternatives(_ segments: [Segment]) -> [String] {
+    let parts = segments.map(\.text)
+    let primary = parts.joined()
+    var seen: Set<String> = [primary]
+    var alternatives: [String] = []
+    let deepest = segments.map(\.alternatives.count).max() ?? 0
+
+    for rank in 0..<deepest {
+        for (index, segment) in segments.enumerated() where rank < segment.alternatives.count {
+            var candidate = parts
+            candidate[index] = segment.alternatives[rank]
+            let joined = candidate.joined()
+            guard seen.insert(joined).inserted else { continue }
+            alternatives.append(joined)
+            if alternatives.count == MAX_ALTERNATIVES { return alternatives }
+        }
+    }
+    return alternatives
 }
 
 /// Reduce `SpeechTranscriber`'s per-run confidence attributes to the two numbers
@@ -538,21 +619,51 @@ private final class Box<Value>: @unchecked Sendable {
     }
 }
 
-/// Run an async operation to completion and return its result synchronously.
+/// Run an async operation and return its result synchronously, giving up after
+/// `timeoutSeconds` and returning nil.
 ///
 /// Rust calls this library from an ordinary thread — the dictation worker, never
 /// a Swift cooperative-pool thread — so blocking it cannot deadlock the pool
 /// that is executing the operation. Slugtale transcribes a whole recording at
 /// once and has no Live Preview, so there is nothing to gain from an async Rust
 /// signature and a callback ABI to match it.
-private func runBlocking<Value>(_ operation: @escaping @Sendable () async -> Value) -> Value {
+///
+/// The timeout is what keeps a wedged system service from wedging a dictation
+/// with it. Rust cannot interrupt a blocking FFI call, so the ceiling has to
+/// live on this side. Giving up abandons the operation rather than killing it:
+/// the detached task keeps running, writes into the box nobody is reading any
+/// more, and signals a semaphore with no waiter — all harmless, and much safer
+/// than trying to tear down work inside Apple's framework.
+private func runBlocking<Value>(
+    timeoutSeconds: Double,
+    _ operation: @escaping @Sendable () async -> Value
+) -> Value? {
     let box = Box<Value>()
     let finished = DispatchSemaphore(value: 0)
     Task.detached(priority: .userInitiated) {
         box.value = await operation()
         finished.signal()
     }
-    finished.wait()
+    guard finished.wait(timeout: .now() + timeoutSeconds) == .success else { return nil }
     // Safe: the semaphore is only signalled after `value` has been written.
-    return box.value!
+    return box.value
 }
+
+/// How long to wait for a question about the machine — OS version, hardware,
+/// locale support, asset inventory. Generous by orders of magnitude: a probe is
+/// tens of milliseconds in practice, so anything near this is a fault, not load.
+private let PROBE_TIMEOUT_SECONDS: Double = 30
+
+/// How long to wait for a decode: a fixed floor for model load plus a multiple
+/// of the recording's own length, so a long dictation is not cut off on a slow
+/// machine while a wedged one still gives up.
+private func transcriptionTimeoutSeconds(sampleCount: Int, sampleRateHz: Double) -> Double {
+    let recordedSeconds = sampleRateHz > 0 ? Double(sampleCount) / sampleRateHz : 0
+    return 60 + recordedSeconds * 10
+}
+
+/// Installing assets is a download the user asked for and may legitimately take
+/// many minutes on a slow connection, so it gets a ceiling measured in hours
+/// rather than seconds — present only so a stuck request cannot hold a thread
+/// forever.
+private let INSTALL_TIMEOUT_SECONDS: Double = 2 * 60 * 60
