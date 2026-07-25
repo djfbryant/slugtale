@@ -79,11 +79,29 @@ impl TranscriptionEngines {
         match engine {
             slugtale_lib::TranscriptionEngine::Whisper => None,
             slugtale_lib::TranscriptionEngine::Parakeet => Some(self.parakeet.clone()),
-            // Apple SpeechTranscriber is registered here once slugtale-vjs.2
-            // lands its provider; until then it reports unavailable and the
-            // router simply never selects it.
+            // Apple SpeechTranscriber lives in AppleSpeechEngineState, which is
+            // managed unconditionally because it needs no models directory.
             slugtale_lib::TranscriptionEngine::AppleSpeech => None,
         }
+    }
+}
+
+/// The Apple SpeechTranscriber provider, shared by Settings and the dictation
+/// path.
+///
+/// Held separately from [`TranscriptionEngines`] because it needs no models
+/// directory: Apple's assets belong to macOS, so this provider is available even
+/// on a machine where Slugtale could not resolve its own app data directory.
+///
+/// There is exactly one of these, and that is the point. The provider caches its
+/// own availability probe, so a second instance would mean Settings installing
+/// the system assets while the router went on reading a stale "not installed"
+/// from its own copy.
+struct AppleSpeechEngineState(Arc<slugtale_lib::AppleSpeechProvider>);
+
+impl Default for AppleSpeechEngineState {
+    fn default() -> Self {
+        Self(Arc::new(slugtale_lib::AppleSpeechProvider::new()))
     }
 }
 
@@ -108,16 +126,25 @@ fn transcription_router(
     let whisper_provider: Arc<dyn TranscriptionProvider> =
         Arc::new(slugtale_lib::WhisperTranscriptionProvider::new(whisper));
 
-    // The registry is absent only when the app data directory could not be
-    // resolved at startup. Whisper still works from its own configured path, so
-    // degrade to a single engine rather than failing the dictation.
-    let Some(engines) = app.try_state::<TranscriptionEngines>() else {
-        return slugtale_lib::SecondOpinionRouter::single(whisper_provider);
+    // Resolve every engine through the one managed instance of its provider, so
+    // that installing assets from Settings is visible here immediately. Two
+    // instances would each cache their own availability probe, and the router
+    // would keep reading "not installed" after the user had just installed it.
+    let engines = app.try_state::<TranscriptionEngines>();
+    let apple = app.try_state::<AppleSpeechEngineState>();
+    let resolve = |engine: slugtale_lib::TranscriptionEngine| -> Option<Arc<dyn TranscriptionProvider>> {
+        match engine {
+            slugtale_lib::TranscriptionEngine::Whisper => Some(whisper_provider.clone()),
+            slugtale_lib::TranscriptionEngine::Parakeet => {
+                engines.as_ref().and_then(|engines| engines.provider(engine))
+            }
+            slugtale_lib::TranscriptionEngine::AppleSpeech => apple
+                .as_ref()
+                .map(|apple| apple.0.clone() as Arc<dyn TranscriptionProvider>),
+        }
     };
 
-    let requested = engines
-        .provider(settings.primary_engine)
-        .unwrap_or_else(|| whisper_provider.clone());
+    let requested = resolve(settings.primary_engine).unwrap_or_else(|| whisper_provider.clone());
     let primary = if requested.availability().is_available() {
         requested
     } else {
@@ -130,14 +157,7 @@ fn transcription_router(
             let second = slugtale_lib::TranscriptionEngine::ALL
                 .into_iter()
                 .filter(|engine| *engine != primary.engine())
-                .filter_map(|engine| {
-                    engines
-                        .provider(engine)
-                        .or_else(|| {
-                            (engine == slugtale_lib::TranscriptionEngine::Whisper)
-                                .then(|| whisper_provider.clone())
-                        })
-                })
+                .filter_map(resolve)
                 .find(|provider| provider.availability().is_available());
 
             match second {
@@ -1129,6 +1149,285 @@ fn save_launch_at_login(
     Ok(settings)
 }
 
+/// What Settings needs to render one row of the Transcription Engines list
+/// (slugtale-vjs.4): whether it is the current primary, its licence and
+/// provenance from [`slugtale_lib::EngineMetadata`], whether it can run right
+/// now, and how much of its assets are actually on disk.
+///
+/// This mirrors `EngineMetadata`/`EngineAvailability` rather than replacing
+/// them — Settings renders the licence and attribution strings straight out of
+/// `metadata` so the CC BY 4.0 wording is never retyped in the frontend.
+#[derive(Debug, Clone, serde::Serialize)]
+struct EngineView {
+    id: &'static str,
+    display_name: &'static str,
+    is_primary: bool,
+    metadata: slugtale_lib::EngineMetadata,
+    availability: slugtale_lib::EngineAvailability,
+    /// `availability`'s reason rendered through [`slugtale_lib::EngineUnavailable`]'s
+    /// `Display`, so Settings shows the same wording the rest of Slugtale does
+    /// rather than re-deriving copy per reason code in JavaScript. `None` when
+    /// the engine is available.
+    unavailable_reason: Option<String>,
+    /// Whether Settings should offer an Install action right now. Mirrors
+    /// [`slugtale_lib::EngineUnavailable::is_user_resolvable`]: only a missing-assets
+    /// engine gets a button, never an unsupported OS or a build without the
+    /// feature.
+    installable: bool,
+    assets: EngineAssetState,
+}
+
+/// Installed-asset accounting for one engine, kept separate from
+/// [`slugtale_lib::EngineAvailability`] because an engine can be unavailable for
+/// reasons that have nothing to do with assets (wrong OS, build without the
+/// feature).
+#[derive(Debug, Clone, serde::Serialize)]
+struct EngineAssetState {
+    /// Bytes on disk for assets Slugtale itself owns. `None` for Apple
+    /// SpeechTranscriber, whose assets Slugtale never downloads or measures.
+    installed_bytes: Option<u64>,
+    /// Whether Slugtale's own copy of the assets is fully installed. `None` for
+    /// system-managed engines; `availability` is the honest answer there.
+    present: Option<bool>,
+}
+
+/// A [`slugtale_lib::TranscriptionProvider`] for the Whisper engine, built the
+/// same way `complete_captured_dictation` builds one: from the cache keyed by
+/// the currently configured model path. Constructing it does not load model
+/// weights, so this is cheap enough to call every time Settings asks.
+fn whisper_engine_provider(
+    app: &tauri::AppHandle,
+    settings: &slugtale_lib::Settings,
+) -> Result<slugtale_lib::WhisperTranscriptionProvider, String> {
+    let model_path = model_manager(app)?.active_model_path(settings);
+    let runtime = app
+        .state::<slugtale_lib::WhisperRuntimeCache>()
+        .runtime_for(&model_path);
+    Ok(slugtale_lib::WhisperTranscriptionProvider::new(runtime))
+}
+
+/// Build one engine's Settings row from its cached provider. Never re-probes:
+/// every branch reads `metadata()`/`availability()` off a provider that was
+/// already constructed (Whisper) or already registered at startup (Parakeet,
+/// Apple SpeechTranscriber), matching how the dictation path itself asks these
+/// questions.
+fn build_engine_view(
+    app: &tauri::AppHandle,
+    settings: &slugtale_lib::Settings,
+    engine: slugtale_lib::TranscriptionEngine,
+) -> Result<EngineView, String> {
+    let is_primary = settings.primary_engine == engine;
+
+    let (metadata, availability, assets) = match engine {
+        slugtale_lib::TranscriptionEngine::Whisper => {
+            let provider = whisper_engine_provider(app, settings)?;
+            let status = model_manager(app)?.status();
+            (
+                provider.metadata(),
+                provider.availability(),
+                EngineAssetState {
+                    installed_bytes: status.bytes,
+                    present: Some(status.present),
+                },
+            )
+        }
+        slugtale_lib::TranscriptionEngine::Parakeet => {
+            let engines = app
+                .try_state::<TranscriptionEngines>()
+                .ok_or_else(|| "transcription engines are not ready yet".to_string())?;
+            let provider = &engines.parakeet;
+            let status = provider.status();
+            (
+                provider.metadata(),
+                provider.availability(),
+                EngineAssetState {
+                    installed_bytes: Some(status.installed_bytes),
+                    present: Some(status.present),
+                },
+            )
+        }
+        slugtale_lib::TranscriptionEngine::AppleSpeech => {
+            let provider = app.state::<AppleSpeechEngineState>().0.clone();
+            (
+                provider.metadata(),
+                provider.availability(),
+                // System-managed: Slugtale never downloads or measures these.
+                EngineAssetState {
+                    installed_bytes: None,
+                    present: None,
+                },
+            )
+        }
+    };
+
+    let (unavailable_reason, installable) = match &availability {
+        slugtale_lib::EngineAvailability::Available => (None, false),
+        slugtale_lib::EngineAvailability::Unavailable(reason) => {
+            (Some(reason.to_string()), reason.is_user_resolvable())
+        }
+    };
+
+    Ok(EngineView {
+        id: engine.id(),
+        display_name: engine.display_name(),
+        is_primary,
+        metadata,
+        availability,
+        unavailable_reason,
+        installable,
+        assets,
+    })
+}
+
+/// Every Transcription Engine Settings can show, in [`slugtale_lib::TranscriptionEngine::ALL`]
+/// order. Read-only and non-blocking: see [`build_engine_view`].
+#[tauri::command]
+fn transcription_engines(app: tauri::AppHandle) -> Result<Vec<EngineView>, String> {
+    let settings = load_current_settings(&app);
+    slugtale_lib::TranscriptionEngine::ALL
+        .into_iter()
+        .map(|engine| build_engine_view(&app, &settings, engine))
+        .collect()
+}
+
+/// Persist the chosen primary engine and Second Opinion mode (slugtale-vjs.4).
+/// Mirrors [`save_transcription_settings`]: no check that the chosen engine can
+/// actually run, because availability can change after the choice is made and
+/// is resolved fresh by `transcription_router` on the next dictation instead
+/// (see [`slugtale_lib::apply_engine_settings`]).
+#[tauri::command]
+fn set_transcription_engines(
+    app: tauri::AppHandle,
+    primary_engine: slugtale_lib::TranscriptionEngine,
+    second_opinion: slugtale_lib::SecondOpinionMode,
+) -> Result<slugtale_lib::Settings, String> {
+    let mut settings = load_current_settings(&app);
+    slugtale_lib::apply_engine_settings(&mut settings, primary_engine, second_opinion);
+    save_current_settings(&app, &settings)?;
+    Ok(settings)
+}
+
+/// Install one engine's assets as an explicit user action (slugtale-vjs.4).
+///
+/// Whisper and Parakeet both fetch pinned artefacts over HTTP and report
+/// progress on `on_progress`, exactly like [`download_local_model`]. Apple
+/// SpeechTranscriber has no download for Slugtale to drive — it asks macOS to
+/// install its own system assets via
+/// [`slugtale_lib::AppleSpeechProvider::request_asset_installation`], which
+/// blocks for as long as that takes and reports no progress, so `on_progress`
+/// is simply unused on that branch.
+#[tauri::command]
+async fn install_engine_assets(
+    app: tauri::AppHandle,
+    engine: slugtale_lib::TranscriptionEngine,
+    on_progress: tauri::ipc::Channel<slugtale_lib::DownloadProgress>,
+) -> Result<EngineView, String> {
+    match engine {
+        slugtale_lib::TranscriptionEngine::Whisper => {
+            let manager = model_manager(&app)?;
+            let status = tauri::async_runtime::spawn_blocking(move || {
+                let mut last_sent = 0u64;
+                let mut forward = move |progress: slugtale_lib::DownloadProgress| {
+                    let complete = progress
+                        .total
+                        .is_some_and(|total| progress.downloaded >= total);
+                    if progress.downloaded == 0
+                        || complete
+                        || progress.downloaded - last_sent >= 1_048_576
+                    {
+                        last_sent = progress.downloaded;
+                        let _ = on_progress.send(progress);
+                    }
+                };
+                manager
+                    .download_default(&slugtale_lib::HttpModelDownloader, &mut forward)
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| error.to_string())??;
+            if status.present {
+                warm_local_whisper_runtime(&app, &status.path);
+            }
+        }
+        slugtale_lib::TranscriptionEngine::Parakeet => {
+            let engines = app
+                .try_state::<TranscriptionEngines>()
+                .ok_or_else(|| "transcription engines are not ready yet".to_string())?;
+            let provider = engines.parakeet.clone();
+            let asset_dir = provider.asset_dir().to_path_buf();
+            tauri::async_runtime::spawn_blocking(move || {
+                let mut last_sent = 0u64;
+                let mut forward = move |progress: slugtale_lib::DownloadProgress| {
+                    let complete = progress
+                        .total
+                        .is_some_and(|total| progress.downloaded >= total);
+                    if progress.downloaded == 0
+                        || complete
+                        || progress.downloaded - last_sent >= 1_048_576
+                    {
+                        last_sent = progress.downloaded;
+                        let _ = on_progress.send(progress);
+                    }
+                };
+                slugtale_lib::install_parakeet_assets(
+                    &asset_dir,
+                    &slugtale_lib::HttpModelDownloader,
+                    &mut forward,
+                )
+                .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| error.to_string())??;
+            provider.refresh_availability();
+        }
+        slugtale_lib::TranscriptionEngine::AppleSpeech => {
+            let provider = app.state::<AppleSpeechEngineState>().0.clone();
+            tauri::async_runtime::spawn_blocking(move || provider.request_asset_installation())
+                .await
+                .map_err(|error| error.to_string())??;
+        }
+    }
+
+    let settings = load_current_settings(&app);
+    build_engine_view(&app, &settings, engine)
+}
+
+/// Remove one engine's installed assets as an explicit user action
+/// (slugtale-vjs.4). Apple SpeechTranscriber's assets are macOS's, not
+/// Slugtale's, so there is nothing here to delete — the branch refuses rather
+/// than pretending to free space Slugtale never claimed.
+#[tauri::command]
+fn remove_engine_assets(
+    app: tauri::AppHandle,
+    engine: slugtale_lib::TranscriptionEngine,
+) -> Result<EngineView, String> {
+    match engine {
+        slugtale_lib::TranscriptionEngine::Whisper => {
+            model_manager(&app)?
+                .delete_default()
+                .map_err(|error| error.to_string())?;
+        }
+        slugtale_lib::TranscriptionEngine::Parakeet => {
+            let engines = app
+                .try_state::<TranscriptionEngines>()
+                .ok_or_else(|| "transcription engines are not ready yet".to_string())?;
+            slugtale_lib::delete_parakeet_assets(engines.parakeet.asset_dir())
+                .map_err(|error| error.to_string())?;
+            engines.parakeet.refresh_availability();
+        }
+        slugtale_lib::TranscriptionEngine::AppleSpeech => {
+            return Err(
+                "Apple SpeechTranscriber's assets are installed and managed by macOS; \
+                 Slugtale cannot remove them."
+                    .to_string(),
+            );
+        }
+    }
+
+    let settings = load_current_settings(&app);
+    build_engine_view(&app, &settings, engine)
+}
+
 #[tauri::command]
 fn get_local_model_status(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelStatus, String> {
     Ok(model_manager(&app)?.status())
@@ -1353,6 +1652,7 @@ fn main() {
         .manage(FocusTargetState::default())
         .manage(AudioCaptureState::default())
         .manage(HotkeyRegistrationState::default())
+        .manage(AppleSpeechEngineState::default())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -1403,6 +1703,10 @@ fn main() {
             download_local_model,
             delete_local_model,
             reveal_model_location,
+            transcription_engines,
+            set_transcription_engines,
+            install_engine_assets,
+            remove_engine_assets,
             transcribe_captured_audio,
             dictation_event
         ])
