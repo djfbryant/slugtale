@@ -226,6 +226,96 @@ impl LevelEmitter {
     }
 }
 
+const MAX_RECORDING_SECONDS: usize = 5 * 60;
+const RECORDING_LIMIT_ERROR: &str = "recording exceeded the five-minute capture limit";
+
+/// A bounded single-producer/single-consumer ring for microphone samples.
+///
+/// The CoreAudio callback is the sole producer while the stream is active. The
+/// recorder pauses the stream before it becomes the sole consumer, so neither
+/// side needs a lock. Every slot is allocated and initialized before `play`,
+/// which also prevents first-touch page faults on the audio thread.
+struct RealtimeCaptureBuffer {
+    slots: Box<[std::sync::atomic::AtomicU32]>,
+    write_position: std::sync::atomic::AtomicUsize,
+    read_position: std::sync::atomic::AtomicUsize,
+    overflowed: std::sync::atomic::AtomicBool,
+}
+
+impl RealtimeCaptureBuffer {
+    fn for_sample_rate(sample_rate_hz: u32) -> Result<Self, AudioCaptureError> {
+        let capacity = usize::try_from(sample_rate_hz)
+            .ok()
+            .and_then(|rate| rate.checked_mul(MAX_RECORDING_SECONDS))
+            .ok_or_else(|| AudioCaptureError::new("audio capture capacity is too large"))?;
+        if capacity == 0 {
+            return Err(AudioCaptureError::new("input sample rate must be non-zero"));
+        }
+        Ok(Self::with_capacity(capacity))
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity > 0, "capture buffer capacity must be non-zero");
+        Self {
+            slots: (0..capacity)
+                .map(|_| std::sync::atomic::AtomicU32::new(0f32.to_bits()))
+                .collect(),
+            write_position: std::sync::atomic::AtomicUsize::new(0),
+            read_position: std::sync::atomic::AtomicUsize::new(0),
+            overflowed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Called only by the real-time audio thread. This performs one bounded
+    /// atomic write and never allocates, locks, waits, or overwrites old audio.
+    fn push_sample(&self, sample: f32) {
+        use std::sync::atomic::Ordering;
+
+        let write_position = self.write_position.load(Ordering::Relaxed);
+        let read_position = self.read_position.load(Ordering::Acquire);
+        if write_position.wrapping_sub(read_position) >= self.slots.len() {
+            self.overflowed.store(true, Ordering::Relaxed);
+            return;
+        }
+
+        let slot = write_position % self.slots.len();
+        self.slots[slot].store(sample.to_bits(), Ordering::Relaxed);
+        self.write_position
+            .store(write_position.wrapping_add(1), Ordering::Release);
+    }
+
+    /// Called after the input stream is paused, outside the audio callback.
+    fn drain(&self) -> Result<Vec<f32>, AudioCaptureError> {
+        use std::sync::atomic::Ordering;
+
+        let read_position = self.read_position.load(Ordering::Relaxed);
+        let write_position = self.write_position.load(Ordering::Acquire);
+        let available = write_position
+            .wrapping_sub(read_position)
+            .min(self.slots.len());
+        let mut samples = Vec::with_capacity(available);
+        for offset in 0..available {
+            let slot = read_position.wrapping_add(offset) % self.slots.len();
+            samples.push(f32::from_bits(self.slots[slot].load(Ordering::Relaxed)));
+        }
+        self.read_position.store(write_position, Ordering::Release);
+
+        if self.overflowed.swap(false, Ordering::Relaxed) {
+            return Err(AudioCaptureError::new(RECORDING_LIMIT_ERROR));
+        }
+        Ok(samples)
+    }
+
+    /// Discard pending audio between dictations without reallocating the ring.
+    fn clear(&self) {
+        use std::sync::atomic::Ordering;
+
+        let write_position = self.write_position.load(Ordering::Acquire);
+        self.read_position.store(write_position, Ordering::Release);
+        self.overflowed.store(false, Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InputStreamIdentity {
     device_id: Option<cpal::DeviceId>,
@@ -239,7 +329,7 @@ pub struct CpalAudioRecorder {
     stream: Option<cpal::Stream>,
     stream_identity: Option<InputStreamIdentity>,
     stream_active: bool,
-    buffer: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+    buffer: Option<std::sync::Arc<RealtimeCaptureBuffer>>,
     level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
     level_emitter: Option<LevelEmitter>,
     sample_rate_hz: u32,
@@ -259,9 +349,8 @@ impl CpalAudioRecorder {
     fn build_stream<T>(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
-        buffer: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
         level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    ) -> Result<cpal::Stream, AudioCaptureError>
+    ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError>
     where
         T: cpal::SizedSample,
         f32: cpal::FromSample<T>,
@@ -269,24 +358,33 @@ impl CpalAudioRecorder {
         use cpal::traits::DeviceTrait;
         use cpal::Sample;
 
+        let channels = usize::from(config.channels);
+        if channels == 0 {
+            return Err(AudioCaptureError::new(
+                "input channel count must be non-zero",
+            ));
+        }
+        let buffer =
+            std::sync::Arc::new(RealtimeCaptureBuffer::for_sample_rate(config.sample_rate)?);
+        let callback_buffer = buffer.clone();
         let stream = device
             .build_input_stream(
-                config.clone(),
+                *config,
                 move |data: &[T], _: &cpal::InputCallbackInfo| {
-                    // Real-time audio callback: no allocation, no IPC, and no
-                    // dropped chunks. A blocking `lock` is safe here — the only
-                    // other holders (start's clear, stop's drain) run outside
-                    // active capture and hold it briefly — whereas the previous
-                    // `try_lock` silently discarded whole chunks under
-                    // contention, leaving gaps in the dictation (slugtale-65l).
+                    // Real-time audio callback: the pre-allocated ring and
+                    // atomics below perform no allocation, locking, waiting, or
+                    // IPC. Input is downmixed before storage so the ring's
+                    // capacity maps exactly to five minutes of dictation rather
+                    // than multiplying memory by the device channel count.
                     let mut sum_of_squares = 0.0f32;
-                    if let Ok(mut samples) = buffer.lock() {
-                        samples.reserve(data.len());
-                        for value in data.iter().copied() {
+                    for frame in data.chunks_exact(channels) {
+                        let mut mono_sum = 0.0f32;
+                        for value in frame.iter().copied() {
                             let sample = f32::from_sample(value);
                             sum_of_squares += sample.clamp(-1.0, 1.0).powi(2);
-                            samples.push(sample);
+                            mono_sum += sample;
                         }
+                        callback_buffer.push_sample(mono_sum / channels as f32);
                     }
                     if !data.is_empty() {
                         let rms = (sum_of_squares / data.len() as f32).sqrt().clamp(0.0, 1.0);
@@ -303,37 +401,24 @@ impl CpalAudioRecorder {
             )
             .map_err(|error| AudioCaptureError::new(error.to_string()))?;
 
-        Ok(stream)
+        Ok((stream, buffer))
     }
 
     fn build_stream_for_format(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
         sample_format: cpal::SampleFormat,
-        buffer: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
         level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    ) -> Result<cpal::Stream, AudioCaptureError> {
+    ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError> {
         match sample_format {
-            cpal::SampleFormat::I8 => Self::build_stream::<i8>(device, config, buffer, level_bits),
-            cpal::SampleFormat::I16 => {
-                Self::build_stream::<i16>(device, config, buffer, level_bits)
-            }
-            cpal::SampleFormat::I32 => {
-                Self::build_stream::<i32>(device, config, buffer, level_bits)
-            }
-            cpal::SampleFormat::U8 => Self::build_stream::<u8>(device, config, buffer, level_bits),
-            cpal::SampleFormat::U16 => {
-                Self::build_stream::<u16>(device, config, buffer, level_bits)
-            }
-            cpal::SampleFormat::U32 => {
-                Self::build_stream::<u32>(device, config, buffer, level_bits)
-            }
-            cpal::SampleFormat::F32 => {
-                Self::build_stream::<f32>(device, config, buffer, level_bits)
-            }
-            cpal::SampleFormat::F64 => {
-                Self::build_stream::<f64>(device, config, buffer, level_bits)
-            }
+            cpal::SampleFormat::I8 => Self::build_stream::<i8>(device, config, level_bits),
+            cpal::SampleFormat::I16 => Self::build_stream::<i16>(device, config, level_bits),
+            cpal::SampleFormat::I32 => Self::build_stream::<i32>(device, config, level_bits),
+            cpal::SampleFormat::U8 => Self::build_stream::<u8>(device, config, level_bits),
+            cpal::SampleFormat::U16 => Self::build_stream::<u16>(device, config, level_bits),
+            cpal::SampleFormat::U32 => Self::build_stream::<u32>(device, config, level_bits),
+            cpal::SampleFormat::F32 => Self::build_stream::<f32>(device, config, level_bits),
+            cpal::SampleFormat::F64 => Self::build_stream::<f64>(device, config, level_bits),
             other => Err(AudioCaptureError::new(format!(
                 "unsupported input sample format: {other}"
             ))),
@@ -392,11 +477,11 @@ impl AudioRecorder for CpalAudioRecorder {
         };
 
         self.sample_rate_hz = config.sample_rate;
-        self.channels = config.channels;
-        self.buffer
-            .lock()
-            .map_err(|_| AudioCaptureError::new("audio buffer mutex poisoned"))?
-            .clear();
+        // The callback downmixes each input frame before placing it in the ring.
+        self.channels = 1;
+        if let Some(buffer) = self.buffer.as_ref() {
+            buffer.clear();
+        }
 
         self.level_bits
             .store(0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -405,17 +490,20 @@ impl AudioRecorder for CpalAudioRecorder {
         // paid on every hotkey press. Keep the paused stream when the default
         // device and format are unchanged; `stop`/`cancel` pause it, and `play`
         // resumes it in roughly 40 ms on the reference Mac (slugtale-op3).
-        let reused_stream =
-            self.stream.is_some() && self.stream_identity.as_ref() == Some(&identity);
+        let reused_stream = self.stream.is_some()
+            && self.buffer.is_some()
+            && self.stream_identity.as_ref() == Some(&identity);
         if !reused_stream {
             self.stream.take();
-            self.stream = Some(Self::build_stream_for_format(
+            self.buffer = None;
+            let (stream, buffer) = Self::build_stream_for_format(
                 &device,
                 &config,
                 sample_format,
-                self.buffer.clone(),
                 self.level_bits.clone(),
-            )?);
+            )?;
+            self.stream = Some(stream);
+            self.buffer = Some(buffer);
             self.stream_identity = Some(identity.clone());
         }
 
@@ -428,13 +516,15 @@ impl AudioRecorder for CpalAudioRecorder {
             // without its identity changing. Fall back to a cold start once so a
             // stale stream never strands dictation.
             self.stream.take();
-            self.stream = Some(Self::build_stream_for_format(
+            self.buffer = None;
+            let (stream, buffer) = Self::build_stream_for_format(
                 &device,
                 &config,
                 sample_format,
-                self.buffer.clone(),
                 self.level_bits.clone(),
-            )?);
+            )?;
+            self.stream = Some(stream);
+            self.buffer = Some(buffer);
             self.stream_identity = Some(identity);
             self.stream
                 .as_ref()
@@ -457,13 +547,11 @@ impl AudioRecorder for CpalAudioRecorder {
     fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
         self.pause_active_stream();
         self.stop_level_emitter();
-        let samples = {
-            let mut guard = self
-                .buffer
-                .lock()
-                .map_err(|_| AudioCaptureError::new("audio buffer mutex poisoned"))?;
-            std::mem::take(&mut *guard)
-        };
+        let samples = self
+            .buffer
+            .as_ref()
+            .ok_or_else(|| AudioCaptureError::new("audio capture buffer is unavailable"))?
+            .drain()?;
 
         captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
     }
@@ -471,10 +559,9 @@ impl AudioRecorder for CpalAudioRecorder {
     fn cancel(&mut self) -> Result<(), AudioCaptureError> {
         self.pause_active_stream();
         self.stop_level_emitter();
-        self.buffer
-            .lock()
-            .map_err(|_| AudioCaptureError::new("audio buffer mutex poisoned"))?
-            .clear();
+        if let Some(buffer) = self.buffer.as_ref() {
+            buffer.clear();
+        }
         Ok(())
     }
 }

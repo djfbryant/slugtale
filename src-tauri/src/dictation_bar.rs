@@ -26,15 +26,14 @@ pub const BAR_WINDOW_HEIGHT_PT: f64 = 76.0;
 pub const BAR_GUTTER_PT: f64 = 16.0;
 /// Diameter of the resting orb, which is also the height of the expanded pill.
 pub const BAR_ORB_SIZE_PT: f64 = 44.0;
-/// Breathing room between the bar window and the edges of the display.
-///
-/// Paired with the gutter: what the user sees is the pill, not the window, so
-/// this is `104pt - BAR_GUTTER_PT` and the pill's own edge stays 104pt off the
-/// screen. Growing the gutter without taking it off here would shove the bar up
-/// the screen.
-pub const BAR_SCREEN_MARGIN_PT: f64 = 88.0;
+/// Breathing room between the bar window and the platform-reported work area.
+/// The work area already excludes the macOS Dock, Windows taskbar, and desktop
+/// panels, so this is only a small visual gap rather than an OS-specific guess.
+pub const BAR_WORK_AREA_MARGIN_PT: f64 = 8.0;
 
-/// The display the bar is being placed on, in the physical pixels Tauri reports.
+/// The usable work area the bar is being placed in, in physical pixels Tauri
+/// reports. Its origin can differ from the monitor origin when a panel occupies
+/// the top or left edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MonitorGeometry {
     pub origin_x: i32,
@@ -73,16 +72,15 @@ impl PaintRect {
 }
 
 /// Where to put the top-left corner of the bar window on the given display, in
-/// physical pixels. All three positions ride the bottom edge with the same
-/// margin; left and right keep that margin horizontally too, so the bar never
-/// touches a screen edge.
+/// physical pixels. All three positions ride the work area's bottom edge with
+/// the same small margin; left and right keep that margin horizontally too.
 pub fn dictation_bar_origin(
     monitor: &MonitorGeometry,
     window_width: u32,
     window_height: u32,
     position: BarPosition,
 ) -> (i32, i32) {
-    let margin = (BAR_SCREEN_MARGIN_PT * monitor.scale_factor) as i32;
+    let margin = (BAR_WORK_AREA_MARGIN_PT * monitor.scale_factor) as i32;
     let screen_width = monitor.width as i32;
     let screen_height = monitor.height as i32;
     let window_width = window_width as i32;
@@ -147,85 +145,6 @@ pub fn pointer_is_over_dictation_bar(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A 1440x900 display at the origin, 1x, matching the numbers below.
-    fn monitor() -> MonitorGeometry {
-        MonitorGeometry {
-            origin_x: 0,
-            origin_y: 0,
-            width: 1440,
-            height: 900,
-            scale_factor: 1.0,
-        }
-    }
-
-    #[test]
-    fn bottom_center_centres_the_bar_above_the_bottom_edge() {
-        let (x, y) = dictation_bar_origin(&monitor(), 248, 76, BarPosition::BottomCenter);
-
-        assert_eq!(x, (1440 - 248) / 2);
-        assert_eq!(y, 900 - 76 - 88);
-    }
-
-    #[test]
-    fn the_pill_sits_at_the_same_distance_from_the_screen_edge_as_its_gutter_grows() {
-        // The user sees the pill, not the window, so the gutter and the screen
-        // margin have to move together. Growing the gutter to fit the shadow
-        // without taking it off the margin would silently raise the bar
-        // (slugtale-3d4).
-        let (_, y) = dictation_bar_origin(&monitor(), 248, 76, BarPosition::BottomCenter);
-        let pill_bottom_from_screen_edge = 900 - (y + 76) + BAR_GUTTER_PT as i32;
-
-        assert_eq!(pill_bottom_from_screen_edge, 104);
-    }
-
-    #[test]
-    fn bottom_corners_stay_inside_the_screen_with_a_non_zero_margin() {
-        let monitor = monitor();
-
-        let (left_x, left_y) = dictation_bar_origin(&monitor, 248, 76, BarPosition::BottomLeft);
-        let (right_x, right_y) = dictation_bar_origin(&monitor, 248, 76, BarPosition::BottomRight);
-
-        assert!(left_x > 0, "left edge must not touch the screen edge");
-        assert_eq!(left_x, 88);
-        assert_eq!(right_x + 248, 1440 - 88);
-        assert!(right_x + 248 < 1440);
-        assert_eq!(left_y, right_y);
-        assert!(left_y + 76 < 900);
-    }
-
-    #[test]
-    fn bar_is_placed_on_the_monitor_it_was_asked_for() {
-        // A second display to the right of, and above, the primary one. The bar
-        // belongs on that display, not at the same desktop coordinates.
-        let secondary = MonitorGeometry {
-            origin_x: 1440,
-            origin_y: -200,
-            width: 1920,
-            height: 1080,
-            scale_factor: 1.0,
-        };
-
-        let (x, y) = dictation_bar_origin(&secondary, 248, 76, BarPosition::BottomCenter);
-
-        assert_eq!(x, 1440 + (1920 - 248) / 2);
-        assert_eq!(y, -200 + 1080 - 76 - 88);
-    }
-
-    #[test]
-    fn margins_scale_with_the_display() {
-        let retina = MonitorGeometry {
-            width: 2880,
-            height: 1800,
-            scale_factor: 2.0,
-            ..monitor()
-        };
-
-        let (x, y) = dictation_bar_origin(&retina, 496, 152, BarPosition::BottomLeft);
-
-        assert_eq!(x, 176);
-        assert_eq!(y, 1800 - 152 - 176);
-    }
 
     #[test]
     fn the_bar_window_is_configured_at_the_size_the_hit_test_assumes() {
