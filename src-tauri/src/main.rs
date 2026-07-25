@@ -49,19 +49,6 @@ use slugtale_lib::{
     SharedDiagnosticLog,
 };
 
-#[derive(Clone)]
-struct TauriDictationEventSink {
-    app: tauri::AppHandle,
-}
-
-impl slugtale_lib::DictationEventSink for TauriDictationEventSink {
-    fn emit(&mut self, event: slugtale_lib::DictationEvent) {
-        if let Err(error) = handle_dictation_event(&self.app, event) {
-            eprintln!("dictation event failed: {error}");
-        }
-    }
-}
-
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Default)]
 struct HotkeyRegistrationState(Mutex<HotkeyRegistration>);
@@ -70,7 +57,7 @@ struct HotkeyRegistrationState(Mutex<HotkeyRegistration>);
 #[derive(Default)]
 struct HotkeyRegistration {
     current_hotkey: Option<String>,
-    adapter: Option<slugtale_lib::HotkeyDictationAdapter<TauriDictationEventSink>>,
+    lifecycle: Option<slugtale_lib::DictationLifecycle>,
     key_commands: Option<std::sync::mpsc::Sender<GlobalKeyCommand>>,
 }
 
@@ -109,24 +96,23 @@ fn dictation_event(app: tauri::AppHandle, event: String) -> Result<(), String> {
 fn cancel_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let state = app.state::<HotkeyRegistrationState>();
-        let mut registration = state
-            .0
-            .lock()
-            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
-        let was_dictating = registration
-            .adapter
-            .as_ref()
-            .is_some_and(|adapter| adapter.is_dictating());
-        if was_dictating {
-            if let Some(adapter) = registration.adapter.as_mut() {
-                let should_register = adapter.on_global_key(
-                    slugtale_lib::DictationKey::Escape,
-                    slugtale_lib::HotkeyInput::Pressed,
-                );
-                request_escape_registration(&registration, should_register);
+        let event = {
+            let state = app.state::<HotkeyRegistrationState>();
+            let mut registration = state
+                .0
+                .lock()
+                .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+            let event = registration
+                .lifecycle
+                .as_mut()
+                .and_then(slugtale_lib::DictationLifecycle::cancel);
+            if event.is_some() {
+                request_escape_registration(&registration, false);
             }
-            return Ok(());
+            event
+        };
+        if let Some(event) = event {
+            return handle_dictation_event(app, event);
         }
     }
 
@@ -521,11 +507,15 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             .ok()
                             .and_then(|registration| {
                                 registration
-                                    .adapter
+                                    .lifecycle
                                     .as_ref()
-                                    .map(|adapter| !adapter.is_dictating())
+                                    .map(|lifecycle| !lifecycle.is_dictating())
                             })
                             .unwrap_or(false);
+
+                        if starts_dictation && !hotkey_dictation_is_ready(&app) {
+                            continue;
+                        }
 
                         if starts_dictation
                             && sync_escape_registration(&app, &mut escape_registered, true)
@@ -537,18 +527,39 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             continue;
                         }
 
-                        let should_register = app
+                        let transition = app
                             .state::<HotkeyRegistrationState>()
                             .0
                             .lock()
                             .ok()
                             .and_then(|mut registration| {
-                                registration
-                                    .adapter
-                                    .as_mut()
-                                    .map(|adapter| adapter.on_global_key(key, input))
+                                registration.lifecycle.as_mut().map(|lifecycle| {
+                                    let event = match (key, input) {
+                                        (slugtale_lib::DictationKey::Hotkey, input) => {
+                                            lifecycle.on_hotkey(input)
+                                        }
+                                        (
+                                            slugtale_lib::DictationKey::Escape,
+                                            slugtale_lib::HotkeyInput::Pressed,
+                                        ) => lifecycle.cancel(),
+                                        (
+                                            slugtale_lib::DictationKey::Escape,
+                                            slugtale_lib::HotkeyInput::Released,
+                                        ) => None,
+                                    };
+                                    (event, lifecycle.is_dictating())
+                                })
                             });
-                        if let Some(should_register) = should_register {
+                        if let Some((event, should_register)) = transition {
+                            // The shared registration mutex is no longer held:
+                            // recording, transcription, and window work may block
+                            // without preventing the main-thread shortcut handler
+                            // from forwarding the next key transition (slugtale-pil).
+                            if let Some(event) = event {
+                                if let Err(error) = handle_dictation_event(&app, event) {
+                                    eprintln!("dictation event failed: {error}");
+                                }
+                            }
                             if let Err(error) = sync_escape_registration(
                                 &app,
                                 &mut escape_registered,
@@ -600,12 +611,10 @@ fn set_hotkey_registration_state(
         .lock()
         .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
     registration.current_hotkey = settings.hotkey.clone();
-    registration.adapter = settings.hotkey.as_ref().map(|_| {
-        slugtale_lib::HotkeyDictationAdapter::new(
-            settings.activation_mode,
-            TauriDictationEventSink { app: app.clone() },
-        )
-    });
+    registration.lifecycle = settings
+        .hotkey
+        .as_ref()
+        .map(|_| slugtale_lib::DictationLifecycle::new(settings.activation_mode));
     Ok(())
 }
 
@@ -708,8 +717,9 @@ fn hide_dictation_bar(app: &tauri::AppHandle) {
     }
 }
 
-/// Read the display the Dictation Bar is on, in the form the pure geometry
-/// wants. Falls back to the primary monitor when the current one is unknown.
+/// Read the usable work area for the display the Dictation Bar is on, in the
+/// form the pure geometry wants. Falls back to the primary monitor when the
+/// current one is unknown.
 fn dictation_bar_monitor(window: &tauri::WebviewWindow) -> Option<slugtale_lib::MonitorGeometry> {
     let monitor = match window.current_monitor() {
         Ok(Some(monitor)) => monitor,
@@ -719,20 +729,19 @@ fn dictation_bar_monitor(window: &tauri::WebviewWindow) -> Option<slugtale_lib::
         },
     };
 
-    let screen = monitor.size();
-    let origin = monitor.position();
+    let work_area = monitor.work_area();
 
     Some(slugtale_lib::MonitorGeometry {
-        origin_x: origin.x,
-        origin_y: origin.y,
-        width: screen.width,
-        height: screen.height,
+        origin_x: work_area.position.x,
+        origin_y: work_area.position.y,
+        width: work_area.size.width,
+        height: work_area.size.height,
         scale_factor: monitor.scale_factor(),
     })
 }
 
-/// Place the Dictation Bar along the bottom edge of the active display, at the
-/// corner the user chose, above the Dock. The geometry itself lives in lib.rs;
+/// Place the Dictation Bar along the bottom edge of the active display's work
+/// area, at the corner the user chose. The geometry itself lives in lib.rs;
 /// this only supplies the live monitor and window reads.
 fn position_dictation_bar(window: &tauri::WebviewWindow, position: slugtale_lib::BarPosition) {
     let Some(monitor) = dictation_bar_monitor(window) else {
@@ -779,11 +788,10 @@ fn dictation_bar_pointer_over(app: tauri::AppHandle, expanded: bool) -> Result<b
     Ok(over)
 }
 
-#[tauri::command]
-fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
-    let settings = load_current_settings(&app);
+fn current_settings_readiness(app: &tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
+    let settings = load_current_settings(app);
     let platform = CurrentPlatform::new();
-    let local_model_ready = model_manager(&app)
+    let local_model_ready = model_manager(app)
         .map(|manager| manager.ready())
         .unwrap_or_else(|_| {
             settings
@@ -791,7 +799,49 @@ fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadin
                 .as_ref()
                 .is_some_and(|path| PathBuf::from(path).exists())
         });
-    let report = slugtale_lib::settings_readiness_report(&settings, &platform, local_model_ready);
+    slugtale_lib::settings_readiness_report(&settings, &platform, local_model_ready)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn hotkey_dictation_is_ready(app: &tauri::AppHandle) -> bool {
+    let report = current_settings_readiness(app);
+    if report.dictation_available {
+        return true;
+    }
+
+    let missing = report
+        .items
+        .iter()
+        .filter(|item| item.required && !item.ready)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        record_diagnostic_event(
+            app,
+            slugtale_lib::DiagnosticEvent::readiness_incomplete(&missing),
+        );
+        let labels = missing
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = slugtale_lib::notify(
+            "Slugtale is not ready to dictate",
+            &format!("Finish these items in Slugtale Settings: {labels}."),
+        );
+    }
+    slugtale_lib::show_settings(app.clone());
+    false
+}
+
+#[tauri::command]
+fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
+    let report = current_settings_readiness(&app);
+    let local_model_ready = report
+        .items
+        .iter()
+        .find(|item| item.id == "local_model")
+        .is_some_and(|item| item.ready);
     if local_model_ready {
         let _ = warm_ready_local_whisper_runtime(&app);
     }

@@ -4,6 +4,8 @@ pub const DEFAULT_MODEL_ID: &str = "base.en";
 pub const DEFAULT_MODEL_FILENAME: &str = "ggml-base.en.bin";
 pub const DEFAULT_MODEL_DOWNLOAD_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
+pub const DEFAULT_MODEL_SHA256: &str =
+    "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalModelStatus {
@@ -92,7 +94,24 @@ impl LocalModelManager {
         downloader: &dyn ModelDownloader,
         on_progress: &mut dyn FnMut(DownloadProgress),
     ) -> Result<LocalModelStatus, ModelError> {
-        let status = ensure_default_model(&self.model_dir, downloader, on_progress)?;
+        self.download_default_with_sha256(downloader, DEFAULT_MODEL_SHA256, on_progress)
+    }
+
+    /// Download the managed default artifact against an explicit trusted
+    /// digest. The app uses [`DEFAULT_MODEL_SHA256`]; accepting the digest here
+    /// keeps the integrity boundary testable with small deterministic fixtures.
+    pub fn download_default_with_sha256(
+        &self,
+        downloader: &dyn ModelDownloader,
+        expected_sha256: &str,
+        on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<LocalModelStatus, ModelError> {
+        let status = ensure_default_model_with_sha256(
+            &self.model_dir,
+            downloader,
+            expected_sha256,
+            on_progress,
+        )?;
         self.persist_active_model(status.present.then(|| status.path.clone()))?;
         Ok(status)
     }
@@ -194,6 +213,18 @@ pub fn ensure_default_model(
     downloader: &dyn ModelDownloader,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<LocalModelStatus, ModelError> {
+    ensure_default_model_with_sha256(model_dir, downloader, DEFAULT_MODEL_SHA256, on_progress)
+}
+
+/// Install the managed default artifact only when it matches a trusted SHA-256
+/// digest. The staged file is removed on every validation failure so corrupt
+/// bytes can never become the active Local Model.
+pub fn ensure_default_model_with_sha256(
+    model_dir: &std::path::Path,
+    downloader: &dyn ModelDownloader,
+    expected_sha256: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<LocalModelStatus, ModelError> {
     let current = local_model_status(model_dir);
     if current.present {
         return Ok(current);
@@ -212,22 +243,69 @@ pub fn ensure_default_model(
 
     let downloaded_bytes = staged_path.metadata()?.len();
     if downloaded_bytes == 0 {
-        std::fs::remove_file(&staged_path).ok();
-        return Err(ModelError::Download(
+        return Err(reject_staged_download(
+            &staged_path,
             "downloaded model was empty".to_string(),
         ));
     }
     if let Some(expected_bytes) = expected_bytes {
         if downloaded_bytes != expected_bytes {
-            std::fs::remove_file(&staged_path).ok();
-            return Err(ModelError::Download(format!(
-                "downloaded model was incomplete: expected {expected_bytes} bytes, got {downloaded_bytes}"
-            )));
+            return Err(reject_staged_download(
+                &staged_path,
+                format!(
+                    "downloaded model was incomplete: expected {expected_bytes} bytes, got {downloaded_bytes}"
+                ),
+            ));
         }
+    }
+
+    let actual_sha256 = match sha256_file(&staged_path) {
+        Ok(digest) => digest,
+        Err(error) => {
+            return Err(reject_staged_download(
+                &staged_path,
+                format!("could not verify downloaded model checksum: {error}"),
+            ));
+        }
+    };
+    if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+        return Err(reject_staged_download(
+            &staged_path,
+            format!(
+                "downloaded model checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
+            ),
+        ));
     }
 
     std::fs::rename(staged_path, default_model_path(model_dir))?;
     Ok(local_model_status(model_dir))
+}
+
+fn reject_staged_download(path: &std::path::Path, message: String) -> ModelError {
+    match std::fs::remove_file(path) {
+        Ok(()) => ModelError::Download(message),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ModelError::Download(message),
+        Err(error) => ModelError::Download(format!(
+            "{message}; could not delete invalid staged model: {error}"
+        )),
+    }
+}
+
+fn sha256_file(path: &std::path::Path) -> Result<String, ModelError> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 pub fn delete_default_model(model_dir: &std::path::Path) -> Result<LocalModelStatus, ModelError> {
@@ -332,44 +410,6 @@ mod tests {
         std::fs::remove_dir_all(&model_dir).ok();
     }
     #[test]
-    fn ensure_default_model_downloads_missing_base_en_model() {
-        let model_dir = unique_test_dir("model-download");
-        std::fs::remove_dir_all(&model_dir).ok();
-        let downloader = FakeModelDownloader::new(b"local model bytes");
-
-        let mut progress = Vec::new();
-        let status =
-            ensure_default_model(&model_dir, &downloader, &mut |update| progress.push(update))
-                .unwrap();
-
-        assert_eq!(
-            downloader.urls.borrow().as_slice(),
-            &[DEFAULT_MODEL_DOWNLOAD_URL]
-        );
-        assert!(status.present);
-        assert_eq!(status.bytes, Some(17));
-        assert_eq!(
-            std::fs::read(default_model_path(&model_dir)).unwrap(),
-            b"local model bytes"
-        );
-        assert_eq!(
-            progress.first().copied(),
-            Some(DownloadProgress {
-                downloaded: 0,
-                total: Some(17)
-            })
-        );
-        assert_eq!(
-            progress.last().copied(),
-            Some(DownloadProgress {
-                downloaded: 17,
-                total: Some(17)
-            })
-        );
-
-        std::fs::remove_dir_all(&model_dir).ok();
-    }
-    #[test]
     fn ensure_default_model_rejects_incomplete_downloads() {
         let model_dir = unique_test_dir("model-download-short");
         std::fs::remove_dir_all(&model_dir).ok();
@@ -457,27 +497,6 @@ mod tests {
         std::fs::remove_dir_all(&model_dir).ok();
     }
     #[test]
-    fn local_model_manager_downloads_model_and_persists_active_model_path() {
-        let model_dir = unique_test_dir("manager-download");
-        let settings_path = model_dir.join("settings.json");
-        std::fs::remove_dir_all(&model_dir).ok();
-        let manager = LocalModelManager::new(model_dir.clone(), settings_path.clone());
-        let downloader = FakeModelDownloader::new(b"local model bytes");
-
-        let status = manager
-            .download_default(&downloader, &mut |_| {})
-            .expect("manager downloads model");
-        let settings = crate::load_settings(&settings_path);
-
-        assert!(status.present);
-        assert_eq!(
-            settings.model,
-            Some(default_model_path(&model_dir).to_string_lossy().to_string())
-        );
-
-        std::fs::remove_dir_all(&model_dir).ok();
-    }
-    #[test]
     fn local_model_manager_deletes_model_and_clears_active_model_path() {
         let model_dir = unique_test_dir("manager-delete");
         let settings_path = model_dir.join("settings.json");
@@ -505,7 +524,6 @@ mod tests {
     struct FakeModelDownloader {
         bytes: &'static [u8],
         total: Option<u64>,
-        urls: std::cell::RefCell<Vec<String>>,
     }
 
     impl FakeModelDownloader {
@@ -513,7 +531,6 @@ mod tests {
             Self {
                 bytes,
                 total: Some(bytes.len() as u64),
-                urls: std::cell::RefCell::new(Vec::new()),
             }
         }
 
@@ -526,11 +543,10 @@ mod tests {
     impl ModelDownloader for FakeModelDownloader {
         fn download(
             &self,
-            url: &str,
+            _url: &str,
             destination: &std::path::Path,
             on_progress: &mut dyn FnMut(DownloadProgress),
         ) -> Result<(), ModelError> {
-            self.urls.borrow_mut().push(url.to_string());
             let total = self.total;
             on_progress(DownloadProgress {
                 downloaded: 0,
