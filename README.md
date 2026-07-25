@@ -53,8 +53,16 @@ no remote transcription service, and no telemetry.
 ## Requirements
 
 The runnable slice is macOS-first. The code keeps operating-system behavior
-behind platform adapters so Windows support can be added later, but text
-insertion and permission shortcuts are currently implemented for macOS.
+behind platform adapters (ADR-0021), and the Windows and Linux adapters are
+written: text insertion, permission readiness, focus targeting, and audible
+feedback all have implementations on each platform.
+
+macOS is the only platform verified end to end on real hardware. Every push
+compiles and unit-tests the full crate on Ubuntu, Windows, and macOS, but the
+Windows adapter's runtime behaviour — hold-to-dictate key-up, WASAPI capture,
+and insertion into a live app — has not yet been exercised on a Windows
+machine. Treat Windows as buildable and unvalidated. See PRD `slugtale-5pc`
+for what remains.
 
 For macOS development you need:
 

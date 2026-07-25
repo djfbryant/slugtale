@@ -67,6 +67,14 @@ jobs:
       run: npm install
     - name: Run project checks
       run: npm test
+    - name: Build the Whisper runtime under MSVC
+      # `npm test` runs with default features, so whisper.cpp had never been
+      # compiled on Windows by any job (slugtale-5pc.10) even while the Windows
+      # job was green. Whisper is the cross-platform ASR baseline (ADR-0006), so
+      # if it does not build under MSVC then Local-Only Processing (ADR-0001)
+      # does not hold on Windows at all. Building the lib with the feature on is
+      # the cheapest automated signal; acceleration backends stay manual.
+      run: node scripts/run-cargo.js build --lib --features local-whisper-runtime
 
   checks-macos:
     # macOS is the primary supported platform, but until now the maintainer's
