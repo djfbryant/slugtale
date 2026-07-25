@@ -3,6 +3,7 @@
 const { existsSync } = require("node:fs");
 const { delimiter, join } = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { resolveRuntimeFeatures } = require("./run-tauri.js");
 
 const root = join(__dirname, "..");
 const tauri = process.platform === "win32" ? "tauri.cmd" : "tauri";
@@ -19,10 +20,7 @@ const env = {
   ...process.env,
   PATH: pathEntries.join(delimiter),
 };
-const whisperRuntimeFeatures =
-  process.platform === "darwin"
-    ? "local-whisper-runtime,local-whisper-runtime-metal"
-    : "local-whisper-runtime";
+const runtimeFeatures = resolveRuntimeFeatures();
 
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -96,6 +94,11 @@ function requireMacosCodeSigningIdentity(identity) {
   process.exit(1);
 }
 
+// Printed because a Transcription Engine that was not compiled in shows up in
+// Settings as an unexplained "Unavailable" row, and this line is the only place
+// the answer is visible before the build starts.
+console.log(`Building with Cargo features: ${runtimeFeatures}`);
+
 if (process.platform === "darwin") {
   requireMacosCodeSigningIdentity(macosSignIdentity);
 
@@ -103,7 +106,7 @@ if (process.platform === "darwin") {
     "build",
     "--debug",
     "--features",
-    whisperRuntimeFeatures,
+    runtimeFeatures,
     "--bundles",
     "app",
   ]);
@@ -135,5 +138,5 @@ if (process.platform === "darwin") {
   run("codesign", ["--verify", "--deep", "--strict", appPath]);
   run("open", [appPath]);
 } else {
-  run(tauri, ["dev", "--features", whisperRuntimeFeatures]);
+  run(tauri, ["dev", "--features", runtimeFeatures]);
 }
