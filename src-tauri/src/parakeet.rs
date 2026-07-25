@@ -5,7 +5,7 @@
 //! when Whisper's transcript looks wrong, and so a user who prefers it can make
 //! it the primary engine once benchmark slugtale-9dv settles the ordering.
 //!
-//! Three things about this module are deliberate and worth reading before
+//! Four things about this module are deliberate and worth reading before
 //! changing it.
 //!
 //! **The provider type is unconditional; only inference is feature-gated.**
@@ -30,12 +30,23 @@
 //! machine, the build, or the installed files. A test at the bottom of the file
 //! enforces the absence of print macros so a debugging session cannot leave one
 //! behind.
+//!
+//! **Parakeet reports no confidence, and that is not the same as low
+//! confidence.** The TDT decoder does score its tokens, but `parakeet-rs` 0.3.6
+//! throws the scores away: its `TimedToken` carries only `text`, `start`, and
+//! `end`. So this provider returns [`crate::EngineConfidence::unreported`]
+//! rather than a number invented from token count or duration, and the Second
+//! Opinion router escalates *from* Parakeet on the transcript anomaly rules
+//! instead of on a threshold. Revisit if the crate starts exposing per-token
+//! log-probabilities.
 
 use crate::{
-    AsrError, CapturedAudio, DownloadProgress, EngineAvailability, EngineConfidence,
-    EngineMetadata, EngineTranscription, EngineUnavailable, FinalTranscription, ModelDownloader,
-    ModelError, TranscriptionEngine, TranscriptionProvider,
+    AsrError, CapturedAudio, DownloadProgress, EngineAvailability, EngineMetadata,
+    EngineTranscription, EngineUnavailable, ModelDownloader, ModelError, TranscriptionEngine,
+    TranscriptionProvider,
 };
+#[cfg(feature = "local-parakeet-runtime")]
+use crate::{EngineConfidence, FinalTranscription};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -555,9 +566,7 @@ impl TranscriptionProvider for ParakeetProvider {
             engine: PARAKEET_ENGINE,
             model_id: PARAKEET_MODEL_ID,
             revision: PARAKEET_REVISION,
-            approximate_bytes: Some(
-                PARAKEET_ASSETS[0].bytes + PARAKEET_ASSETS[1].bytes + PARAKEET_ASSETS[2].bytes,
-            ),
+            approximate_bytes: Some(parakeet_total_bytes()),
             source_url: Some(PARAKEET_SOURCE_URL),
             license: PARAKEET_LICENSE,
             license_url: PARAKEET_LICENSE_URL,
@@ -684,13 +693,15 @@ impl ParakeetProvider {
     }
 
     fn load_session(&self) -> Result<parakeet_rs::ParakeetTDT, AsrError> {
-        let mut config = parakeet_rs::ExecutionConfig::new().with_intra_threads(
-            parakeet_intra_threads(
+        // `mut` is used only on the Core ML build; the CPU build takes the
+        // default provider and never reassigns.
+        #[allow(unused_mut)]
+        let mut config =
+            parakeet_rs::ExecutionConfig::new().with_intra_threads(parakeet_intra_threads(
                 std::thread::available_parallelism()
                     .map(std::num::NonZeroUsize::get)
                     .unwrap_or(1),
-            ),
-        );
+            ));
 
         // The Core ML execution provider is opt-in and macOS-only. `parakeet-rs`
         // warns that Core ML can be *slower* than CPU for these graphs, because
@@ -1249,14 +1260,15 @@ mod tests {
         // durable guard is to forbid the macros outright: there is no legitimate
         // reason for this module to print, so a debugging leftover fails here.
         let source = include_str!("parakeet.rs");
-        for macro_name in ["println!", "eprintln!", "print!", "eprint!", "dbg!"] {
-            let occurrences = source.matches(macro_name).count();
-            assert_eq!(
-                occurrences,
-                // Once, in this test's own list of forbidden names.
-                1,
-                "{macro_name} must not appear in the Parakeet engine"
-            );
+        // The names are assembled at runtime so this test's own list does not
+        // put the forbidden text into the file it is scanning.
+        for stem in ["print", "eprint", "dbg"] {
+            for macro_name in [format!("{stem}!"), format!("{stem}ln!")] {
+                assert!(
+                    !source.contains(&macro_name),
+                    "{macro_name} must not appear in the Parakeet engine"
+                );
+            }
         }
     }
 
@@ -1268,17 +1280,19 @@ mod tests {
                 filename: "vocab.txt",
                 bytes: 19,
                 // sha256("parakeet vocabulary")
-                sha256: "0e8adf17ab2f8ea6d2eb2b4b8cf2e5cbcc2e0be0dcbf17ee9dcbcb1cbb6b6d1c",
+                sha256: "5e4bb40b49c813426a3b451c02aafff78be5ff99eea7fbbb97841bbd48d74521",
             },
             ParakeetAsset {
                 filename: "decoder_joint-model.int8.onnx",
-                bytes: 14,
-                sha256: "0e8adf17ab2f8ea6d2eb2b4b8cf2e5cbcc2e0be0dcbf17ee9dcbcb1cbb6b6d1c",
+                bytes: 18,
+                // sha256("onnx-decoder-joint")
+                sha256: "1f678cfed5a23bded7685c23d1e2f9e11b6f2a6777a82dc11b9456d5da52076b",
             },
             ParakeetAsset {
                 filename: "encoder-model.int8.onnx",
-                bytes: 14,
-                sha256: "0e8adf17ab2f8ea6d2eb2b4b8cf2e5cbcc2e0be0dcbf17ee9dcbcb1cbb6b6d1c",
+                bytes: 18,
+                // sha256("onnx-encoder-graph")
+                sha256: "73a7f3fab35ace7bbe4855011335f15ee810a02ad3bdc77a1b3cab503cac5cfd",
             },
         ]
     }
@@ -1326,7 +1340,8 @@ mod tests {
         fn body_for(filename: &str) -> &'static [u8] {
             match filename {
                 "vocab.txt" => b"parakeet vocabulary",
-                _ => b"onnx-graph-xx",
+                "decoder_joint-model.int8.onnx" => b"onnx-decoder-joint",
+                _ => b"onnx-encoder-graph",
             }
         }
     }
