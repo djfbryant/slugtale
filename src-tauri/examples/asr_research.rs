@@ -160,19 +160,37 @@ fn word_errors(reference: &str, hypothesis: &str) -> (usize, usize) {
     )
 }
 
-fn punctuation_sequence(text: &str) -> Vec<char> {
-    text.chars()
-        .filter(|character| matches!(character, '.' | ',' | '?' | '!' | ':' | ';'))
-        .collect()
+fn punctuation_sequence(text: &str) -> Vec<(usize, char)> {
+    let mut word_index = 0usize;
+    let mut in_word = false;
+    let mut punctuation = Vec::new();
+    for character in text.chars() {
+        if character.is_alphanumeric() {
+            if !in_word {
+                word_index += 1;
+            }
+            in_word = true;
+        } else {
+            if matches!(character, '.' | ',' | '?' | '!' | ':' | ';') {
+                punctuation.push((word_index, character));
+            }
+            if !matches!(character, '\'' | '-') {
+                in_word = false;
+            }
+        }
+    }
+    punctuation
 }
 
-fn capitalization_sequence(text: &str) -> Vec<bool> {
+fn capitalization_sequence(text: &str) -> Vec<(String, bool)> {
     text.split_whitespace()
         .filter_map(|token| {
-            token
+            let capitalized = token
                 .chars()
                 .find(|character| character.is_alphabetic())
-                .map(|character| character.is_uppercase())
+                .map(|character| character.is_uppercase())?;
+            let normalized = normalize_for_wer(token);
+            (!normalized.is_empty()).then_some((normalized, capitalized))
         })
         .collect()
 }
@@ -324,13 +342,17 @@ fn aggregate_engine(manifest: &CorpusManifest, run: &EvaluationRun) -> EngineAgg
             let reference_punctuation = punctuation_sequence(&clip.expected_text);
             let hypothesis_punctuation = punctuation_sequence(hypothesis);
             punctuation_edits += edit_distance(&reference_punctuation, &hypothesis_punctuation);
-            punctuation_total += reference_punctuation.len();
+            punctuation_total += reference_punctuation
+                .len()
+                .max(hypothesis_punctuation.len());
 
             let reference_capitalization = capitalization_sequence(&clip.expected_text);
             let hypothesis_capitalization = capitalization_sequence(hypothesis);
             capitalization_edits +=
                 edit_distance(&reference_capitalization, &hypothesis_capitalization);
-            capitalization_total += reference_capitalization.len();
+            capitalization_total += reference_capitalization
+                .len()
+                .max(hypothesis_capitalization.len());
         }
         for term in &clip.proper_terms {
             if contains_normalized_phrase(&clip.expected_text, term) {
@@ -813,34 +835,21 @@ fn ensure_path_inside(research_dir: &Path, relative: &Path) -> Result<PathBuf, S
             relative.display()
         ));
     }
-    let root = research_dir
-        .canonicalize()
-        .map_err(|error| format!("could not resolve {}: {error}", research_dir.display()))?;
+    let root = normalized_absolute(research_dir)?;
     let candidate = root.join(relative);
-    let resolved = if candidate.exists() {
-        candidate
-            .canonicalize()
-            .map_err(|error| format!("could not resolve {}: {error}", candidate.display()))?
-    } else {
-        let parent = candidate
-            .parent()
-            .ok_or_else(|| format!("{} has no parent", candidate.display()))?;
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-        parent
-            .canonicalize()
-            .map_err(|error| format!("could not resolve {}: {error}", parent.display()))?
-            .join(
-                candidate
-                    .file_name()
-                    .ok_or_else(|| "research path has no filename".to_string())?,
-            )
-    };
+    let resolved = normalized_absolute(&candidate)?;
     if !resolved.starts_with(&root) {
         return Err(format!(
             "{} escapes the research directory through a symlink",
             relative.display()
         ));
+    }
+    if !resolved.exists() {
+        let parent = resolved
+            .parent()
+            .ok_or_else(|| format!("{} has no parent", resolved.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
     }
     Ok(resolved)
 }
@@ -1015,20 +1024,27 @@ fn run_adapter_process(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("could not start adapter {program:?}: {error}"))?;
-    {
-        let stdin = child.stdin.as_mut().expect("adapter stdin is piped");
-        for request in requests {
-            serde_json::to_writer(&mut *stdin, request)
-                .map_err(|error| format!("could not encode adapter request: {error}"))?;
-            stdin
-                .write_all(b"\n")
-                .map_err(|error| format!("could not write adapter request: {error}"))?;
-        }
+    let mut request_bytes = Vec::new();
+    for request in requests {
+        serde_json::to_writer(&mut request_bytes, request)
+            .map_err(|error| format!("could not encode adapter request: {error}"))?;
+        request_bytes.push(b'\n');
     }
-    drop(child.stdin.take());
+    let mut stdin = child.stdin.take().expect("adapter stdin is piped");
+    let writer = std::thread::Builder::new()
+        .name("slugtale-asr-adapter-input".to_string())
+        .spawn(move || {
+            stdin.write_all(&request_bytes)?;
+            stdin.flush()
+        })
+        .map_err(|error| format!("could not start adapter input writer: {error}"))?;
     let output = child
         .wait_with_output()
         .map_err(|error| format!("could not wait for adapter: {error}"))?;
+    writer
+        .join()
+        .map_err(|_| "adapter input writer panicked".to_string())?
+        .map_err(|error| format!("could not write adapter request: {error}"))?;
     if !output.status.success() {
         return Err(format!("adapter exited with status {}", output.status));
     }
@@ -1356,10 +1372,6 @@ fn normalized_absolute(path: &Path) -> Result<PathBuf, String> {
             path.display()
         ));
     }
-    if let Ok(canonical) = path.canonicalize() {
-        return Ok(canonical);
-    }
-
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -1370,7 +1382,44 @@ fn normalized_absolute(path: &Path) -> Result<PathBuf, String> {
             other => normalized.push(other.as_os_str()),
         }
     }
-    Ok(normalized)
+    let mut existing = normalized.as_path();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(metadata) => {
+                let canonical = existing.canonicalize().map_err(|error| {
+                    let kind = if metadata.file_type().is_symlink() {
+                        "symlink"
+                    } else {
+                        "path"
+                    };
+                    format!("could not resolve {kind} {}: {error}", existing.display())
+                })?;
+                return Ok(missing
+                    .iter()
+                    .rev()
+                    .fold(canonical, |path, component| path.join(component)));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = existing.file_name().ok_or_else(|| {
+                    format!(
+                        "could not resolve any existing ancestor of {}",
+                        path.display()
+                    )
+                })?;
+                missing.push(name.to_os_string());
+                existing = existing.parent().ok_or_else(|| {
+                    format!(
+                        "could not resolve any existing ancestor of {}",
+                        path.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(format!("could not inspect {}: {error}", existing.display()));
+            }
+        }
+    }
 }
 
 fn validate_research_dir(
@@ -1434,6 +1483,35 @@ mod tests {
         assert!(
             validate_research_dir(Path::new("/Users/test/asr-research"), &repository, &[]).is_ok()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn research_paths_cannot_escape_through_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir().join(format!(
+            "slugtale-asr-research-symlink-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let repository = base.join("repository");
+        let safe_root = base.join("safe-research");
+        std::fs::create_dir_all(&repository).unwrap();
+        std::fs::create_dir_all(safe_root.join("clips")).unwrap();
+
+        let repository_alias = base.join("repository-alias");
+        symlink(&repository, &repository_alias).unwrap();
+        assert!(
+            validate_research_dir(&repository_alias.join("corpus"), &repository, &[])
+                .unwrap_err()
+                .contains("repository")
+        );
+
+        let dangling = safe_root.join("clips/escaped.wav");
+        symlink(base.join("outside/escaped.wav"), &dangling).unwrap();
+        assert!(ensure_path_inside(&safe_root, Path::new("clips/escaped.wav")).is_err());
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -1611,5 +1689,18 @@ mod tests {
         assert_eq!(pair.normalized_agreement_rate, Some(0.0));
         assert_eq!(pair.disagreement_clips, 3);
         assert_eq!(pair.oracle_wer, Some(0.0));
+    }
+
+    #[test]
+    fn formatting_sequences_keep_marks_and_capitals_attached_to_word_positions() {
+        let reference_punctuation = punctuation_sequence("Hello, world?");
+        let moved_punctuation = punctuation_sequence("Hello world,?");
+        assert_ne!(reference_punctuation, moved_punctuation);
+        assert!(edit_distance(&reference_punctuation, &moved_punctuation) > 0);
+
+        assert_ne!(
+            capitalization_sequence("Slugtale meets Alice"),
+            capitalization_sequence("slugtale meets Alice")
+        );
     }
 }

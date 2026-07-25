@@ -100,7 +100,7 @@ runtime failure without quoting any reference or partial hypothesis. Adapter
 stderr is discarded so an accidental debug print cannot enter a report. Full
 result files are stored under `<research-dir>/runs/` and remain sensitive.
 
-Any entirely-local recogniser can plug in through this protocol:
+Any entirely local Transcription Engine can plug in through this protocol:
 
 ```sh
 npm run asr:research -- run \
