@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 
 const { existsSync: defaultExistsSync } = require("node:fs");
-const { join } = require("node:path");
+// posix.join, not join: every path this script builds is a macOS path, and the
+// `platform` argument below lets a non-Mac host exercise the darwin branch. The
+// host-aware join would render "/Applications/Slugtale.app" with backslashes on
+// a Windows CI runner and fail a test that is not about Windows at all.
+const { posix: posixPath } = require("node:path");
 const { spawnSync: defaultSpawnSync } = require("node:child_process");
 
 const macosBundleIdentifier = "com.slugtale.desktop";
@@ -36,7 +40,7 @@ function reauthorizeMacosApp({
     throw new Error("Slugtale permission re-authorization only supports macOS.");
   }
 
-  const installedAppPath = join(installRoot, "Slugtale.app");
+  const installedAppPath = posixPath.join(installRoot, "Slugtale.app");
   if (!existsSync(installedAppPath)) {
     throw new Error(
       `Installed app not found at ${installedAppPath}. Install Slugtale first with npm run macos:install.`,
