@@ -131,6 +131,12 @@ function amplitudes(bar) {
   return (d.match(/-?\d+\.\d+,(-?\d+\.\d+)/g) || []).map((pair) => Number(pair.split(",")[1]));
 }
 
+function normalizedEnvelope(bar) {
+  const distances = amplitudes(bar).map((y) => Math.abs(y - 13));
+  const peak = Math.max(...distances);
+  return distances.map((distance) => distance / peak);
+}
+
 test("the bar rests as an orb and expands for the whole transcribing phase", () => {
   const bar = loadDictationBar();
 
@@ -274,6 +280,26 @@ test("reduced motion keeps the level signal and drops only the travel", () => {
   bar.api.renderFrame(600);
 
   assert.deepEqual(amplitudes(bar), before, "no drift and no glide between frames");
+});
+
+test("reduced motion changes the waveform in place across successive audio levels", () => {
+  const bar = loadDictationBar({ reduceMotion: true });
+  const now = Date.now();
+
+  bar.api.setAudioLevel(0.9);
+  bar.api.renderFrame(0, now);
+  const firstShape = normalizedEnvelope(bar);
+
+  // A new, different sample may grow or shrink the signal, but it must not push
+  // the previous shape one position to the left.
+  bar.api.setAudioLevel(0.65);
+  bar.api.renderFrame(0, now + 33);
+  const secondShape = normalizedEnvelope(bar);
+
+  assert.ok(
+    secondShape.every((value, index) => Math.abs(value - firstShape[index]) < 0.02),
+    "successive levels must scale one stationary shape rather than travel across it"
+  );
 });
 
 test("the bar opens itself while it hears you, and closes again after", () => {
