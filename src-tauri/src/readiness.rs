@@ -196,6 +196,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn readiness_uses_default_local_model_when_settings_model_is_unset() {
+        let model_dir = unique_test_dir("readiness-default-model");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(crate::default_model_path(&model_dir), b"model").unwrap();
+
+        let settings = Settings {
+            hotkey: Some("cmd+shift+d".to_string()),
+            ..Settings::default()
+        };
+        let report = settings_readiness_report(
+            &settings,
+            &FakePlatform::all_ready(),
+            crate::local_model_ready(&model_dir),
+        );
+        let local_model = report
+            .items
+            .iter()
+            .find(|item| item.id == "local_model")
+            .unwrap();
+
+        assert!(local_model.ready);
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[test]
+    fn readiness_uses_default_local_model_when_settings_model_is_stale() {
+        let model_dir = unique_test_dir("readiness-stale-model-setting");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(crate::default_model_path(&model_dir), b"model").unwrap();
+
+        let stale_settings = Settings {
+            model: Some(
+                model_dir
+                    .join("missing-custom-model.bin")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            ..Settings::default()
+        };
+        let report = settings_readiness_report(
+            &stale_settings,
+            &FakePlatform::all_ready(),
+            crate::local_model_ready(&model_dir),
+        );
+        let local_model = report
+            .items
+            .iter()
+            .find(|item| item.id == "local_model")
+            .unwrap();
+
+        assert!(local_model.ready);
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
     struct FakePlatform {
         microphone: bool,
         insertion: bool,
@@ -224,5 +281,16 @@ mod tests {
             hotkey: Some("cmd+shift+d".to_string()),
             ..Settings::default()
         }
+    }
+
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "slugtale-readiness-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
     }
 }
