@@ -64,6 +64,14 @@ pub enum EscalationReason {
     /// The engine's own confidence fell below its threshold. Compared only
     /// against that engine's threshold — never against another engine's score,
     /// which is on a different scale until calibrated.
+    ///
+    /// **This rule is inert today.** Neither engine currently shipped reports
+    /// confidence: whisper.cpp gives Slugtale plain segment text, and
+    /// `parakeet-rs` 0.3.6 discards the joint logits after its argmax, so it
+    /// returns tokens and timings but no score. Apple SpeechTranscriber is the
+    /// first engine that can trip this. The rule is implemented and tested
+    /// anyway because the alternative — adding it later, under pressure, to a
+    /// router already in users' hands — is how selection logic goes wrong.
     LowConfidence,
     /// The same short phrase repeats several times in a row. Whisper's
     /// characteristic failure: it loops rather than admitting it heard nothing.
@@ -143,7 +151,10 @@ pub struct RoutingDiagnostics {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EscalationPolicy {
     /// Escalate below this confidence. Only consulted for engines that actually
-    /// report confidence; a silent engine is not an uncertain one.
+    /// report confidence; a silent engine is not an uncertain one, and as of
+    /// today only Apple SpeechTranscriber reports one at all (see
+    /// [`EscalationReason::LowConfidence`]). The number is a placeholder until
+    /// slugtale-9dv calibrates it against real dictations.
     pub minimum_confidence: f32,
     /// Escalate below this many words per second of recording. Ordinary speech
     /// runs 2–3 words per second, so this only catches near-total loss rather
