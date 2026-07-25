@@ -62,6 +62,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const MICROPHONE_CONSENT_KEY: &str =
     r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
+/// The "let desktop apps access your microphone" toggle, which is a *separate*
+/// switch from the global one above. Slugtale is an unpackaged Win32 app, so
+/// this is the gate that actually decides whether WASAPI capture returns audio;
+/// the global key alone can read `Allow` while desktop apps are blocked.
+const MICROPHONE_CONSENT_NON_PACKAGED_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged";
+
 const MICROPHONE_CONSENT_VALUE: &str = "Value";
 const MICROPHONE_ALLOWED: &str = "Allow";
 
@@ -81,9 +87,10 @@ impl Default for WindowsPlatform {
 
 impl PlatformReadiness for WindowsPlatform {
     fn microphone_granted(&self) -> bool {
-        microphone_consent_value()
-            .map(|value| microphone_consent_allows(&value))
-            .unwrap_or(false)
+        microphone_access_granted(
+            microphone_consent_value().ok().as_deref(),
+            non_packaged_microphone_consent_value().ok().as_deref(),
+        )
     }
 
     fn insertion_granted(&self) -> bool {
@@ -99,11 +106,35 @@ fn microphone_consent_value() -> Result<String, String> {
     read_hkcu_string(MICROPHONE_CONSENT_KEY, MICROPHONE_CONSENT_VALUE)
 }
 
+fn non_packaged_microphone_consent_value() -> Result<String, String> {
+    read_hkcu_string(
+        MICROPHONE_CONSENT_NON_PACKAGED_KEY,
+        MICROPHONE_CONSENT_VALUE,
+    )
+}
+
 fn microphone_consent_allows(value: &str) -> bool {
     value.eq_ignore_ascii_case(MICROPHONE_ALLOWED)
 }
 
+/// Decide microphone readiness from the two ConsentStore toggles that gate an
+/// unpackaged desktop app. Kept free of Win32 so the policy is unit-testable and
+/// the registry reads stay in the thin wrappers above (ADR-0021).
+///
+/// Both toggles must allow access. `non_packaged` is `None` on Windows builds
+/// predating the split desktop-apps switch, where the global value is the whole
+/// answer; treating an absent key as a denial there would report every such
+/// machine as never-ready.
+fn microphone_access_granted(global: Option<&str>, non_packaged: Option<&str>) -> bool {
+    let global_allows = global.is_some_and(microphone_consent_allows);
+    let non_packaged_allows = non_packaged.map(microphone_consent_allows).unwrap_or(true);
+    global_allows && non_packaged_allows
+}
+
 fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<String, String> {
+    // Kept before the wide-encoding shadows them, so a failure names the key it
+    // actually tried to read rather than a hardcoded guess.
+    let key_description = format!("HKCU\\{subkey}\\{value_name}");
     let subkey = wide_null(subkey);
     let value_name = wide_null(value_name);
     let mut byte_len = 0u32;
@@ -122,8 +153,7 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<String, String> {
 
     if status != ERROR_SUCCESS {
         return Err(format!(
-            "could not read HKCU\\{MICROPHONE_CONSENT_KEY}\\{MICROPHONE_CONSENT_VALUE}: \
-             RegGetValueW returned {status}"
+            "could not read {key_description}: RegGetValueW returned {status}"
         ));
     }
 
@@ -146,8 +176,7 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<String, String> {
 
     if status != ERROR_SUCCESS {
         return Err(format!(
-            "could not read HKCU\\{MICROPHONE_CONSENT_KEY}\\{MICROPHONE_CONSENT_VALUE}: \
-             RegGetValueW returned {status}"
+            "could not read {key_description}: RegGetValueW returned {status}"
         ));
     }
 
@@ -157,11 +186,8 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<String, String> {
         .split(|unit| *unit == 0)
         .next()
         .unwrap_or(value_units);
-    String::from_utf16(value_units).map_err(|error| {
-        format!(
-            "could not decode HKCU\\{MICROPHONE_CONSENT_KEY}\\{MICROPHONE_CONSENT_VALUE}: {error}"
-        )
-    })
+    String::from_utf16(value_units)
+        .map_err(|error| format!("could not decode {key_description}: {error}"))
 }
 
 fn wide_null(value: &str) -> Vec<u16> {
@@ -303,6 +329,32 @@ fn send_paste_shortcut() -> Result<(), String> {
     send_keyboard_events(&inputs)
 }
 
+/// How many times to reach for the clipboard lock, and how long to wait between
+/// tries. The Windows clipboard is a single global lock that any running app can
+/// hold, so a first-attempt failure is ordinary contention rather than a real
+/// error — clipboard managers and browsers grab it constantly. macOS has no
+/// equivalent failure mode, which is why the `pbcopy` path this mirrors needs no
+/// retry. Ten tries at 10ms bounds the wait at ~100ms, far below the pause a
+/// user would notice on the insertion-rescue path.
+const CLIPBOARD_OPEN_ATTEMPTS: u32 = 10;
+const CLIPBOARD_OPEN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Take the global clipboard lock, retrying briefly while another app holds it.
+fn open_clipboard_with_retry() -> Result<(), String> {
+    for attempt in 1..=CLIPBOARD_OPEN_ATTEMPTS {
+        if unsafe { OpenClipboard(ptr::null_mut::<std::ffi::c_void>() as HWND) } != 0 {
+            return Ok(());
+        }
+        if attempt < CLIPBOARD_OPEN_ATTEMPTS {
+            std::thread::sleep(CLIPBOARD_OPEN_RETRY_DELAY);
+        }
+    }
+    Err(format!(
+        "could not open the Windows clipboard after {CLIPBOARD_OPEN_ATTEMPTS} attempts; \
+         another app is holding it"
+    ))
+}
+
 /// Place `text` on the clipboard as `CF_UNICODETEXT`. On success the system owns
 /// the moveable global memory; on failure it is freed here. Shared with the
 /// insertion rescue path (5pc.4).
@@ -311,9 +363,7 @@ fn set_clipboard_text(text: &str) -> Result<(), String> {
     let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     let byte_len = units.len() * std::mem::size_of::<u16>();
 
-    if unsafe { OpenClipboard(ptr::null_mut::<std::ffi::c_void>() as HWND) } == 0 {
-        return Err("could not open the Windows clipboard".to_string());
-    }
+    open_clipboard_with_retry()?;
 
     let result = (|| {
         if unsafe { EmptyClipboard() } == 0 {
@@ -562,4 +612,51 @@ unsafe extern "system" fn activate_first_visible_window(hwnd: HWND, lparam: LPAR
 /// macOS `notify` free function.
 pub fn notify(title: &str, body: &str) -> Result<(), String> {
     notify_user(title, body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn microphone_is_granted_when_both_consent_toggles_allow() {
+        assert!(microphone_access_granted(Some("Allow"), Some("Allow")));
+    }
+
+    #[test]
+    fn blocking_desktop_apps_denies_the_microphone_even_when_the_global_toggle_allows() {
+        // The case the global-only read got wrong: readiness reported ready
+        // while WASAPI capture would return nothing.
+        assert!(!microphone_access_granted(Some("Allow"), Some("Deny")));
+    }
+
+    #[test]
+    fn blocking_the_global_toggle_denies_the_microphone() {
+        assert!(!microphone_access_granted(Some("Deny"), Some("Allow")));
+    }
+
+    #[test]
+    fn an_absent_desktop_apps_toggle_falls_back_to_the_global_answer() {
+        // Windows builds predating the split switch have no NonPackaged key;
+        // treating that as a denial would report them as never-ready.
+        assert!(microphone_access_granted(Some("Allow"), None));
+        assert!(!microphone_access_granted(Some("Deny"), None));
+    }
+
+    #[test]
+    fn an_unreadable_global_toggle_denies_the_microphone() {
+        assert!(!microphone_access_granted(None, Some("Allow")));
+        assert!(!microphone_access_granted(None, None));
+    }
+
+    #[test]
+    fn consent_values_are_read_case_insensitively() {
+        assert!(microphone_access_granted(Some("allow"), Some("ALLOW")));
+    }
+
+    #[test]
+    fn an_unrecognised_consent_value_is_not_an_allowance() {
+        assert!(!microphone_access_granted(Some(""), Some("Allow")));
+        assert!(!microphone_access_granted(Some("Prompt"), Some("Allow")));
+    }
 }
