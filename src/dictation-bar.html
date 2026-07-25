@@ -423,8 +423,15 @@
       lastLevelAt = Date.now();
 
       follower += (value - follower) * (value > follower ? ATTACK : RELEASE);
-      history.push(follower);
-      history.shift();
+      if (reduceMotion) {
+        // Keep one stationary silhouette and change only its amplitude. Shifting
+        // the history would move every prior sample left on each event, which is
+        // still travel even though frame interpolation is disabled.
+        history.fill(follower);
+      } else {
+        history.push(follower);
+        history.shift();
+      }
 
       if (value > VOICE_LEVEL) voiceUntil = lastLevelAt + VOICE_HOLD_MS;
     }
@@ -477,8 +484,10 @@
         // Two frequencies, offset phases: the two edges never agree, and a pair
         // that disagrees reads as a body of liquid where a mirrored pair reads as
         // a chart.
-        top.push([x, VIEW_MIDDLE - edge(history[i], age, FLOW_DEPTH * Math.sin(age * 5.5 - drift))]);
-        bottom.push([x, VIEW_MIDDLE + edge(history[i], age, FLOW_DEPTH * Math.sin(age * 4.2 - drift * 0.75 + 2.3))]);
+        const topWobble = reduceMotion ? 0 : FLOW_DEPTH * Math.sin(age * 5.5 - drift);
+        const bottomWobble = reduceMotion ? 0 : FLOW_DEPTH * Math.sin(age * 4.2 - drift * 0.75 + 2.3);
+        top.push([x, VIEW_MIDDLE - edge(history[i], age, topWobble)]);
+        bottom.push([x, VIEW_MIDDLE + edge(history[i], age, bottomWobble)]);
       }
 
       envelope.setAttribute("d", splinePath(top) + " " + splinePath(bottom.reverse(), false) + " Z");
