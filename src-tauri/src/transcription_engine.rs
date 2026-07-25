@@ -62,6 +62,16 @@ impl TranscriptionEngine {
     }
 }
 
+impl Default for TranscriptionEngine {
+    /// Whisper, because it is the only engine available on every platform
+    /// Slugtale ships to and the only one whose behaviour is already proven in
+    /// this product. A Settings File that predates engine choice loads as
+    /// Whisper and behaves exactly as it did before.
+    fn default() -> Self {
+        Self::Whisper
+    }
+}
+
 impl std::fmt::Display for TranscriptionEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.display_name())

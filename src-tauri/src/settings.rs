@@ -88,6 +88,15 @@ pub struct Settings {
     /// this field.
     #[serde(default)]
     pub accent_color: AccentColor,
+    /// Which Transcription Engine runs first on every dictation. Older Settings
+    /// Files predate this field and load as Whisper, which is what they used.
+    #[serde(default)]
+    pub primary_engine: crate::TranscriptionEngine,
+    /// Whether Slugtale may ask a second local engine for another opinion when
+    /// the first result looks uncertain (slugtale-vjs.3). Off by default, and
+    /// Off reproduces the single-engine behaviour exactly.
+    #[serde(default)]
+    pub second_opinion: crate::SecondOpinionMode,
 }
 
 impl Default for Settings {
@@ -101,8 +110,26 @@ impl Default for Settings {
             speed_profile: SpeedProfile::default(),
             bar_position: BarPosition::default(),
             accent_color: AccentColor::default(),
+            primary_engine: crate::TranscriptionEngine::default(),
+            second_opinion: crate::SecondOpinionMode::default(),
         }
     }
+}
+
+/// Update which Transcription Engine leads and whether a second local engine
+/// may be asked for another opinion (slugtale-vjs.3, slugtale-vjs.4).
+///
+/// This does not check that the chosen engine can actually run. Availability
+/// depends on installed assets and on the machine, both of which can change
+/// after the choice is made, so it is resolved when a dictation starts rather
+/// than frozen into the Settings File.
+pub fn apply_engine_settings(
+    settings: &mut Settings,
+    primary_engine: crate::TranscriptionEngine,
+    second_opinion: crate::SecondOpinionMode,
+) {
+    settings.primary_engine = primary_engine;
+    settings.second_opinion = second_opinion;
 }
 
 /// Update the user-configurable hotkey preferences that live in the Settings
@@ -206,6 +233,8 @@ mod tests {
             speed_profile: SpeedProfile::Accurate,
             bar_position: BarPosition::BottomLeft,
             accent_color: AccentColor::Green,
+            primary_engine: crate::TranscriptionEngine::Parakeet,
+            second_opinion: crate::SecondOpinionMode::Automatic,
         };
 
         save_settings(&path, &settings).unwrap();
@@ -381,6 +410,54 @@ mod tests {
         assert_eq!(loaded.bar_position, BarPosition::BottomCenter);
         assert_eq!(loaded.accent_color, AccentColor::Red);
     }
+    #[test]
+    fn a_settings_file_written_before_engine_choice_keeps_todays_behaviour() {
+        // The whole promise of adding engines: an existing user who never opens
+        // Settings sees no change at all — one engine, the one they had.
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-settings-legacy-engine-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"hotkey":null,"activation_mode":"toggle","launch_at_login":false,"diagnostic_logging":false,"model":null,"speed_profile":"balanced"}"#,
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        assert_eq!(loaded.primary_engine, crate::TranscriptionEngine::Whisper);
+        assert_eq!(loaded.second_opinion, crate::SecondOpinionMode::Off);
+    }
+
+    #[test]
+    fn apply_engine_settings_stores_the_primary_engine_and_second_opinion_mode() {
+        let mut settings = Settings::default();
+
+        apply_engine_settings(
+            &mut settings,
+            crate::TranscriptionEngine::Parakeet,
+            crate::SecondOpinionMode::Automatic,
+        );
+
+        assert_eq!(settings.primary_engine, crate::TranscriptionEngine::Parakeet);
+        assert_eq!(settings.second_opinion, crate::SecondOpinionMode::Automatic);
+    }
+
+    #[test]
+    fn engine_choices_persist_as_stable_strings() {
+        let settings = Settings {
+            primary_engine: crate::TranscriptionEngine::AppleSpeech,
+            second_opinion: crate::SecondOpinionMode::Automatic,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+
+        assert!(json.contains("\"primary_engine\":\"apple-speech\""), "got: {json}");
+        assert!(json.contains("\"second_opinion\":\"automatic\""), "got: {json}");
+    }
+
     #[test]
     fn activation_mode_persists_as_stable_lowercase_strings() {
         let settings = Settings {
