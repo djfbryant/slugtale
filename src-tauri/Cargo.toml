@@ -33,6 +33,14 @@ crate-type = ["lib", "cdylib", "staticlib"]
 name = "decode_benchmark"
 required-features = ["local-whisper-runtime"]
 
+# The selective-ASR measurement harness (slugtale-vjs.5). Requires Whisper
+# because that is the baseline every other engine is measured against; Parakeet
+# and Apple SpeechTranscriber are added on top with their own features when the
+# run needs them.
+[[example]]
+name = "asr_eval"
+required-features = ["local-whisper-runtime"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
