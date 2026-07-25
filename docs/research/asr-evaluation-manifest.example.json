@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "name": "slugtale-local-asr-evaluation",
+  "clips": [
+    {
+      "id": "001-command-clean",
+      "expected_text": "Open the Slugtale settings.",
+      "category": "short-command",
+      "recording_condition": "clean-close-microphone",
+      "wav_path": "clips/001-command-clean.wav",
+      "proper_terms": ["Slugtale"]
+    },
+    {
+      "id": "002-dictation-clean",
+      "expected_text": "Please move the planning session to Tuesday afternoon.",
+      "category": "long-dictation",
+      "recording_condition": "clean-close-microphone",
+      "wav_path": "clips/002-dictation-clean.wav",
+      "proper_terms": []
+    },
+    {
+      "id": "003-hesitation-clean",
+      "expected_text": "Book, actually no, cancel the booking for Friday.",
+      "category": "hesitation-self-correction",
+      "recording_condition": "clean-close-microphone",
+      "wav_path": "clips/003-hesitation-clean.wav",
+      "proper_terms": []
+    },
+    {
+      "id": "004-numbers-clean",
+      "expected_text": "Order 12 boxes for 3:30 p.m.",
+      "category": "numbers-punctuation",
+      "recording_condition": "clean-close-microphone",
+      "wav_path": "clips/004-numbers-clean.wav",
+      "proper_terms": []
+    },
+    {
+      "id": "005-jargon-clean",
+      "expected_text": "Compare Whisper, Parakeet, and Apple SpeechTranscriber.",
+      "category": "names-jargon",
+      "recording_condition": "clean-close-microphone",
+      "wav_path": "clips/005-jargon-clean.wav",
+      "proper_terms": ["Whisper", "Parakeet", "Apple SpeechTranscriber"]
+    },
+    {
+      "id": "006-command-noisy",
+      "expected_text": "Start dictation now.",
+      "category": "short-command",
+      "recording_condition": "keyboard-noise",
+      "wav_path": "clips/006-command-noisy.wav",
+      "proper_terms": []
+    },
+    {
+      "id": "007-dictation-distance",
+      "expected_text": "This longer sentence is recorded from farther away from the microphone.",
+      "category": "long-dictation",
+      "recording_condition": "distant-microphone",
+      "wav_path": "clips/007-dictation-distance.wav",
+      "proper_terms": []
+    },
+    {
+      "id": "008-silence-clean",
+      "expected_text": "",
+      "category": "silence-non-speech",
+      "recording_condition": "clean-room-tone",
+      "wav_path": "clips/008-silence-clean.wav",
+      "proper_terms": []
+    }
+  ]
+}

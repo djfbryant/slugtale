@@ -12,7 +12,11 @@
     "macos:reauthorize": "node scripts/reauthorize-macos-app.js",
     "macos:reset-permissions": "node scripts/reset-dev-permissions.js",
     "test": "node --test && npm run test:rust",
-    "test:rust": "node scripts/run-cargo.js test --lib"
+    "test:rust": "node scripts/run-cargo.js test --lib",
+    "test:asr-research": "node scripts/run-cargo.js test --example asr_research",
+    "asr:research": "node scripts/run-cargo.js run --example asr_research --",
+    "asr:research:whisper": "node scripts/run-cargo.js run --release --example asr_research --features local-whisper-runtime --",
+    "asr:research:build": "node scripts/run-cargo.js build --release --example asr_research --features local-whisper-runtime"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
