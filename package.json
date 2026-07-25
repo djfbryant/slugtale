@@ -11,7 +11,7 @@
     "macos:install": "node scripts/install-macos-app.js",
     "macos:reauthorize": "node scripts/reauthorize-macos-app.js",
     "macos:reset-permissions": "node scripts/reset-dev-permissions.js",
-    "test": "node --test && npm run test:rust",
+    "test": "node --test \"tests/**/*.test.mjs\" && npm run test:rust",
     "test:rust": "node scripts/run-cargo.js test --lib",
     "test:asr-research": "node scripts/run-cargo.js test --example asr_research",
     "asr:research": "node scripts/run-cargo.js run --example asr_research --",
