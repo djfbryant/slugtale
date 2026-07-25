@@ -62,6 +62,12 @@ pub use parakeet::*;
 mod apple_speech;
 pub use apple_speech::*;
 
+/// Second Opinion routing (slugtale-vjs.3): the fixed, inspectable rules that
+/// decide when a second local Transcription Engine is worth asking, and which
+/// of the two complete transcripts to insert.
+mod second_opinion;
+pub use second_opinion::*;
+
 mod dictation_workflow;
 pub use dictation_workflow::*;
 

@@ -131,3 +131,19 @@ _Avoid_: Beam size, decode beam, search width
 **Transcription Speed Profile**:
 A user-configurable global setting stored in the Settings File that determines the accuracy/speed tradeoff for all future transcriptions. The user selects a profile once and it persists across app restarts. Each profile maps to an underlying decode strategy. The profile applies to all dictations until the user changes the setting again. Three profiles are available: Fast (greedy decoding, no Beam Search), Balanced (Beam Search value 2, default), and Accurate (Beam Search value 5). The values were chosen from measured latency and accuracy on real speech clips (docs/research/whisper-decode-benchmark.md). The setting appears in its own "Transcription" section of the settings UI.
 _Avoid_: Quality setting, transcription mode, decode mode, per-dictation quality
+
+**Transcription Engine**:
+A local speech recognition implementation Slugtale can ask for a final transcription. Every transcription engine runs entirely on the user's device; there is no cloud engine and no remote fallback. Slugtale knows a closed set of them — Whisper, Parakeet, and Apple SpeechTranscriber — because each carries its own licence, attribution, and platform constraints the settings surface has to state accurately.
+_Avoid_: Backend, recognizer, ASR model
+
+**Second Opinion**:
+Running a second transcription engine on the same recording when the first engine's result looks uncertain or anomalous, then inserting exactly one of the two complete transcripts. Slugtale never merges words from two engines. Second opinion is off by default and, when on, does nothing at all on a healthy dictation.
+_Avoid_: Ensemble, voting, fallback model
+
+**Escalation**:
+The decision to ask for a second opinion, taken by fixed, inspectable rules rather than a learned model. Every escalation produces a reason code that names the shape of the result — empty, looping, implausibly short for the recording, or below the engine's own confidence threshold — and never its content.
+_Avoid_: Retry, rerun, fallback trigger
+
+**Engine Availability**:
+Whether a transcription engine can actually run on this machine and this build right now. Unavailability is always explained: the wrong operating system, an operating system too old, an unsupported dictation language, assets the user has not installed, or a build compiled without that engine. Only missing assets are something the user can fix from settings.
+_Avoid_: Engine status, model state
