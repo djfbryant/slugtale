@@ -46,8 +46,115 @@ impl Default for AudioCaptureState {
 
 use slugtale_lib::{
     DiagnosticAsrRuntime, DiagnosticInsertionRescue, DiagnosticTextInsertion, FileDiagnosticSink,
-    SharedDiagnosticLog,
+    SharedDiagnosticLog, TranscriptionProvider,
 };
+
+/// The Transcription Engines that outlive a single dictation.
+///
+/// Whisper is deliberately absent: its runtime is keyed by the active model
+/// path, which the user can change from Settings, so it comes from
+/// [`slugtale_lib::WhisperRuntimeCache`] per dictation instead. Parakeet and
+/// Apple SpeechTranscriber own no such per-dictation state, and building them
+/// once is what lets them answer [`TranscriptionProvider::availability`] from a
+/// cached probe rather than a filesystem or OS query on every dictation.
+struct TranscriptionEngines {
+    parakeet: Arc<slugtale_lib::ParakeetProvider>,
+}
+
+impl TranscriptionEngines {
+    fn new(model_dir: &std::path::Path) -> Self {
+        Self {
+            parakeet: Arc::new(slugtale_lib::ParakeetProvider::new(
+                slugtale_lib::parakeet_asset_dir(model_dir),
+            )),
+        }
+    }
+
+    /// The provider for one engine, or `None` for Whisper, which the caller
+    /// supplies from the model-path-keyed cache.
+    fn provider(
+        &self,
+        engine: slugtale_lib::TranscriptionEngine,
+    ) -> Option<Arc<dyn TranscriptionProvider>> {
+        match engine {
+            slugtale_lib::TranscriptionEngine::Whisper => None,
+            slugtale_lib::TranscriptionEngine::Parakeet => Some(self.parakeet.clone()),
+            // Apple SpeechTranscriber is registered here once slugtale-vjs.2
+            // lands its provider; until then it reports unavailable and the
+            // router simply never selects it.
+            slugtale_lib::TranscriptionEngine::AppleSpeech => None,
+        }
+    }
+}
+
+/// Assemble the engine stack for one dictation from the Settings File.
+///
+/// Two fallbacks here are worth stating plainly, because both trade the user's
+/// stated preference for finishing the dictation:
+///
+/// - A primary engine whose assets were deleted since it was chosen falls back
+///   to Whisper. Refusing to transcribe would punish the user for a setting
+///   they may not remember making.
+/// - The second opinion is whichever *available* engine is not the primary, in
+///   the fixed [`slugtale_lib::TranscriptionEngine::ALL`] order. There is no
+///   setting for it because benchmark slugtale-9dv has not yet established
+///   which pairing is worth offering.
+fn transcription_router(
+    app: &tauri::AppHandle,
+    settings: &slugtale_lib::Settings,
+    whisper: Arc<slugtale_lib::LocalWhisperRuntime>,
+    diagnostic_log: SharedDiagnosticLog<FileDiagnosticSink>,
+) -> slugtale_lib::SecondOpinionRouter {
+    let whisper_provider: Arc<dyn TranscriptionProvider> =
+        Arc::new(slugtale_lib::WhisperTranscriptionProvider::new(whisper));
+
+    // The registry is absent only when the app data directory could not be
+    // resolved at startup. Whisper still works from its own configured path, so
+    // degrade to a single engine rather than failing the dictation.
+    let Some(engines) = app.try_state::<TranscriptionEngines>() else {
+        return slugtale_lib::SecondOpinionRouter::single(whisper_provider);
+    };
+
+    let requested = engines
+        .provider(settings.primary_engine)
+        .unwrap_or_else(|| whisper_provider.clone());
+    let primary = if requested.availability().is_available() {
+        requested
+    } else {
+        whisper_provider.clone()
+    };
+
+    let router = match settings.second_opinion {
+        slugtale_lib::SecondOpinionMode::Off => slugtale_lib::SecondOpinionRouter::single(primary),
+        slugtale_lib::SecondOpinionMode::Automatic => {
+            let second = slugtale_lib::TranscriptionEngine::ALL
+                .into_iter()
+                .filter(|engine| *engine != primary.engine())
+                .filter_map(|engine| {
+                    engines
+                        .provider(engine)
+                        .or_else(|| {
+                            (engine == slugtale_lib::TranscriptionEngine::Whisper)
+                                .then(|| whisper_provider.clone())
+                        })
+                })
+                .find(|provider| provider.availability().is_available());
+
+            match second {
+                Some(second) => slugtale_lib::SecondOpinionRouter::new(
+                    primary,
+                    second,
+                    slugtale_lib::SecondOpinionMode::Automatic,
+                ),
+                None => slugtale_lib::SecondOpinionRouter::single(primary),
+            }
+        }
+    };
+
+    router.observing(move |routing| {
+        diagnostic_log.record(slugtale_lib::DiagnosticEvent::routing_decision(routing))
+    })
+}
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Default)]
@@ -318,12 +425,13 @@ async fn complete_captured_dictation(
         .as_ref()
         .map(PathBuf::from)
         .unwrap_or(slugtale_lib::default_model_path(&model_dir(&app)?));
-    let runtime = app
+    let whisper = app
         .state::<slugtale_lib::WhisperRuntimeCache>()
         .runtime_for(&model_path);
     // Apply the current Transcription Speed Profile before decoding so the user's
     // accuracy/speed choice takes effect without reloading the model.
-    runtime.set_speed_profile(settings.speed_profile);
+    whisper.set_speed_profile(settings.speed_profile);
+    let runtime = transcription_router(&app, &settings, whisper, diagnostic_log.clone());
     let target_pid = app
         .state::<FocusTargetState>()
         .0
@@ -357,7 +465,7 @@ async fn complete_captured_dictation(
 
             let insertion = slugtale_lib::MacosTextInsertion::new();
             let rescue = slugtale_lib::MacosInsertionRescue::new();
-            let runtime = DiagnosticAsrRuntime::new(&*runtime, diagnostic_log.clone());
+            let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
             let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
             let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
             let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
@@ -368,7 +476,7 @@ async fn complete_captured_dictation(
         {
             let insertion = slugtale_lib::WindowsTextInsertion::new();
             let rescue = slugtale_lib::WindowsInsertionRescue::new();
-            let runtime = DiagnosticAsrRuntime::new(&*runtime, diagnostic_log.clone());
+            let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
             let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
             let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
             let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
@@ -392,7 +500,7 @@ async fn complete_captured_dictation(
 
             let insertion = slugtale_lib::LinuxTextInsertion::new();
             let rescue = slugtale_lib::LinuxInsertionRescue::new();
-            let runtime = DiagnosticAsrRuntime::new(&*runtime, diagnostic_log.clone());
+            let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
             let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
             let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
             let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
@@ -1082,16 +1190,21 @@ async fn transcribe_captured_audio(
 ) -> Result<slugtale_lib::FinalTranscription, String> {
     let settings = load_current_settings(&app);
     let model_path = model_manager(&app)?.active_model_path(&settings);
-    let runtime = cache.runtime_for(&model_path);
-    runtime.set_speed_profile(settings.speed_profile);
+    let whisper = cache.runtime_for(&model_path);
+    whisper.set_speed_profile(settings.speed_profile);
     let diagnostic_log = current_diagnostic_log(&app, &settings);
+    // Routed like the hotkey path, so a dictation driven from the frontend gets
+    // the same engine stack and the same second opinion as one driven from the
+    // hotkey. Two transcription paths that disagreed would be a bug the user
+    // could only find by noticing that one of them was worse.
+    let runtime = transcription_router(&app, &settings, whisper, diagnostic_log.clone());
     let audio = slugtale_lib::CapturedAudio {
         sample_rate_hz,
         samples,
     };
 
     tauri::async_runtime::spawn_blocking(move || {
-        let runtime = DiagnosticAsrRuntime::new(&*runtime, diagnostic_log);
+        let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log);
         slugtale_lib::transcribe_captured_audio(&runtime, audio).map_err(|error| error.to_string())
     })
     .await
@@ -1253,6 +1366,12 @@ fn main() {
             // rebuilt app (dev binaries change path) does not drift out of sync.
             let settings = load_current_settings(app.handle());
             let _ = set_launch_at_login_state(app.handle(), settings.launch_at_login);
+            // Register the long-lived Transcription Engines once, so their
+            // availability is a cached answer rather than a filesystem probe on
+            // every dictation.
+            if let Ok(model_dir) = model_dir(app.handle()) {
+                app.manage(TranscriptionEngines::new(&model_dir));
+            }
             let _ = warm_ready_local_whisper_runtime(app.handle());
             if reauthorize_permissions {
                 slugtale_lib::show_settings(app.handle().clone());
