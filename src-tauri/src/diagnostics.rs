@@ -8,8 +8,8 @@
 
 use crate::{
     AsrError, AsrRuntime, AudioCaptureError, CapturedAudio, DictationEvent, FinalTranscription,
-    InsertionRescue, InsertionRescueError, InsertionRescueOutcome, ReadinessItem, TextInsertion,
-    TextInsertionError, TextInsertionOutcome,
+    InsertionRescue, InsertionRescueError, InsertionRescueOutcome, ReadinessItem, RoutingDiagnostics,
+    TextInsertion, TextInsertionError, TextInsertionOutcome,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -38,6 +38,15 @@ pub enum DiagnosticEvent {
     /// Insertion Rescue ran after insertion failed, preserving the transcription
     /// to the clipboard. Carries no transcript text (ADR-0019).
     InsertionRescued,
+    /// How the Second Opinion router decided one dictation: which engine's
+    /// transcript was inserted, which rule escalated (if any), and how long the
+    /// whole routed dictation took.
+    ///
+    /// This is the one event that answers "why did it choose that?", and it can
+    /// do so safely because [`RoutingDiagnostics`] is a closed set of enums and
+    /// a duration — there is no field on it that could hold what the user said
+    /// (ADR-0019).
+    RoutingDecision { routing: RoutingDiagnostics },
 }
 
 impl DiagnosticEvent {
@@ -75,6 +84,13 @@ impl DiagnosticEvent {
     /// Record a hotkey-driven dictation lifecycle transition.
     pub fn hotkey_transition(event: DictationEvent) -> Self {
         Self::HotkeyTransition { event }
+    }
+
+    /// Record how the Second Opinion router decided a dictation. Takes the
+    /// already-reduced [`RoutingDiagnostics`] rather than the routed result, so
+    /// the transcript is not even in scope at the call site.
+    pub fn routing_decision(routing: RoutingDiagnostics) -> Self {
+        Self::RoutingDecision { routing }
     }
 
     /// Record a [`TextInsertionError`] by its technical description; the
@@ -115,6 +131,26 @@ pub fn render_diagnostic_event(event: &DiagnosticEvent) -> String {
         }
         DiagnosticEvent::InsertionRescued => {
             "insertion: rescued transcription to clipboard".to_string()
+        }
+        DiagnosticEvent::RoutingDecision { routing } => {
+            // Rendered from the reason codes alone. `escalation: none` is the
+            // normal, healthy dictation and is worth logging explicitly: it is
+            // the evidence that the second engine stayed asleep.
+            let escalation = match routing.escalation {
+                Some(reason) => format!("{reason:?}"),
+                None => "none".to_string(),
+            };
+            let second = match routing.second_opinion_engine {
+                Some(engine) => engine.id(),
+                None => "none",
+            };
+            format!(
+                "asr: routed via {} (escalation: {escalation}, second opinion: {second}, \
+                 selection: {:?}, {} ms)",
+                routing.selected_engine.id(),
+                routing.selection,
+                routing.total_latency_ms,
+            )
         }
     }
 }
@@ -383,6 +419,58 @@ mod tests {
         assert!(!lines[0].contains("launch codes"));
         // A character count is a safe, non-identifying size.
         assert!(lines[0].contains(&secret.chars().count().to_string()));
+    }
+
+    #[test]
+    fn routing_decision_log_explains_the_choice_without_the_transcript() {
+        // The Second Opinion router's whole promise is that a maintainer can
+        // ask "why did it pick that one?" and get an answer. This is the line
+        // that answers it, and it must answer with reason codes only.
+        let mut lines: Vec<String> = Vec::new();
+        let mut log = LocalDiagnosticLog::new(true, |line: &str| lines.push(line.to_string()));
+
+        log.record(DiagnosticEvent::routing_decision(
+            crate::RoutingDiagnostics {
+                selected_engine: crate::TranscriptionEngine::Parakeet,
+                escalation: Some(crate::EscalationReason::EmptyTranscript),
+                selection: crate::SelectionReason::SecondOpinionSelected,
+                second_opinion_engine: Some(crate::TranscriptionEngine::Parakeet),
+                total_latency_ms: 812,
+            },
+        ));
+
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("parakeet"), "got: {}", lines[0]);
+        assert!(lines[0].contains("EmptyTranscript"), "got: {}", lines[0]);
+        assert!(
+            lines[0].contains("SecondOpinionSelected"),
+            "got: {}",
+            lines[0]
+        );
+        assert!(lines[0].contains("812 ms"), "got: {}", lines[0]);
+    }
+
+    #[test]
+    fn a_healthy_dictation_is_logged_as_having_woken_no_second_engine() {
+        let mut lines: Vec<String> = Vec::new();
+        let mut log = LocalDiagnosticLog::new(true, |line: &str| lines.push(line.to_string()));
+
+        log.record(DiagnosticEvent::routing_decision(
+            crate::RoutingDiagnostics {
+                selected_engine: crate::TranscriptionEngine::Whisper,
+                escalation: None,
+                selection: crate::SelectionReason::PrimaryAccepted,
+                second_opinion_engine: None,
+                total_latency_ms: 244,
+            },
+        ));
+
+        assert!(lines[0].contains("escalation: none"), "got: {}", lines[0]);
+        assert!(
+            lines[0].contains("second opinion: none"),
+            "got: {}",
+            lines[0]
+        );
     }
 
     #[test]
