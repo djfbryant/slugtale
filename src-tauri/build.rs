@@ -16,6 +16,13 @@ fn main() {
 /// archives, which live inside the toolchain rather than on the user's machine
 /// and which the Rust link line has no business hunting for. 13 is the first
 /// version comfortably clear of that cliff.
+///
+/// This is a floor rather than a default, and the distinction is load-bearing:
+/// `tauri build` exports `MACOSX_DEPLOYMENT_TARGET` from the bundle's
+/// `minimumSystemVersion`, which is far below 13. Honouring that verbatim built
+/// a Swift archive demanding `__swift_FORCE_LOAD_$_swiftCompatibilityConcurrency`
+/// and failed the link, while a plain `cargo build` — which sets no such
+/// variable — succeeded, so the breakage only ever appeared through Tauri.
 const APPLE_SPEECH_DEPLOYMENT_TARGET: &str = "13.0";
 
 /// Where macOS keeps the Swift runtime it ships with the OS. The static archive
@@ -76,9 +83,32 @@ fn build_apple_speech_bridge() {
     // them again would be a second, silently drifting copy of the truth.
 }
 
+/// Raise whatever deployment target the build was handed up to the bridge's
+/// floor, leaving anything already at or above it alone. An unparseable value
+/// falls back to the floor rather than guessing: the failure mode of guessing
+/// low is a link error, and of guessing high is nothing at all.
+fn swift_deployment_target(requested: Option<&str>) -> String {
+    let floor = APPLE_SPEECH_DEPLOYMENT_TARGET;
+
+    match requested {
+        Some(requested) if version_parts(requested) >= version_parts(floor) => requested.to_string(),
+        _ => floor.to_string(),
+    }
+}
+
+/// A macOS version as comparable numbers, so "10.15" sorts below "13.0" the way
+/// a plain string comparison would not.
+fn version_parts(version: &str) -> Vec<u32> {
+    version
+        .split('.')
+        .map(|part| part.parse().unwrap_or(0))
+        .collect()
+}
+
 fn compile_swift_archive(source: &Path, archive: &Path) {
-    let deployment_target = std::env::var("MACOSX_DEPLOYMENT_TARGET")
-        .unwrap_or_else(|_| APPLE_SPEECH_DEPLOYMENT_TARGET.to_string());
+    let deployment_target = swift_deployment_target(
+        std::env::var("MACOSX_DEPLOYMENT_TARGET").ok().as_deref(),
+    );
     let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("aarch64") => "arm64",
         Ok("x86_64") => "x86_64",

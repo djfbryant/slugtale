@@ -248,6 +248,15 @@ Apple SpeechTranscriber installs its speech assets per application, so the
 `/Applications` copy asks for its own download even if the `npm run dev` build
 already has them. The install takes well under a second.
 
+`apple-speech-runtime` also raises the real floor of the resulting binary above
+what the bundle advertises. The Swift bridge takes a hard dependency on the
+operating system's own `libswift_Concurrency.dylib` rather than bundling the
+back-deployment copy, so the app will not launch on a Mac whose `/usr/lib/swift`
+predates that library — macOS 11 and earlier — even though the Mach-O header
+still says `minos 11.0`. This costs nothing in practice, since the engine needs
+macOS 26 regardless, but a build with the feature on is not the build to hand to
+someone on an old Mac. Builds without it are unaffected.
+
 ## First Run Setup
 
 Open Slugtale from the menu bar and complete the readiness checklist:
