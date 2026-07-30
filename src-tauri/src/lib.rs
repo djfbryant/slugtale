@@ -68,6 +68,12 @@ pub use apple_speech::*;
 mod second_opinion;
 pub use second_opinion::*;
 
+/// Dictation Segments and the Segment Pause that ends one (CONTEXT.md,
+/// ADR-0015): the rule that decides when the speech so far is worth inserting
+/// while the microphone is still running.
+mod segmentation;
+pub use segmentation::*;
+
 mod dictation_workflow;
 pub use dictation_workflow::*;
 

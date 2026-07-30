@@ -1,3 +1,7 @@
 # Audible and Visible Dictation Feedback
 
 Slugtale will provide audible start/stop sounds and a small on-screen dictation bar while recording. The bar will show an animated recording indicator plus stop and cancel controls, with Escape also cancelling dictation; it will not show live transcription text in v1.
+
+**Cancel after text has already been inserted.** Once a dictation can insert text before it ends (ADR-0015), Escape can arrive after some of that dictation is already in the user's document. Cancel discards the un-inserted remainder — the audio not yet transcribed and any Dictation Segment still queued — and stops recording. It does not attempt to remove text that has already been inserted. Slugtale would have to synthesize deletions to do that, guessing at a caret the user may have moved and at an app that may have reflowed the text; a wrong guess deletes the user's own writing, which is far worse than leaving a paragraph the user can undo themselves. Cancel is therefore "stop, and write nothing more", and the user's own undo owns anything already written.
+
+**The bar keeps reading as recording during a pause flush.** Transcription can now run while the microphone is still live, but the bar continues to show the recording state throughout, because recording is what is still true and what the user needs to know. The transcribing state remains reserved for after Stop, when the bar stays up until every segment has landed.
