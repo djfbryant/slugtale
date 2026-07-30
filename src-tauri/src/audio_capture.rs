@@ -180,6 +180,15 @@ pub trait AudioRecorder {
     fn start(&mut self) -> Result<(), AudioCaptureError>;
     fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError>;
     fn cancel(&mut self) -> Result<(), AudioCaptureError>;
+
+    /// Take the audio captured so far and leave the microphone running, so a
+    /// Segment Pause can be transcribed and inserted while the user carries on
+    /// dictating (CONTEXT.md: Dictation Segment).
+    ///
+    /// This is the whole reason capture and transcription can now overlap. It
+    /// must not drop a single sample: whatever arrives while the returned
+    /// segment is decoding belongs to the next one.
+    fn take_segment(&mut self) -> Result<CapturedAudio, AudioCaptureError>;
 }
 
 pub type AudioLevelCallback = std::sync::Arc<dyn Fn(f32) + Send + Sync + 'static>;
@@ -564,6 +573,27 @@ impl AudioRecorder for CpalAudioRecorder {
         }
         Ok(())
     }
+
+    fn take_segment(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
+        // Deliberately no pause and no emitter shutdown: the stream keeps
+        // running and the ring keeps filling behind this read. That is safe
+        // because `RealtimeCaptureBuffer` is a single-producer/single-consumer
+        // ring whose Acquire/Release pairs already order the audio thread's
+        // writes against this drain — the caller is simply becoming the consumer
+        // earlier than `stop` would.
+        //
+        // The one cost is that the resampler's window cannot span the cut, so a
+        // segment boundary loses sub-millisecond accuracy at the join. Boundaries
+        // only ever fall in the middle of a five-second silence, so there is no
+        // speech there to damage.
+        let samples = self
+            .buffer
+            .as_ref()
+            .ok_or_else(|| AudioCaptureError::new("audio capture buffer is unavailable"))?
+            .drain()?;
+
+        captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -575,6 +605,10 @@ pub enum AudioCaptureOutcome {
 pub struct AudioCaptureSession<R> {
     recorder: R,
     active: bool,
+    /// Whether this dictation has already handed a Dictation Segment off to be
+    /// transcribed. It decides whether the digital-silence guard still applies
+    /// when the dictation ends.
+    flushed_a_segment: bool,
 }
 
 impl<R> AudioCaptureSession<R>
@@ -585,7 +619,26 @@ where
         Self {
             recorder,
             active: false,
+            flushed_a_segment: false,
         }
+    }
+
+    /// Take the speech captured so far as a Dictation Segment, leaving the
+    /// recording running. Returns `None` when there is nothing to take — either
+    /// no dictation is active, or the ring has been drained since the last
+    /// Segment Pause.
+    pub fn flush_segment(&mut self) -> Result<Option<CapturedAudio>, AudioCaptureError> {
+        if !self.active {
+            return Ok(None);
+        }
+
+        let audio = self.recorder.take_segment()?;
+        if audio.samples.is_empty() {
+            return Ok(None);
+        }
+
+        self.flushed_a_segment = true;
+        Ok(Some(audio))
     }
 
     pub fn on_event(
@@ -596,12 +649,22 @@ where
             DictationEvent::Start => {
                 self.recorder.start()?;
                 self.active = true;
+                self.flushed_a_segment = false;
                 Ok(None)
             }
             DictationEvent::Stop if self.active => {
                 self.active = false;
                 let audio = self.recorder.stop()?;
-                require_captured_microphone_signal(&audio)?;
+                // The digital-silence guard catches a denied microphone, which
+                // supplies perfectly timed silence rather than failing. It can
+                // only speak for a dictation that flushed nothing: once a
+                // Segment Pause has handed real speech off, ending on silence is
+                // exactly what a user who paused and then pressed Stop produces.
+                // A denied microphone never reaches that state, because a level
+                // pinned at zero never opens a Segment Pause in the first place.
+                if !self.flushed_a_segment {
+                    require_captured_microphone_signal(&audio)?;
+                }
                 Ok(Some(AudioCaptureOutcome::Completed(audio)))
             }
             DictationEvent::Cancel if self.active => {
@@ -745,6 +808,106 @@ mod tests {
     }
 
     #[test]
+    fn flushing_a_segment_keeps_the_recording_running_for_the_next_one() {
+        let recorder = FakeAudioRecorder::flushing(
+            CapturedAudio::mono_16khz(vec![0.3, 0.3]),
+            vec![
+                CapturedAudio::mono_16khz(vec![0.1, 0.1]),
+                CapturedAudio::mono_16khz(vec![0.2, 0.2]),
+            ],
+        );
+        let mut session = AudioCaptureSession::new(recorder);
+        session.on_event(DictationEvent::Start).unwrap();
+
+        let first = session.flush_segment().unwrap();
+        let second = session.flush_segment().unwrap();
+        let remainder = session.on_event(DictationEvent::Stop).unwrap();
+
+        // Each segment is handed over exactly once, in the order it was spoken,
+        // and Stop still returns whatever was captured after the last pause.
+        assert_eq!(first, Some(CapturedAudio::mono_16khz(vec![0.1, 0.1])));
+        assert_eq!(second, Some(CapturedAudio::mono_16khz(vec![0.2, 0.2])));
+        assert_eq!(
+            remainder,
+            Some(AudioCaptureOutcome::Completed(CapturedAudio::mono_16khz(
+                vec![0.3, 0.3]
+            )))
+        );
+        assert_eq!(
+            session.recorder().events.borrow().as_slice(),
+            &["start", "take_segment", "take_segment", "stop"]
+        );
+    }
+
+    #[test]
+    fn flushing_a_drained_ring_yields_no_segment() {
+        // Nothing new since the last Segment Pause must not enqueue an empty
+        // segment for the transcription engine to chew on.
+        let recorder = FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.2]));
+        let mut session = AudioCaptureSession::new(recorder);
+        session.on_event(DictationEvent::Start).unwrap();
+
+        assert_eq!(session.flush_segment().unwrap(), None);
+    }
+
+    #[test]
+    fn flushing_outside_a_dictation_yields_no_segment() {
+        let recorder = FakeAudioRecorder::flushing(
+            CapturedAudio::mono_16khz(vec![0.2]),
+            vec![CapturedAudio::mono_16khz(vec![0.1])],
+        );
+        let mut session = AudioCaptureSession::new(recorder);
+
+        assert_eq!(session.flush_segment().unwrap(), None);
+        assert!(session.recorder().events.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_dictation_that_already_flushed_speech_may_end_on_silence() {
+        // The user paused, the pause was flushed and inserted, and then they
+        // pressed Stop without speaking again. The remainder is genuinely silent
+        // and must not be reported as a missing microphone.
+        let recorder = FakeAudioRecorder::flushing(
+            CapturedAudio::mono_16khz(vec![0.0; 16_000]),
+            vec![CapturedAudio::mono_16khz(vec![0.4, -0.4])],
+        );
+        let mut session = AudioCaptureSession::new(recorder);
+        session.on_event(DictationEvent::Start).unwrap();
+        session.flush_segment().unwrap();
+
+        let completed = session.on_event(DictationEvent::Stop).unwrap();
+
+        assert!(matches!(
+            completed,
+            Some(AudioCaptureOutcome::Completed(_))
+        ));
+    }
+
+    #[test]
+    fn a_new_dictation_restores_the_digital_silence_guard() {
+        // The relaxation above must not leak into the next dictation, or a
+        // microphone revoked between dictations would go unreported.
+        let recorder = FakeAudioRecorder::flushing(
+            CapturedAudio::mono_16khz(vec![0.0; 16_000]),
+            vec![CapturedAudio::mono_16khz(vec![0.4, -0.4])],
+        );
+        let mut session = AudioCaptureSession::new(recorder);
+        session.on_event(DictationEvent::Start).unwrap();
+        session.flush_segment().unwrap();
+        session.on_event(DictationEvent::Stop).unwrap();
+
+        session.on_event(DictationEvent::Start).unwrap();
+        let error = session.on_event(DictationEvent::Stop).unwrap_err();
+
+        assert_eq!(
+            error,
+            AudioCaptureError::new(
+                "no microphone signal was captured; check Slugtale under System Settings > Privacy & Security > Microphone"
+            )
+        );
+    }
+
+    #[test]
     fn audio_capture_session_cancel_discards_without_returning_audio() {
         let recorder = FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.4, 0.5]));
         let mut session = AudioCaptureSession::new(recorder);
@@ -761,6 +924,9 @@ mod tests {
 
     struct FakeAudioRecorder {
         audio: CapturedAudio,
+        /// What each successive `take_segment` hands back, mimicking a ring that
+        /// is drained mid-recording and refills from the microphone.
+        segments: std::cell::RefCell<std::collections::VecDeque<CapturedAudio>>,
         events: std::cell::RefCell<Vec<&'static str>>,
     }
 
@@ -768,8 +934,15 @@ mod tests {
         fn new(audio: CapturedAudio) -> Self {
             Self {
                 audio,
+                segments: std::cell::RefCell::new(std::collections::VecDeque::new()),
                 events: std::cell::RefCell::new(Vec::new()),
             }
+        }
+
+        fn flushing(audio: CapturedAudio, segments: Vec<CapturedAudio>) -> Self {
+            let recorder = Self::new(audio);
+            *recorder.segments.borrow_mut() = segments.into();
+            recorder
         }
     }
 
@@ -787,6 +960,15 @@ mod tests {
         fn cancel(&mut self) -> Result<(), AudioCaptureError> {
             self.events.borrow_mut().push("cancel");
             Ok(())
+        }
+
+        fn take_segment(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
+            self.events.borrow_mut().push("take_segment");
+            Ok(self
+                .segments
+                .borrow_mut()
+                .pop_front()
+                .unwrap_or_else(|| CapturedAudio::mono_16khz(Vec::new())))
         }
     }
 }

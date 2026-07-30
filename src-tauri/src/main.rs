@@ -44,6 +44,99 @@ impl Default for AudioCaptureState {
     }
 }
 
+/// One unit of work for the Dictation Segment pipeline.
+///
+/// A Segment Pause sends a *request* rather than the audio itself, and that is
+/// deliberate. The request is raised from the recorder's own level-emitter
+/// thread, which `CpalAudioRecorder::stop` joins while holding the
+/// [`AudioCaptureState`] lock — so if that thread ever blocked on the same lock
+/// to drain the ring, pressing Stop mid-flush would deadlock the app. Draining
+/// on the worker instead keeps the emitter thread free of that lock entirely.
+enum DictationSegmentJob {
+    /// A Segment Pause elapsed: take whatever has been captured so far.
+    PauseFlush { dictation: u64 },
+    /// The dictation ended. Carries the audio left over after the last Segment
+    /// Pause, already drained by the Stop path.
+    Last {
+        dictation: u64,
+        audio: slugtale_lib::CapturedAudio,
+    },
+}
+
+/// The ordered pipeline that turns Dictation Segments into inserted text.
+///
+/// A single worker thread drains the queue, and that is the whole of the
+/// ordering guarantee: however long any one segment takes to decode, the text
+/// lands in the order it was spoken.
+#[derive(Default)]
+struct DictationSegments {
+    /// `None` until the worker starts. Held behind a mutex because an mpsc
+    /// `Sender` is `Send` but not `Sync`, and Tauri state must be both.
+    jobs: Mutex<Option<std::sync::mpsc::Sender<DictationSegmentJob>>>,
+    /// Incremented on every Start, so each dictation's segments are
+    /// distinguishable from the previous dictation's still-decoding tail.
+    dictation: std::sync::atomic::AtomicU64,
+    /// Every dictation at or below this number has been cancelled. Escape
+    /// discards the remainder of a dictation, including segments already queued
+    /// but not yet inserted; text that has already landed stays where it is,
+    /// because Slugtale cannot un-type it (ADR-0014).
+    cancelled_through: std::sync::atomic::AtomicU64,
+    /// Set when a segment fell back to the Insertion Rescue. Further Segment
+    /// Pauses are held back for the rest of that dictation: without this, a
+    /// machine that has not granted Accessibility would clobber the clipboard
+    /// and raise a notification once every five seconds.
+    rescued: std::sync::atomic::AtomicBool,
+}
+
+impl DictationSegments {
+    fn current(&self) -> u64 {
+        self.dictation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Open a new dictation and return its number.
+    fn begin(&self) -> u64 {
+        self.rescued
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.dictation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+
+    /// Abandon the active dictation's un-inserted remainder.
+    fn abandon(&self) {
+        self.cancelled_through
+            .store(self.current(), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn is_cancelled(&self, dictation: u64) -> bool {
+        dictation <= self.cancelled_through.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether `dictation` is still the one being recorded. A Pause Flush is
+    /// only honoured while this holds: draining the ring for a dictation that
+    /// has already ended would take the *next* dictation's opening words.
+    fn is_recording(&self, dictation: u64) -> bool {
+        self.current() == dictation && !self.is_cancelled(dictation)
+    }
+
+    fn suspend_pause_flushes(&self) {
+        self.rescued.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn pause_flushes_suspended(&self) -> bool {
+        self.rescued.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Queue a job, reporting whether the worker accepted it.
+    fn send(&self, job: DictationSegmentJob) -> bool {
+        self.jobs
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|sender| sender.send(job).is_ok()))
+            .unwrap_or(false)
+    }
+}
+
 use slugtale_lib::{
     DiagnosticAsrRuntime, DiagnosticInsertionRescue, DiagnosticTextInsertion, FileDiagnosticSink,
     SharedDiagnosticLog, TranscriptionProvider,
@@ -257,6 +350,9 @@ fn handle_dictation_event(
             // Capture the app the user is dictating into before our own bar can
             // take focus, so insertion can re-target it later (slugtale-squ).
             capture_focus_target(app);
+            // Open the dictation before capture starts: the level callback
+            // installed below stamps every Pause Flush with this number.
+            app.state::<DictationSegments>().begin();
             // If the microphone cannot start, do not show a recording state.
             handle_audio_capture_event(app, event)?;
             apply_recording_feedback(app, event)?;
@@ -268,8 +364,12 @@ fn handle_dictation_event(
             advance_recording_feedback(app, event)?;
             handle_audio_capture_event(app, event)?;
         }
-        // Cancel clears the bar immediately and discards the audio.
+        // Cancel clears the bar immediately and discards the audio. It also
+        // drops any Dictation Segment still queued, so nothing further is typed
+        // after the user asks Slugtale to stop. Text inserted by an earlier
+        // Segment Pause is not undone (ADR-0014).
         slugtale_lib::DictationEvent::Cancel => {
+            app.state::<DictationSegments>().abandon();
             apply_recording_feedback(app, event)?;
             handle_audio_capture_event(app, event)?;
         }
@@ -368,21 +468,19 @@ fn handle_audio_capture_event(
                 audio.sample_rate_hz
             );
             // Keep the bar on screen in a transcribing state while the model runs,
-            // then hide it once insertion completes (slugtale-0t4).
+            // then hide it once insertion completes (slugtale-0t4). The worker
+            // hides it, so it stays up until every earlier Segment Pause has
+            // landed too, not just this last one.
             show_dictation_bar(app, DictationPhase::Transcribing);
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                match complete_captured_dictation(app.clone(), audio).await {
-                    Ok(transcription) => {
-                        eprintln!(
-                            "inserted cleaned final transcription: {} chars",
-                            transcription.text.chars().count()
-                        );
-                    }
-                    Err(error) => eprintln!("dictation workflow failed: {error}"),
-                }
-                hide_dictation_bar(&app);
+            let segments = app.state::<DictationSegments>();
+            let queued = segments.send(DictationSegmentJob::Last {
+                dictation: segments.current(),
+                audio,
             });
+            if !queued {
+                eprintln!("dictation segment worker is unavailable; dropping final segment");
+                hide_dictation_bar(app);
+            }
         }
         Some(slugtale_lib::AudioCaptureOutcome::Discarded) => {
             clear_dictation_audio_level_callback(app);
@@ -402,7 +500,43 @@ fn handle_audio_capture_event(
 }
 
 fn dictation_audio_level_callback(app: tauri::AppHandle) -> slugtale_lib::AudioLevelCallback {
-    Arc::new(move |level| emit_dictation_audio_level(&app, level))
+    // One detector per dictation. The callback is installed on Start, so every
+    // dictation begins with a detector that has heard nothing and therefore
+    // cannot flush before the user has said anything.
+    let detector = Mutex::new(slugtale_lib::SegmentPauseDetector::new());
+    Arc::new(move |level| {
+        emit_dictation_audio_level(&app, level);
+        request_pause_flush_if_due(&app, &detector, level);
+    })
+}
+
+/// Feed the voice level to the Segment Pause detector and queue a Pause Flush
+/// when one has elapsed.
+///
+/// This runs on the recorder's level-emitter thread, so it must never block: it
+/// takes only its own detector lock and hands the queue a request rather than
+/// touching the audio session.
+fn request_pause_flush_if_due(
+    app: &tauri::AppHandle,
+    detector: &Mutex<slugtale_lib::SegmentPauseDetector>,
+    level: f32,
+) {
+    let due = detector
+        .lock()
+        .map(|mut detector| detector.on_level(level, std::time::Instant::now()))
+        .unwrap_or(false);
+    if !due {
+        return;
+    }
+
+    let segments = app.state::<DictationSegments>();
+    if segments.pause_flushes_suspended() {
+        return;
+    }
+
+    segments.send(DictationSegmentJob::PauseFlush {
+        dictation: segments.current(),
+    });
 }
 
 fn clear_dictation_audio_level_callback(app: &tauri::AppHandle) {
@@ -434,24 +568,31 @@ fn warm_local_whisper_runtime(app: &tauri::AppHandle, model_path: &std::path::Pa
     }
 }
 
-async fn complete_captured_dictation(
-    app: tauri::AppHandle,
+/// Transcribe and insert one Dictation Segment, start to finish.
+///
+/// Runs synchronously on the Dictation Segment worker thread. Everything it
+/// touches is resolved per segment rather than per dictation, so a Settings
+/// change part-way through a long dictation takes effect at the next Segment
+/// Pause instead of being pinned at Start.
+fn run_dictation_segment(
+    app: &tauri::AppHandle,
     audio: slugtale_lib::CapturedAudio,
-) -> Result<slugtale_lib::FinalTranscription, String> {
-    let settings = load_current_settings(&app);
-    let diagnostic_log = current_diagnostic_log(&app, &settings);
+    position: slugtale_lib::DictationSegmentPosition,
+) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
+    let settings = load_current_settings(app);
+    let diagnostic_log = current_diagnostic_log(app, &settings);
     let model_path = settings
         .model
         .as_ref()
         .map(PathBuf::from)
-        .unwrap_or(slugtale_lib::default_model_path(&model_dir(&app)?));
+        .unwrap_or(slugtale_lib::default_model_path(&model_dir(app)?));
     let whisper = app
         .state::<slugtale_lib::WhisperRuntimeCache>()
         .runtime_for(&model_path);
     // Apply the current Transcription Speed Profile before decoding so the user's
     // accuracy/speed choice takes effect without reloading the model.
     whisper.set_speed_profile(settings.speed_profile);
-    let runtime = transcription_router(&app, &settings, whisper, diagnostic_log.clone());
+    let runtime = transcription_router(app, &settings, whisper, diagnostic_log.clone());
     let target_pid = app
         .state::<FocusTargetState>()
         .0
@@ -459,9 +600,11 @@ async fn complete_captured_dictation(
         .ok()
         .and_then(|guard| *guard);
 
-    tauri::async_runtime::spawn_blocking(move || {
+    {
         // Bring the user's app back to the front so synthesized keystrokes land
         // in its focused field rather than wherever focus drifted (slugtale-squ).
+        // This repeats for every segment, which is what makes a Pause Flush
+        // behave exactly like the single insertion it replaces.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         if let Some(pid) = target_pid {
             if slugtale_lib::activate_app(pid) {
@@ -489,7 +632,9 @@ async fn complete_captured_dictation(
             let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
             let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
             let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
-            workflow.complete(audio).map_err(|error| error.to_string())
+            workflow
+                .complete(audio, position)
+                .map_err(|error| error.to_string())
         }
 
         #[cfg(target_os = "windows")]
@@ -500,7 +645,9 @@ async fn complete_captured_dictation(
             let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
             let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
             let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
-            workflow.complete(audio).map_err(|error| error.to_string())
+            workflow
+                .complete(audio, position)
+                .map_err(|error| error.to_string())
         }
 
         #[cfg(target_os = "linux")]
@@ -524,17 +671,135 @@ async fn complete_captured_dictation(
             let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
             let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
             let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
-            workflow.complete(audio).map_err(|error| error.to_string())
+            workflow
+                .complete(audio, position)
+                .map_err(|error| error.to_string())
         }
 
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         {
-            let _ = (runtime, audio, target_pid);
+            let _ = (runtime, audio, target_pid, position);
             Err("text insertion is not implemented for this platform".to_string())
         }
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    }
+}
+
+/// Take the speech captured so far as a Dictation Segment, leaving the
+/// microphone running. Called only from the worker thread.
+fn take_dictation_segment(app: &tauri::AppHandle) -> Option<slugtale_lib::CapturedAudio> {
+    let capture = app.state::<AudioCaptureState>();
+    let flushed = capture
+        .0
+        .lock()
+        .map_err(|_| "audio capture mutex poisoned".to_string())
+        .and_then(|mut guard| guard.flush_segment().map_err(|error| error.to_string()));
+
+    match flushed {
+        Ok(audio) => audio,
+        Err(error) => {
+            eprintln!("could not take dictation segment: {error}");
+            None
+        }
+    }
+}
+
+/// Start the single worker that transcribes and inserts Dictation Segments.
+///
+/// Segments are decoded one at a time on purpose. Whisper would happily be
+/// asked for two at once, but then a short segment could overtake a long one and
+/// the user's words would land out of order — so the queue is the ordering
+/// guarantee, and the cost is that a slow segment delays the next.
+fn start_dictation_segment_worker(app: &tauri::AppHandle) -> Result<(), String> {
+    let (sender, receiver) = std::sync::mpsc::channel::<DictationSegmentJob>();
+    {
+        let segments = app.state::<DictationSegments>();
+        let mut jobs = segments
+            .jobs
+            .lock()
+            .map_err(|_| "dictation segment queue mutex poisoned".to_string())?;
+        *jobs = Some(sender);
+    }
+
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("slugtale-dictation-segments".to_string())
+        .spawn(move || {
+            // Which dictation the worker is part-way through, and whether it has
+            // put anything into the text target yet. The second answers only one
+            // question — whether the next segment opens the text or appends to
+            // it — and it has to be the worker's, because only the worker knows
+            // that an earlier segment transcribed to nothing.
+            let mut dictation = 0u64;
+            let mut inserted_any = false;
+
+            while let Ok(job) = receiver.recv() {
+                let segments = app.state::<DictationSegments>();
+                let (number, last) = match &job {
+                    DictationSegmentJob::PauseFlush { dictation } => (*dictation, false),
+                    DictationSegmentJob::Last { dictation, .. } => (*dictation, true),
+                };
+
+                if number != dictation {
+                    dictation = number;
+                    inserted_any = false;
+                }
+
+                let audio = match job {
+                    // A Pause Flush is honoured only while its dictation is
+                    // still recording. If Stop already drained the ring, this
+                    // finds nothing and skips — nothing is lost, because Stop
+                    // took the same audio into the last segment.
+                    DictationSegmentJob::PauseFlush { .. } => segments
+                        .is_recording(number)
+                        .then(|| take_dictation_segment(&app))
+                        .flatten(),
+                    DictationSegmentJob::Last { audio, .. } => {
+                        (!segments.is_cancelled(number)).then_some(audio)
+                    }
+                };
+
+                if let Some(audio) = audio {
+                    let position = if inserted_any {
+                        slugtale_lib::DictationSegmentPosition::Continuation
+                    } else {
+                        slugtale_lib::DictationSegmentPosition::First
+                    };
+                    // One worker serves every dictation for the life of the app,
+                    // so a panic here would silently disable insertion from now
+                    // on rather than spoiling a single dictation. Contain it.
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_dictation_segment(&app, audio, position)
+                    }));
+                    match outcome {
+                        Ok(Ok(outcome)) => {
+                            if outcome.inserted {
+                                eprintln!(
+                                    "inserted dictation segment: {} chars",
+                                    outcome.transcription.text.chars().count()
+                                );
+                            } else {
+                                eprintln!("dictation segment heard nothing; inserted nothing");
+                            }
+                            inserted_any |= outcome.inserted;
+                            if outcome.rescued {
+                                segments.suspend_pause_flushes();
+                            }
+                        }
+                        Ok(Err(error)) => eprintln!("dictation workflow failed: {error}"),
+                        Err(_) => {
+                            eprintln!("dictation segment panicked; the queue stays open")
+                        }
+                    }
+                }
+
+                if last {
+                    hide_dictation_bar(&app);
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1651,6 +1916,7 @@ fn main() {
         .manage(RecordingFeedbackState::default())
         .manage(FocusTargetState::default())
         .manage(AudioCaptureState::default())
+        .manage(DictationSegments::default())
         .manage(HotkeyRegistrationState::default())
         .manage(AppleSpeechEngineState::default())
         .plugin(tauri_plugin_autostart::init(
@@ -1662,6 +1928,9 @@ fn main() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             slugtale_lib::setup_tray(app)?;
             setup_configured_hotkey(app)?;
+            // The Dictation Segment worker outlives every dictation: it is what
+            // keeps segments landing in the order they were spoken.
+            start_dictation_segment_worker(app.handle()).map_err(std::io::Error::other)?;
             // Reconcile the OS login item with the stored preference so a moved or
             // rebuilt app (dev binaries change path) does not drift out of sync.
             let settings = load_current_settings(app.handle());

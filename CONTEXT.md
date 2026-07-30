@@ -9,7 +9,7 @@ A recording session where the user speaks and expects resulting text to be writt
 _Avoid_: Speech job, voice note
 
 **Dictation Workflow**:
-The full path from a started dictation through final transcription, transcript cleanup, immediate insertion, and insertion rescue when insertion fails.
+The full path from a started dictation through final transcription, transcript cleanup, immediate insertion, and insertion rescue when insertion fails. It runs once per Dictation Segment, so a single dictation may run it several times.
 _Avoid_: Speech pipeline, transcription flow
 
 **Transcription**:
@@ -17,8 +17,20 @@ The text produced from captured speech before it is inserted into a text target.
 _Avoid_: Output, result
 
 **Final Transcription**:
-The completed transcription produced after the user stops dictating. Slugtale's first version only needs to show or insert final transcriptions, not live partial text.
+The completed transcription of one Dictation Segment. A dictation produces one per Segment Pause plus one when the user stops, so a long dictation yields several. Every one of them is final: Slugtale still never shows or inserts live partial text.
 _Avoid_: Finished output, final text
+
+**Dictation Segment**:
+A span of a dictation's speech that Slugtale transcribes and inserts on its own. A Segment Pause ends one and the next begins immediately, so the microphone never stops. A dictation containing no pause is a single segment inserted when the user stops, which is exactly the original one-insertion behaviour.
+_Avoid_: Chunk, part, utterance, block
+
+**Segment Pause**:
+Roughly five seconds during which the user stays at or below the voice level the Dictation Bar treats as speech. It ends the current Dictation Segment while recording carries on. The length is fixed, and the pause only counts once the user has actually said something, so a dictation that opens with silence never flushes an empty segment.
+_Avoid_: Silence timeout, VAD gap, endpointing
+
+**Pause Flush**:
+Transcribing and inserting a Dictation Segment while the dictation is still running. Each pause flush is an ordinary Immediate Insertion at the caret, and segments are inserted in the order they were spoken however long each one takes to decode.
+_Avoid_: Partial insert, streaming insert, live insert
 
 **Transcript Cleanup**:
 Deterministic formatting applied to a final transcription before insertion, such as trimming whitespace, normalizing spaces, or capitalizing the first character. Transcript cleanup is not rewriting.
@@ -121,7 +133,7 @@ A future workflow where selected text in a text target is replaced or transforme
 _Avoid_: Edit mode, write mode
 
 **Live Preview**:
-A future workflow where partial transcription text is shown while the user is still speaking. Live preview is not part of the first version.
+A future workflow where partial transcription text is shown while the user is still speaking. Live preview is not part of the first version. A Pause Flush is not live preview: it inserts completed text for speech the user has finished saying, never a partial guess at speech in progress.
 _Avoid_: Streaming preview, partial output
 
 **Beam Search**:

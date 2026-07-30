@@ -20,6 +20,8 @@ bar app that stays out of the way until the user presses a hotkey.
 - Local model download, reveal, and deletion for Whisper `base.en`
   (`ggml-base.en.bin`).
 - Local audio capture through `cpal`.
+- Long dictations insert as you speak: a five-second pause inserts the speech so
+  far and keeps recording, appending later speech after it.
 - Local English transcription through `whisper-rs` when built with the
   `local-whisper-runtime` feature; signed macOS developer builds also enable
   `local-whisper-runtime-metal`.
@@ -272,6 +274,26 @@ path and can reveal it in Finder.
 In toggle mode, press the hotkey once to start and again to stop. In hold mode,
 hold the hotkey while speaking and release it to stop. Press Escape or the
 cancel button to discard an active recording.
+
+### Long dictations insert as you go
+
+You do not have to stop to see your words. If you go quiet for about five
+seconds, Slugtale transcribes what you have said so far and inserts it while the
+microphone stays on. Carry on speaking and the next stretch is appended after
+it. Stopping inserts whatever is left. A dictation with no five-second gap in it
+behaves exactly as before: one insertion, when you stop.
+
+Three things are worth knowing:
+
+- Each insertion types into the app you started dictating into, at wherever its
+  cursor is at that moment. If you click somewhere else mid-dictation, the next
+  stretch lands at the new spot — Slugtale does not track the cursor between
+  insertions.
+- Escape stops the dictation and throws away anything not yet inserted. It does
+  not remove text that has already landed; use your app's own undo for that.
+- The five seconds is fixed for now, and the pause is measured the same way the
+  bar's waveform reacts, so if the bar reads you as still talking then the pause
+  has not started yet.
 
 ## Development Commands
 

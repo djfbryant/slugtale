@@ -20,6 +20,33 @@ impl std::fmt::Display for DictationWorkflowError {
 
 impl std::error::Error for DictationWorkflowError {}
 
+/// Where a Dictation Segment sits in its dictation, which is the whole of what
+/// Transcript Cleanup needs to know to join it onto what came before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictationSegmentPosition {
+    /// The first text this dictation will put into the text target.
+    First,
+    /// Text appended after something this dictation has already inserted.
+    Continuation,
+}
+
+/// What one run of the Dictation Workflow did. A dictation now produces one of
+/// these per Dictation Segment rather than exactly one per dictation, so the
+/// caller needs more than the text back: it has to know whether anything was
+/// actually inserted (to place the next segment) and whether the Insertion
+/// Rescue was involved (because a rescue once per Segment Pause would clobber
+/// the clipboard and notify the user every few seconds).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictationSegmentOutcome {
+    pub transcription: FinalTranscription,
+    /// Whether this segment put text into the text target, directly or through
+    /// the Insertion Rescue. A segment that transcribed to nothing inserts
+    /// nothing, which leaves the next segment still the dictation's first.
+    pub inserted: bool,
+    /// Whether Text Insertion failed and the Insertion Rescue took over.
+    pub rescued: bool,
+}
+
 pub struct DictationWorkflow<'a> {
     runtime: &'a dyn AsrRuntime,
     text_insertion: &'a dyn TextInsertion,
@@ -39,41 +66,91 @@ impl<'a> DictationWorkflow<'a> {
         }
     }
 
+    /// Transcribe one Dictation Segment, clean it, and insert it at the caret.
+    ///
+    /// `position` says whether this is the dictation's opening text or an
+    /// append after an earlier Segment Pause already inserted some.
     pub fn complete(
         &self,
         audio: CapturedAudio,
-    ) -> Result<FinalTranscription, DictationWorkflowError> {
+        position: DictationSegmentPosition,
+    ) -> Result<DictationSegmentOutcome, DictationWorkflowError> {
         let transcription = transcribe_captured_audio(self.runtime, audio)
             .map_err(DictationWorkflowError::Transcription)?;
-        let transcription = clean_final_transcription(transcription);
+        let transcription = clean_dictation_segment(transcription, position);
+
+        // A segment that heard nothing must not be inserted. Before Segment
+        // Pauses this only mattered for a whole silent dictation; now a user who
+        // pauses, coughs, and pauses again would otherwise get a stray space
+        // typed into their document.
+        if transcription.text.trim().is_empty() {
+            return Ok(DictationSegmentOutcome {
+                transcription,
+                inserted: false,
+                rescued: false,
+            });
+        }
+
+        let mut rescued = false;
         if self.text_insertion.insert(&transcription).is_err() {
+            rescued = true;
             self.insertion_rescue
                 .rescue(&transcription)
                 .map_err(DictationWorkflowError::InsertionRescue)?;
         }
-        Ok(transcription)
+
+        Ok(DictationSegmentOutcome {
+            transcription,
+            inserted: true,
+            rescued,
+        })
     }
 }
 
-/// Apply deterministic Transcript Cleanup before insertion without rewriting
-/// meaning or adding generated text.
-pub fn clean_final_transcription(transcription: FinalTranscription) -> FinalTranscription {
+/// Apply deterministic Transcript Cleanup to a Dictation Segment before
+/// insertion, without rewriting meaning or adding generated text.
+///
+/// The two positions differ in exactly two ways, and both exist because the
+/// transcription engine treats every segment as a fresh utterance:
+///
+/// - A continuation is prefixed with one space, because the engine's text starts
+///   flush against whatever is already in the document.
+/// - A continuation keeps whatever casing the engine produced. The first segment
+///   still gets its first letter capitalised, but doing that mid-dictation would
+///   force a capital onto speech that carried on from the previous sentence.
+pub fn clean_dictation_segment(
+    transcription: FinalTranscription,
+    position: DictationSegmentPosition,
+) -> FinalTranscription {
     let normalized = transcription
         .text
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let mut chars = normalized.chars();
-    let Some(first) = chars.next() else {
+    if normalized.is_empty() {
         return FinalTranscription { text: normalized };
-    };
-    let text = if first.is_lowercase() {
-        format!("{}{}", first.to_uppercase(), chars.as_str())
-    } else {
-        normalized
+    }
+
+    let text = match position {
+        DictationSegmentPosition::Continuation => format!(" {normalized}"),
+        DictationSegmentPosition::First => {
+            let mut chars = normalized.chars();
+            let first = chars.next().expect("normalized text is not empty");
+            if first.is_lowercase() {
+                format!("{}{}", first.to_uppercase(), chars.as_str())
+            } else {
+                normalized
+            }
+        }
     };
 
     FinalTranscription { text }
+}
+
+/// Transcript Cleanup for a dictation's opening text. Retained as the name the
+/// rest of the app already uses for the single-insertion case.
+pub fn clean_final_transcription(transcription: FinalTranscription) -> FinalTranscription {
+    clean_dictation_segment(transcription, DictationSegmentPosition::First)
 }
 
 #[cfg(test)]
@@ -88,15 +165,70 @@ mod tests {
         let rescue = FakeInsertionRescue::default();
         let workflow = DictationWorkflow::new(&runtime, &insertion, &rescue);
 
-        let transcription = workflow
-            .complete(CapturedAudio::mono_16khz(vec![0.0, 0.25]))
+        let outcome = workflow
+            .complete(
+                CapturedAudio::mono_16khz(vec![0.0, 0.25]),
+                DictationSegmentPosition::First,
+            )
             .unwrap();
 
-        assert_eq!(transcription.text, "Hello from slugtale");
+        assert_eq!(outcome.transcription.text, "Hello from slugtale");
+        assert!(outcome.inserted);
+        assert!(!outcome.rescued);
         assert_eq!(
             insertion.inserted.borrow().as_slice(),
             &["Hello from slugtale"]
         );
+    }
+
+    #[test]
+    fn a_continuation_segment_appends_after_the_text_already_inserted() {
+        // Whisper punctuates and capitalises each segment as its own utterance,
+        // so the only thing missing when appending is the separating space.
+        let runtime = FakeAsrRuntime::new("This is the second paragraph.");
+        let insertion = FakeTextInsertion::default();
+        let rescue = FakeInsertionRescue::default();
+        let workflow = DictationWorkflow::new(&runtime, &insertion, &rescue);
+
+        let outcome = workflow
+            .complete(
+                CapturedAudio::mono_16khz(vec![0.0, 0.25]),
+                DictationSegmentPosition::Continuation,
+            )
+            .unwrap();
+
+        assert_eq!(outcome.transcription.text, " This is the second paragraph.");
+        assert!(outcome.inserted);
+        assert_eq!(
+            insertion.inserted.borrow().as_slice(),
+            &[" This is the second paragraph."]
+        );
+    }
+
+    #[test]
+    fn a_segment_that_heard_nothing_inserts_nothing() {
+        // Otherwise a Segment Pause over a cough would type a bare space into
+        // the user's document, and would count as inserted text for the next
+        // segment's spacing.
+        let runtime = FakeAsrRuntime::new("   ");
+        let insertion = FakeTextInsertion::default();
+        let rescue = FakeInsertionRescue::default();
+        let workflow = DictationWorkflow::new(&runtime, &insertion, &rescue);
+
+        for position in [
+            DictationSegmentPosition::First,
+            DictationSegmentPosition::Continuation,
+        ] {
+            let outcome = workflow
+                .complete(CapturedAudio::mono_16khz(vec![0.0]), position)
+                .unwrap();
+
+            assert!(!outcome.inserted, "{position:?} should not insert");
+            assert!(!outcome.rescued);
+        }
+
+        assert!(insertion.inserted.borrow().is_empty());
+        assert!(rescue.rescued.borrow().is_empty());
     }
     #[test]
     fn dictation_workflow_rescues_cleaned_transcription_when_insertion_fails() {
@@ -105,15 +237,49 @@ mod tests {
         let rescue = FakeInsertionRescue::default();
         let workflow = DictationWorkflow::new(&runtime, &insertion, &rescue);
 
-        let transcription = workflow
-            .complete(CapturedAudio::mono_16khz(vec![0.0]))
+        let outcome = workflow
+            .complete(
+                CapturedAudio::mono_16khz(vec![0.0]),
+                DictationSegmentPosition::First,
+            )
             .unwrap();
 
-        assert_eq!(transcription.text, "Rescue this transcription");
+        assert_eq!(outcome.transcription.text, "Rescue this transcription");
+        assert!(outcome.inserted);
+        // The caller suspends further Segment Pauses on this, so a dictation
+        // without Accessibility trust does not clobber the clipboard and notify
+        // once every five seconds.
+        assert!(outcome.rescued);
         assert_eq!(
             rescue.rescued.borrow().as_slice(),
             &["Rescue this transcription"]
         );
+    }
+
+    #[test]
+    fn continuation_cleanup_keeps_the_engine_casing_and_adds_one_space() {
+        // A continuation carries on from speech that may not have ended a
+        // sentence, so forcing a capital here would corrupt the reading.
+        let cleaned = clean_dictation_segment(
+            FinalTranscription {
+                text: "  and then   we left  ".to_string(),
+            },
+            DictationSegmentPosition::Continuation,
+        );
+
+        assert_eq!(cleaned.text, " and then we left");
+    }
+
+    #[test]
+    fn continuation_cleanup_of_silence_stays_empty_rather_than_a_bare_space() {
+        let cleaned = clean_dictation_segment(
+            FinalTranscription {
+                text: "   ".to_string(),
+            },
+            DictationSegmentPosition::Continuation,
+        );
+
+        assert_eq!(cleaned.text, "");
     }
     #[test]
     fn clean_final_transcription_trims_and_normalizes_repeated_spaces() {
