@@ -1112,7 +1112,9 @@ impl DictationBarAppearance {
 
 fn show_dictation_bar(app: &tauri::AppHandle, phase: DictationPhase) {
     if let Some(window) = app.get_webview_window("dictation-bar") {
-        let appearance = DictationBarAppearance::from_settings(&load_current_settings(app));
+        let settings = load_current_settings(app);
+        let appearance = DictationBarAppearance::from_settings(&settings);
+        let bar_display = settings.bar_display;
         // Tell the frontend which state to render before showing, so the bar never
         // flashes a stale "recording" pill when it reappears for transcription.
         let _ = window.emit("dictation-phase", phase.as_str());
@@ -1129,7 +1131,7 @@ fn show_dictation_bar(app: &tauri::AppHandle, phase: DictationPhase) {
         // freezes the tray. Hand the window work to the main thread instead of
         // waiting on it (slugtale-1n4).
         let _ = app.run_on_main_thread(move || {
-            position_dictation_bar(&window, appearance.position);
+            position_dictation_bar(&window, appearance.position, &bar_display);
             // Start click-through: at rest the orb covers a seventh of the window,
             // and the pointer is somewhere else entirely. The bar takes input back
             // only when the hit test says the pointer is genuinely over the paint.
@@ -1149,17 +1151,28 @@ fn hide_dictation_bar(app: &tauri::AppHandle) {
     }
 }
 
-/// Read the usable work area for the display the Dictation Bar is on, in the
-/// form the pure geometry wants. Falls back to the primary monitor when the
-/// current one is unknown.
-fn dictation_bar_monitor(window: &tauri::WebviewWindow) -> Option<slugtale_lib::MonitorGeometry> {
-    let monitor = match window.current_monitor() {
-        Ok(Some(monitor)) => monitor,
-        _ => match window.primary_monitor() {
-            Ok(Some(monitor)) => monitor,
-            _ => return None,
-        },
+/// Read the usable work area for the selected Dictation Bar display, in the
+/// form the pure geometry wants. A disconnected named display falls back to the
+/// main display so the bar never gets stranded off-screen.
+fn dictation_bar_monitor(
+    window: &tauri::WebviewWindow,
+    display: &slugtale_lib::BarDisplay,
+) -> Option<slugtale_lib::MonitorGeometry> {
+    let primary = window.primary_monitor().ok().flatten();
+    let monitor = match display {
+        slugtale_lib::BarDisplay::Primary => primary,
+        slugtale_lib::BarDisplay::Monitor(name) => window
+            .available_monitors()
+            .ok()
+            .and_then(|monitors| {
+                monitors
+                    .into_iter()
+                    .find(|monitor| monitor.name() == Some(name))
+            })
+            .or(primary),
     };
+
+    let monitor = monitor?;
 
     let work_area = monitor.work_area();
 
@@ -1172,11 +1185,15 @@ fn dictation_bar_monitor(window: &tauri::WebviewWindow) -> Option<slugtale_lib::
     })
 }
 
-/// Place the Dictation Bar along the bottom edge of the active display's work
+/// Place the Dictation Bar along the bottom edge of the selected display's work
 /// area, at the corner the user chose. The geometry itself lives in lib.rs;
 /// this only supplies the live monitor and window reads.
-fn position_dictation_bar(window: &tauri::WebviewWindow, position: slugtale_lib::BarPosition) {
-    let Some(monitor) = dictation_bar_monitor(window) else {
+fn position_dictation_bar(
+    window: &tauri::WebviewWindow,
+    position: slugtale_lib::BarPosition,
+    display: &slugtale_lib::BarDisplay,
+) {
+    let Some(monitor) = dictation_bar_monitor(window, display) else {
         return;
     };
     let Ok(size) = window.outer_size() else {
@@ -1320,6 +1337,51 @@ fn get_settings(app: tauri::AppHandle) -> slugtale_lib::Settings {
     load_current_settings(&app)
 }
 
+/// One selectable display in the Settings UI. The stable monitor name is stored
+/// in the Settings File; its label adds resolution so similarly named displays
+/// remain distinguishable.
+#[derive(serde::Serialize)]
+struct DictationBarDisplayOption {
+    value: slugtale_lib::BarDisplay,
+    label: String,
+}
+
+/// Return the displays that can host the Dictation Bar right now. Displays with
+/// no stable name cannot be selected safely across app launches, but the main
+/// display is always available as the fallback choice.
+#[tauri::command]
+fn dictation_bar_displays(app: tauri::AppHandle) -> Vec<DictationBarDisplayOption> {
+    let primary = app.primary_monitor().ok().flatten();
+    let primary_label = primary
+        .as_ref()
+        .and_then(|monitor| monitor.name())
+        .map(|name| format!("Main display ({name})"))
+        .unwrap_or_else(|| "Main display".to_string());
+    let mut displays = vec![DictationBarDisplayOption {
+        value: slugtale_lib::BarDisplay::Primary,
+        label: primary_label,
+    }];
+
+    let monitors = app.available_monitors().unwrap_or_default();
+    for monitor in monitors {
+        if primary.as_ref().is_some_and(|primary| {
+            monitor.position() == primary.position() && monitor.size() == primary.size()
+        }) {
+            continue;
+        }
+        let Some(name) = monitor.name().cloned() else {
+            continue;
+        };
+        let size = monitor.size();
+        displays.push(DictationBarDisplayOption {
+            value: slugtale_lib::BarDisplay::Monitor(name.clone()),
+            label: format!("{name} ({} × {})", size.width, size.height),
+        });
+    }
+
+    displays
+}
+
 #[tauri::command]
 fn open_microphone_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -1416,9 +1478,15 @@ fn save_dictation_bar_settings(
     app: tauri::AppHandle,
     bar_position: slugtale_lib::BarPosition,
     accent_color: slugtale_lib::AccentColor,
+    bar_display: slugtale_lib::BarDisplay,
 ) -> Result<slugtale_lib::Settings, String> {
     let mut settings = load_current_settings(&app);
-    slugtale_lib::apply_dictation_bar_settings(&mut settings, bar_position, accent_color);
+    slugtale_lib::apply_dictation_bar_settings(
+        &mut settings,
+        bar_position,
+        accent_color,
+        bar_display,
+    );
     save_current_settings(&app, &settings)?;
     apply_dictation_bar_appearance(&app, &settings);
     Ok(settings)
@@ -1439,8 +1507,9 @@ fn apply_dictation_bar_appearance(app: &tauri::AppHandle, settings: &slugtale_li
     }
     // Repositioning reads monitor geometry, which blocks on the main thread;
     // hand it over rather than waiting on it from here (slugtale-1n4).
+    let bar_display = settings.bar_display.clone();
     let _ = app.run_on_main_thread(move || {
-        position_dictation_bar(&window, appearance.position);
+        position_dictation_bar(&window, appearance.position, &bar_display);
     });
 }
 
@@ -2021,6 +2090,7 @@ fn main() {
             show_settings,
             get_settings_readiness,
             get_settings,
+            dictation_bar_displays,
             open_microphone_settings,
             open_text_insertion_settings,
             save_hotkey_settings,

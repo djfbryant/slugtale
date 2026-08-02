@@ -252,7 +252,7 @@ test("a blocked transcription engine shows the reason the backend reported", asy
   );
 });
 
-test("changing one dictation bar setting still sends the pair the backend expects", async () => {
+test("changing one dictation bar setting still sends the complete appearance the backend expects", async () => {
   const calls = [];
   const { saveDictationBarSettings } = loadSettingsScript({
     async invoke(command, args) {
@@ -266,11 +266,44 @@ test("changing one dictation bar setting still sends the pair the backend expect
 
   await saveDictationBarSettings({ accentColor: "violet" });
 
-  // The accent moved; the position came along at its current value rather than
-  // being sent as undefined and cleared.
+  // The accent moved; the position and display came along at their current
+  // values rather than being sent as undefined and cleared.
   assert.deepEqual(calls.at(-1), {
     command: "save_dictation_bar_settings",
-    args: { barPosition: "bottom-center", accentColor: "violet" }
+    args: {
+      barPosition: "bottom-center",
+      accentColor: "violet",
+      barDisplay: "primary"
+    }
+  });
+});
+
+test("choosing a display sends it with the current bar appearance", async () => {
+  const calls = [];
+  const { saveDictationBarSettings } = loadSettingsScript({
+    async invoke(command, args) {
+      calls.push({ command, args: { ...args } });
+      if (command === "save_dictation_bar_settings") {
+        return {
+          ...args,
+          bar_position: args.barPosition,
+          accent_color: args.accentColor,
+          bar_display: args.barDisplay
+        };
+      }
+      return {};
+    }
+  });
+
+  await saveDictationBarSettings({ barDisplay: { monitor: "Studio Display" } });
+
+  assert.deepEqual(calls.at(-1), {
+    command: "save_dictation_bar_settings",
+    args: {
+      barPosition: "bottom-center",
+      accentColor: "red",
+      barDisplay: { monitor: "Studio Display" }
+    }
   });
 });
 

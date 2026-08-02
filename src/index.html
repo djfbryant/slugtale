@@ -262,6 +262,18 @@
       padding: 3px 8px;
     }
 
+    select {
+      min-height: 28px;
+      max-width: 240px;
+      border: 1px solid var(--border-strong);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.84rem;
+      padding: 3px 8px;
+    }
+
     input[type="text"][hidden] { display: none; }
     input[type="checkbox"] { width: 36px; height: 20px; accent-color: var(--accent); }
 
@@ -656,6 +668,15 @@
           <p id="engine-message" class="note" aria-live="polite"></p>
           <div class="row">
             <span class="row-label">
+              Display
+              <span class="row-sub">Where the Dictation Bar appears</span>
+            </span>
+            <select id="bar-display" aria-label="Dictation Bar display">
+              <option value="primary">Main display</option>
+            </select>
+          </div>
+          <div class="row">
+            <span class="row-label">
               Bar position
               <span class="row-sub">Along the bottom of the screen</span>
             </span>
@@ -796,6 +817,7 @@
       speed_profile: "balanced",
       bar_position: "bottom-center",
       accent_color: "red",
+      bar_display: "primary",
       primary_engine: "whisper",
       second_opinion: "off"
     };
@@ -916,6 +938,7 @@
     let latestReport = fallbackReport;
     let readinessSummary = "Checking dictation readiness…";
     let currentSettings = { ...fallbackSettings };
+    let dictationBarDisplays = [{ value: "primary", label: "Main display" }];
     let latestEngines = fallbackEngines;
     // Saving the primary engine or the Second Opinion mode share one command, so
     // one flag disables both controls while either is in flight.
@@ -1174,6 +1197,8 @@
         button.disabled = savingDictationBar;
       });
 
+      renderDictationBarDisplays();
+
       const secondOpinion = currentSettings.second_opinion || "off";
       SECOND_OPINION_MODES.forEach((option) => {
         const button = document.getElementById(`second-opinion-${option}`);
@@ -1184,6 +1209,34 @@
       const launchToggle = document.getElementById("launch-at-login-toggle");
       launchToggle.checked = Boolean(currentSettings.launch_at_login);
       launchToggle.disabled = savingLaunchAtLogin;
+    }
+
+    function barDisplayKey(display) {
+      return display === "primary" ? "primary" : `monitor:${display.monitor}`;
+    }
+
+    function displayFromBarDisplayKey(key) {
+      return key === "primary" ? "primary" : { monitor: key.slice("monitor:".length) };
+    }
+
+    function renderDictationBarDisplays() {
+      const select = document.getElementById("bar-display");
+      const selected = currentSettings.bar_display || "primary";
+      const selectedKey = barDisplayKey(selected);
+      const displays = dictationBarDisplays.some((display) => display.value === "primary")
+        ? dictationBarDisplays
+        : [{ value: "primary", label: "Main display" }, ...dictationBarDisplays];
+
+      select.replaceChildren(...displays.map((display) => {
+        const option = document.createElement("option");
+        option.value = barDisplayKey(display.value);
+        option.textContent = display.label;
+        return option;
+      }));
+      select.value = displays.some((display) => barDisplayKey(display.value) === selectedKey)
+        ? selectedKey
+        : "primary";
+      select.disabled = savingDictationBar;
     }
 
     async function saveLaunchAtLogin(enabled) {
@@ -1251,18 +1304,20 @@
       }
     }
 
-    // Position and accent save together: both describe how the Dictation Bar
-    // looks, and the backend applies them to a bar already on screen so the user
-    // can judge the choice while making it.
-    async function saveDictationBarSettings({ barPosition, accentColor }) {
+    // Position, accent, and display save together: all describe where and how
+    // the Dictation Bar appears, and the backend applies them to a bar already
+    // on screen so the user can judge the choice while making it.
+    async function saveDictationBarSettings({ barPosition, accentColor, barDisplay }) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };
       const nextPosition = barPosition || currentSettings.bar_position || "bottom-center";
       const nextAccent = accentColor || currentSettings.accent_color || "red";
+      const nextDisplay = barDisplay || currentSettings.bar_display || "primary";
       const nextSettings = {
         ...currentSettings,
         bar_position: nextPosition,
-        accent_color: nextAccent
+        accent_color: nextAccent,
+        bar_display: nextDisplay
       };
       const messageEl = document.getElementById("dictation-bar-message");
 
@@ -1279,7 +1334,8 @@
       try {
         const saved = await invoke("save_dictation_bar_settings", {
           barPosition: nextPosition,
-          accentColor: nextAccent
+          accentColor: nextAccent,
+          barDisplay: nextDisplay
         });
         savingDictationBar = false;
         renderSettings(saved);
@@ -1623,6 +1679,18 @@
       }
     }
 
+    async function loadDictationBarDisplays() {
+      const invoke = tauriInvoke();
+      if (!invoke) return;
+
+      try {
+        dictationBarDisplays = await invoke("dictation_bar_displays");
+        renderSettings(currentSettings);
+      } catch (error) {
+        console.error("Could not load Dictation Bar displays", error);
+      }
+    }
+
     async function saveHotkeySettings(hotkey, activationMode) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };
@@ -1757,7 +1825,13 @@
     }
 
     async function refreshSetup() {
-      await Promise.all([loadReadiness(), loadModelStatus(), loadSettings(), loadEngines()]);
+      await Promise.all([
+        loadReadiness(),
+        loadModelStatus(),
+        loadSettings(),
+        loadDictationBarDisplays(),
+        loadEngines()
+      ]);
     }
 
     function showMessageError(text) {
@@ -1893,6 +1967,14 @@
           if (accent === currentSettings.accent_color) return;
           saveDictationBarSettings({ accentColor: accent });
         });
+      });
+
+      document.getElementById("bar-display").addEventListener("change", (event) => {
+        const display = displayFromBarDisplayKey(event.target.value);
+        if (barDisplayKey(display) === barDisplayKey(currentSettings.bar_display || "primary")) {
+          return;
+        }
+        saveDictationBarSettings({ barDisplay: display });
       });
 
       SECOND_OPINION_MODES.forEach((mode) => {
