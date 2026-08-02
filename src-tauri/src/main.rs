@@ -109,7 +109,10 @@ impl DictationSegments {
     }
 
     fn is_cancelled(&self, dictation: u64) -> bool {
-        dictation <= self.cancelled_through.load(std::sync::atomic::Ordering::SeqCst)
+        dictation
+            <= self
+                .cancelled_through
+                .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Whether `dictation` is still the one being recorded. A Pause Flush is
@@ -120,7 +123,8 @@ impl DictationSegments {
     }
 
     fn suspend_pause_flushes(&self) {
-        self.rescued.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.rescued
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn pause_flushes_suspended(&self) -> bool {
@@ -198,14 +202,65 @@ impl Default for AppleSpeechEngineState {
     }
 }
 
+/// Resolve every Transcription Engine to the one managed instance of its
+/// provider, so that installing assets from Settings is visible immediately.
+/// Two instances would each cache their own availability probe, and the router
+/// would keep reading "not installed" after the user had just installed it.
+///
+/// Whisper is passed in rather than looked up because its runtime is keyed by
+/// the active model path (see [`TranscriptionEngines`]); `None` there means the
+/// models directory could not be resolved, which is itself a Whisper that cannot
+/// run. Returning `None` for any engine means this build registered no provider
+/// for it at all.
+fn engine_resolver(
+    app: &tauri::AppHandle,
+    whisper_provider: Option<Arc<dyn TranscriptionProvider>>,
+) -> impl Fn(slugtale_lib::TranscriptionEngine) -> Option<Arc<dyn TranscriptionProvider>> + '_ {
+    let engines = app.try_state::<TranscriptionEngines>();
+    let apple = app.try_state::<AppleSpeechEngineState>();
+
+    move |engine| match engine {
+        slugtale_lib::TranscriptionEngine::Whisper => whisper_provider.clone(),
+        slugtale_lib::TranscriptionEngine::Parakeet => engines
+            .as_ref()
+            .and_then(|engines| engines.provider(engine)),
+        slugtale_lib::TranscriptionEngine::AppleSpeech => apple
+            .as_ref()
+            .map(|apple| apple.0.clone() as Arc<dyn TranscriptionProvider>),
+    }
+}
+
+/// What every Transcription Engine reports about itself right now, in
+/// [`slugtale_lib::TranscriptionEngine::ALL`] order.
+///
+/// Both the readiness report and the dictation router read availability through
+/// here so they cannot disagree: Settings saying "ready" while the router picks
+/// an engine that fails at transcription is exactly the bug this closes
+/// (slugtale-bre). Cheap enough for the hotkey path — every provider answers
+/// from a cached probe rather than re-examining the machine.
+fn engine_availability(
+    resolve: &impl Fn(slugtale_lib::TranscriptionEngine) -> Option<Arc<dyn TranscriptionProvider>>,
+) -> Vec<(
+    slugtale_lib::TranscriptionEngine,
+    slugtale_lib::EngineAvailability,
+)> {
+    slugtale_lib::TranscriptionEngine::ALL
+        .into_iter()
+        .filter_map(|engine| resolve(engine).map(|provider| (engine, provider.availability())))
+        .collect()
+}
+
 /// Assemble the engine stack for one dictation from the Settings File.
 ///
 /// Two fallbacks here are worth stating plainly, because both trade the user's
 /// stated preference for finishing the dictation:
 ///
 /// - A primary engine whose assets were deleted since it was chosen falls back
-///   to Whisper. Refusing to transcribe would punish the user for a setting
-///   they may not remember making.
+///   to whichever engine can actually run
+///   ([`slugtale_lib::engine_that_can_run`]). Refusing to transcribe would
+///   punish the user for a setting they may not remember making — but falling
+///   back to Whisper unconditionally was worse, because a build without
+///   `local-whisper-runtime` has no Whisper to fall back to (slugtale-bre).
 /// - The second opinion is whichever *available* engine is not the primary, in
 ///   the fixed [`slugtale_lib::TranscriptionEngine::ALL`] order. There is no
 ///   setting for it because benchmark slugtale-9dv has not yet established
@@ -218,31 +273,15 @@ fn transcription_router(
 ) -> slugtale_lib::SecondOpinionRouter {
     let whisper_provider: Arc<dyn TranscriptionProvider> =
         Arc::new(slugtale_lib::WhisperTranscriptionProvider::new(whisper));
+    let resolve = engine_resolver(app, Some(whisper_provider.clone()));
 
-    // Resolve every engine through the one managed instance of its provider, so
-    // that installing assets from Settings is visible here immediately. Two
-    // instances would each cache their own availability probe, and the router
-    // would keep reading "not installed" after the user had just installed it.
-    let engines = app.try_state::<TranscriptionEngines>();
-    let apple = app.try_state::<AppleSpeechEngineState>();
-    let resolve = |engine: slugtale_lib::TranscriptionEngine| -> Option<Arc<dyn TranscriptionProvider>> {
-        match engine {
-            slugtale_lib::TranscriptionEngine::Whisper => Some(whisper_provider.clone()),
-            slugtale_lib::TranscriptionEngine::Parakeet => {
-                engines.as_ref().and_then(|engines| engines.provider(engine))
-            }
-            slugtale_lib::TranscriptionEngine::AppleSpeech => apple
-                .as_ref()
-                .map(|apple| apple.0.clone() as Arc<dyn TranscriptionProvider>),
-        }
-    };
-
-    let requested = resolve(settings.primary_engine).unwrap_or_else(|| whisper_provider.clone());
-    let primary = if requested.availability().is_available() {
-        requested
-    } else {
-        whisper_provider.clone()
-    };
+    let primary =
+        slugtale_lib::engine_that_can_run(settings.primary_engine, &engine_availability(&resolve))
+            .and_then(&resolve)
+            // Nothing on this machine can transcribe. Keep Whisper so the
+            // dictation fails with the reason readiness already showed the user,
+            // rather than leaving the router with no engine at all.
+            .unwrap_or_else(|| whisper_provider.clone());
 
     let router = match settings.second_opinion {
         slugtale_lib::SecondOpinionMode::Off => slugtale_lib::SecondOpinionRouter::single(primary),
@@ -1192,7 +1231,28 @@ fn current_settings_readiness(app: &tauri::AppHandle) -> slugtale_lib::SettingsR
                 .as_ref()
                 .is_some_and(|path| PathBuf::from(path).exists())
         });
-    slugtale_lib::settings_readiness_report(&settings, &platform, local_model_ready)
+    slugtale_lib::settings_readiness_report(
+        &settings,
+        &platform,
+        local_model_ready,
+        &current_engine_availability(app, &settings),
+    )
+}
+
+/// Engine availability for the readiness report, asked of the same providers the
+/// dictation path uses so the two cannot disagree.
+fn current_engine_availability(
+    app: &tauri::AppHandle,
+    settings: &slugtale_lib::Settings,
+) -> Vec<(
+    slugtale_lib::TranscriptionEngine,
+    slugtale_lib::EngineAvailability,
+)> {
+    let whisper = whisper_engine_provider(app, settings)
+        .ok()
+        .map(|provider| Arc::new(provider) as Arc<dyn TranscriptionProvider>);
+
+    engine_availability(&engine_resolver(app, whisper))
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

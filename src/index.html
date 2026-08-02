@@ -774,6 +774,7 @@
         { id: "text_insertion", label: "Text insertion permission", ready: false, required: true },
         { id: "hotkey", label: "Hotkey", ready: false, required: true },
         { id: "local_model", label: "Local model", ready: false, required: true },
+        { id: "transcription_engine", label: "Transcription engine", ready: false, required: true },
         { id: "launch_at_login", label: "Launch at login", ready: true, required: false }
       ]
     };
@@ -873,6 +874,10 @@
       ...GUIDANCE_BY_PLATFORM[PLATFORM],
       hotkey: "Choose the hotkey that starts dictation while another app has focus.",
       local_model: "Download the local model before transcription can run.",
+      // Fallback only: the backend sends the engine's own reason as `detail`,
+      // because "this build has no Whisper" and "the model is not installed"
+      // need different actions from the user.
+      transcription_engine: "No transcription engine can run in this build.",
       launch_at_login: "Optional. Start Slugtale automatically when you sign in."
     };
 
@@ -882,6 +887,9 @@
     // panes instead, so the banner and the checklist can send the user there.
     const PANE_FOR_ITEM = {
       hotkey: "dictation",
+      // Engine choice lives on the Dictation pane, next to the engine list that
+      // states why each one is unavailable.
+      transcription_engine: "dictation",
       local_model: "model",
       launch_at_login: "general"
     };
@@ -971,7 +979,8 @@
       const button = document.getElementById("blocker-action");
       banner.hidden = false;
       document.getElementById("blocker-title").textContent = blocker.label;
-      document.getElementById("blocker-detail").textContent = guidance[blocker.id] || "";
+      document.getElementById("blocker-detail").textContent =
+        blocker.detail || guidance[blocker.id] || "";
       button.dataset.item = blocker.id;
       button.textContent = action ? action.label : "Set up";
     }
@@ -981,7 +990,8 @@
       const has = (id) => outstanding.some((item) => item.id === id);
 
       document.getElementById("badge-status").hidden = outstanding.length === 0;
-      document.getElementById("badge-dictation").hidden = !has("hotkey");
+      document.getElementById("badge-dictation").hidden =
+        !has("hotkey") && !has("transcription_engine");
       document.getElementById("badge-model").hidden = !has("local_model");
       document.getElementById("badge-general").hidden = true;
     }
@@ -1024,7 +1034,10 @@
         // Completed rows stay compact; guidance only appears where action is
         // still required, so the eye lands on what is left to do.
         if (!item.ready) {
-          const detail = guidance[item.id];
+          // The report may carry a reason only the backend knows — which engine
+          // this build compiled in, which assets are installed. Prefer it over
+          // the static copy, which cannot know any of that.
+          const detail = item.detail || guidance[item.id];
           if (detail) {
             const small = document.createElement("small");
             small.textContent = detail;
