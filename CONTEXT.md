@@ -85,7 +85,7 @@ The setting that starts Slugtale automatically when the user signs in. Slugtale 
 _Avoid_: Autostart, startup item
 
 **Dictation Readiness**:
-The state where Slugtale can actually start dictation. Dictation readiness requires microphone permission, text insertion permission, a configured hotkey, and a downloaded local model.
+The state where Slugtale can actually start dictation. Dictation readiness requires microphone permission, text insertion permission, a configured hotkey, a downloaded local model, and a transcription engine that can actually run — a downloaded model is not enough on its own, because a build compiled without that engine's runtime has the weights on disk and nothing able to decode them.
 _Avoid_: Setup complete, onboarding complete
 
 **Dictation Bar**:

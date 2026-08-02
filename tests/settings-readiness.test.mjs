@@ -214,6 +214,44 @@ test("background readiness refresh does not overwrite active permission polling 
   await action;
 });
 
+test("a blocked transcription engine shows the reason the backend reported", async () => {
+  // slugtale-bre: the model can be downloaded and dictation still impossible
+  // because this build compiled no runtime for it. Only the backend knows that,
+  // so the checklist must render its `detail` rather than the static copy.
+  const report = {
+    dictation_available: false,
+    items: [
+      { id: "local_model", label: "Local model", ready: true, required: true },
+      {
+        id: "transcription_engine",
+        label: "Transcription engine",
+        ready: false,
+        required: true,
+        detail: "Whisper base.en cannot run: this build was compiled without support for this engine"
+      }
+    ]
+  };
+  const { elements, loadReadiness } = loadSettingsScript({
+    async invoke(command) {
+      if (command === "get_settings_readiness") return report;
+      return {};
+    }
+  });
+
+  await loadReadiness();
+
+  const row = elements.get("readiness-list").children.at(-1);
+  const guidanceText = row.children
+    .flatMap((child) => child.children || [])
+    .find((child) => child.tagName === "small");
+
+  assert.equal(elements.get("overall-status").textContent, "Not ready");
+  assert.equal(
+    guidanceText.textContent,
+    "Whisper base.en cannot run: this build was compiled without support for this engine"
+  );
+});
+
 test("changing one dictation bar setting still sends the pair the backend expects", async () => {
   const calls = [];
   const { saveDictationBarSettings } = loadSettingsScript({

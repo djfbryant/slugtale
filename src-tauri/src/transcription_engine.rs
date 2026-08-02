@@ -290,6 +290,69 @@ pub trait TranscriptionProvider: Send + Sync {
     fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError>;
 }
 
+/// Which Transcription Engine will actually transcribe the next dictation, given
+/// what every engine reports about itself right now.
+///
+/// The rule is the preferred engine when it can run, otherwise the first engine
+/// in [`TranscriptionEngine::ALL`] order that can. Falling back matters because a
+/// user whose chosen engine's assets were deleted should still get a
+/// transcription rather than a dead hotkey; falling back *to an engine that can
+/// actually run* matters because Whisper — the obvious fallback — is itself
+/// unavailable in a build compiled without `local-whisper-runtime` (slugtale-bre).
+///
+/// Dictation Readiness and the Second Opinion router both ask through here, so
+/// Settings cannot report ready while the router quietly picks an engine that
+/// fails at transcription. An engine missing from `availability` is treated as
+/// unavailable: this build never resolved a provider for it.
+pub fn engine_that_can_run(
+    preferred: TranscriptionEngine,
+    availability: &[(TranscriptionEngine, EngineAvailability)],
+) -> Option<TranscriptionEngine> {
+    let can_run = |engine: TranscriptionEngine| {
+        availability
+            .iter()
+            .any(|(candidate, state)| *candidate == engine && state.is_available())
+    };
+
+    if can_run(preferred) {
+        return Some(preferred);
+    }
+
+    TranscriptionEngine::ALL
+        .into_iter()
+        .find(|candidate| can_run(*candidate))
+}
+
+/// Why dictation cannot transcribe at all, worded for Settings. `None` when some
+/// engine can run.
+///
+/// It quotes the preferred engine's own reason, because that is the engine the
+/// user chose and the reason they can act on — "the model has not been
+/// downloaded" is a different instruction from "this build has no Whisper". The
+/// reasons are non-content by construction ([`EngineUnavailable`]), so this is
+/// safe to render and to log.
+pub fn engine_blocked_reason(
+    preferred: TranscriptionEngine,
+    availability: &[(TranscriptionEngine, EngineAvailability)],
+) -> Option<String> {
+    if engine_that_can_run(preferred, availability).is_some() {
+        return None;
+    }
+
+    let reason = availability
+        .iter()
+        .find(|(candidate, _)| *candidate == preferred)
+        .and_then(|(_, state)| match state {
+            EngineAvailability::Available => None,
+            EngineAvailability::Unavailable(reason) => Some(reason),
+        });
+
+    Some(match reason {
+        Some(reason) => format!("{} cannot run: {reason}", preferred.display_name()),
+        None => format!("{} cannot run in this build.", preferred.display_name()),
+    })
+}
+
 /// How long a recording runs. The Second Opinion router compares this against
 /// the transcript length to catch an engine that returned far too little text
 /// for the speech it was given.
@@ -417,6 +480,117 @@ mod tests {
                 samples: vec![0.0; 16_000],
             }),
             Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn the_preferred_engine_runs_when_it_can() {
+        let availability = [
+            (TranscriptionEngine::Whisper, EngineAvailability::Available),
+            (TranscriptionEngine::Parakeet, EngineAvailability::Available),
+        ];
+
+        assert_eq!(
+            engine_that_can_run(TranscriptionEngine::Parakeet, &availability),
+            Some(TranscriptionEngine::Parakeet)
+        );
+        assert_eq!(
+            engine_blocked_reason(TranscriptionEngine::Parakeet, &availability),
+            None
+        );
+    }
+
+    #[test]
+    fn a_preferred_engine_that_cannot_run_falls_back_to_one_that_can() {
+        // The user's chosen engine lost its assets. Refusing to transcribe would
+        // punish them for a setting they may not remember making.
+        let availability = [
+            (TranscriptionEngine::Whisper, EngineAvailability::Available),
+            (
+                TranscriptionEngine::Parakeet,
+                EngineAvailability::Unavailable(EngineUnavailable::AssetsMissing {
+                    detail: "Parakeet assets are not installed.".to_string(),
+                }),
+            ),
+        ];
+
+        assert_eq!(
+            engine_that_can_run(TranscriptionEngine::Parakeet, &availability),
+            Some(TranscriptionEngine::Whisper)
+        );
+    }
+
+    #[test]
+    fn a_build_without_the_whisper_runtime_does_not_fall_back_to_whisper() {
+        // The bug this exists to stop (slugtale-bre): a default-feature build
+        // compiles no Whisper runtime, so falling back to Whisper produces a
+        // dictation that fails at transcription rather than one that works.
+        let availability = [
+            (
+                TranscriptionEngine::Whisper,
+                EngineAvailability::Unavailable(EngineUnavailable::RuntimeNotBuilt),
+            ),
+            (TranscriptionEngine::Parakeet, EngineAvailability::Available),
+        ];
+
+        assert_eq!(
+            engine_that_can_run(TranscriptionEngine::Whisper, &availability),
+            Some(TranscriptionEngine::Parakeet)
+        );
+    }
+
+    #[test]
+    fn no_engine_can_run_when_none_is_available() {
+        let availability = [
+            (
+                TranscriptionEngine::Whisper,
+                EngineAvailability::Unavailable(EngineUnavailable::RuntimeNotBuilt),
+            ),
+            (
+                TranscriptionEngine::Parakeet,
+                EngineAvailability::Unavailable(EngineUnavailable::RuntimeNotBuilt),
+            ),
+        ];
+
+        assert_eq!(
+            engine_that_can_run(TranscriptionEngine::Whisper, &availability),
+            None
+        );
+    }
+
+    #[test]
+    fn an_engine_nobody_resolved_cannot_run() {
+        // Settings can be carrying an engine whose provider this build never
+        // registered; absence from the list is unavailability, not silence.
+        assert_eq!(
+            engine_that_can_run(TranscriptionEngine::AppleSpeech, &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn the_blocking_reason_names_the_engine_the_user_chose() {
+        let availability = [(
+            TranscriptionEngine::Whisper,
+            EngineAvailability::Unavailable(EngineUnavailable::RuntimeNotBuilt),
+        )];
+
+        assert_eq!(
+            engine_blocked_reason(TranscriptionEngine::Whisper, &availability),
+            Some(
+                "Whisper base.en cannot run: this build was compiled without support for this engine"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn the_blocking_reason_falls_back_to_a_general_statement() {
+        // Nothing resolved a provider for the chosen engine, so there is no
+        // engine-authored reason to quote.
+        assert_eq!(
+            engine_blocked_reason(TranscriptionEngine::AppleSpeech, &[]),
+            Some("Apple SpeechTranscriber cannot run in this build.".to_string())
         );
     }
 
