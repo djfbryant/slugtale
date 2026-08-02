@@ -46,6 +46,22 @@ impl Default for BarPosition {
     }
 }
 
+/// Which display hosts the Dictation Bar. The main display is the safe default
+/// for existing settings files. A named display is matched when a dictation
+/// starts; if it has been disconnected, the bar falls back to the main display.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BarDisplay {
+    Primary,
+    Monitor(String),
+}
+
+impl Default for BarDisplay {
+    fn default() -> Self {
+        Self::Primary
+    }
+}
+
 /// The colour the Dictation Bar paints its orb in. A fixed palette rather than a
 /// user-supplied hex: the accent sits on a dark translucent pill where arbitrary
 /// colours can be illegible, and an enum never reaches CSS as interpolated text.
@@ -88,6 +104,10 @@ pub struct Settings {
     /// this field.
     #[serde(default)]
     pub accent_color: AccentColor,
+    /// Which display hosts the Dictation Bar. Older Settings Files predate this
+    /// field and therefore use the main display.
+    #[serde(default)]
+    pub bar_display: BarDisplay,
     /// Which Transcription Engine runs first on every dictation. Older Settings
     /// Files predate this field and load as Whisper, which is what they used.
     #[serde(default)]
@@ -110,6 +130,7 @@ impl Default for Settings {
             speed_profile: SpeedProfile::default(),
             bar_position: BarPosition::default(),
             accent_color: AccentColor::default(),
+            bar_display: BarDisplay::default(),
             primary_engine: crate::TranscriptionEngine::default(),
             second_opinion: crate::SecondOpinionMode::default(),
         }
@@ -165,9 +186,11 @@ pub fn apply_dictation_bar_settings(
     settings: &mut Settings,
     bar_position: BarPosition,
     accent_color: AccentColor,
+    bar_display: BarDisplay,
 ) {
     settings.bar_position = bar_position;
     settings.accent_color = accent_color;
+    settings.bar_display = bar_display;
 }
 
 /// Update the launch-at-login preference stored in the Settings File. The stored
@@ -233,6 +256,7 @@ mod tests {
             speed_profile: SpeedProfile::Accurate,
             bar_position: BarPosition::BottomLeft,
             accent_color: AccentColor::Green,
+            bar_display: BarDisplay::Monitor("Studio Display".to_string()),
             primary_engine: crate::TranscriptionEngine::Parakeet,
             second_opinion: crate::SecondOpinionMode::Automatic,
         };
@@ -348,22 +372,38 @@ mod tests {
         assert_eq!(AccentColor::default(), AccentColor::Red);
         assert_eq!(Settings::default().bar_position, BarPosition::BottomCenter);
         assert_eq!(Settings::default().accent_color, AccentColor::Red);
+        assert_eq!(Settings::default().bar_display, BarDisplay::Primary);
     }
     #[test]
     fn apply_dictation_bar_settings_stores_position_and_accent() {
         let mut settings = Settings::default();
 
-        apply_dictation_bar_settings(&mut settings, BarPosition::BottomRight, AccentColor::Violet);
+        apply_dictation_bar_settings(
+            &mut settings,
+            BarPosition::BottomRight,
+            AccentColor::Violet,
+            BarDisplay::Monitor("Studio Display".to_string()),
+        );
 
         assert_eq!(settings.bar_position, BarPosition::BottomRight);
         assert_eq!(settings.accent_color, AccentColor::Violet);
+        assert_eq!(
+            settings.bar_display,
+            BarDisplay::Monitor("Studio Display".to_string())
+        );
     }
     #[test]
     fn dictation_bar_appearance_persists_as_stable_strings() {
         for (position, token) in [
-            (BarPosition::BottomCenter, "\"bar_position\":\"bottom-center\""),
+            (
+                BarPosition::BottomCenter,
+                "\"bar_position\":\"bottom-center\"",
+            ),
             (BarPosition::BottomLeft, "\"bar_position\":\"bottom-left\""),
-            (BarPosition::BottomRight, "\"bar_position\":\"bottom-right\""),
+            (
+                BarPosition::BottomRight,
+                "\"bar_position\":\"bottom-right\"",
+            ),
         ] {
             let settings = Settings {
                 bar_position: position,
@@ -391,8 +431,9 @@ mod tests {
     }
     #[test]
     fn settings_file_without_dictation_bar_appearance_loads_as_defaults() {
-        // Settings Files written before the Dictation Bar gained an accent and a
-        // position omit both fields; loading must fall back rather than fail.
+        // Settings Files written before the Dictation Bar gained an accent,
+        // position, and display omit those fields; loading must fall back rather
+        // than fail.
         let path = std::env::temp_dir().join(format!(
             "slugtale-settings-legacy-bar-{}.json",
             std::process::id()
@@ -409,6 +450,7 @@ mod tests {
         assert_eq!(loaded.speed_profile, SpeedProfile::Fast);
         assert_eq!(loaded.bar_position, BarPosition::BottomCenter);
         assert_eq!(loaded.accent_color, AccentColor::Red);
+        assert_eq!(loaded.bar_display, BarDisplay::Primary);
     }
     #[test]
     fn a_settings_file_written_before_engine_choice_keeps_todays_behaviour() {
@@ -441,7 +483,10 @@ mod tests {
             crate::SecondOpinionMode::Automatic,
         );
 
-        assert_eq!(settings.primary_engine, crate::TranscriptionEngine::Parakeet);
+        assert_eq!(
+            settings.primary_engine,
+            crate::TranscriptionEngine::Parakeet
+        );
         assert_eq!(settings.second_opinion, crate::SecondOpinionMode::Automatic);
     }
 
@@ -454,8 +499,14 @@ mod tests {
         };
         let json = serde_json::to_string(&settings).unwrap();
 
-        assert!(json.contains("\"primary_engine\":\"apple-speech\""), "got: {json}");
-        assert!(json.contains("\"second_opinion\":\"automatic\""), "got: {json}");
+        assert!(
+            json.contains("\"primary_engine\":\"apple-speech\""),
+            "got: {json}"
+        );
+        assert!(
+            json.contains("\"second_opinion\":\"automatic\""),
+            "got: {json}"
+        );
     }
 
     #[test]
