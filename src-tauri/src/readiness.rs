@@ -11,8 +11,9 @@ pub trait PlatformReadiness {
 }
 
 /// Dictation Readiness (ADR-0013): dictation is only available once microphone
-/// permission, text insertion permission, a configured hotkey, a local model,
-/// and a Transcription Engine that can actually run are all ready.
+/// permission, text insertion permission, a configured hotkey, the assets for
+/// the engine that will run, and a Transcription Engine that can actually run
+/// are all ready.
 ///
 /// The engine check is separate from the model check on purpose. A downloaded
 /// model says only that the weights are on disk; whether anything in *this
@@ -27,8 +28,34 @@ pub fn dictation_ready(
     settings.hotkey.is_some()
         && platform.microphone_granted()
         && platform.insertion_granted()
-        && local_model_ready
+        && (local_model_ready || !whisper_model_is_required(settings, engines))
         && engine_that_can_run(settings.primary_engine, engines).is_some()
+}
+
+/// Which engine a dictation started right now would actually be transcribed by,
+/// falling back to the user's choice when nothing can run so the report still
+/// talks about the engine they picked.
+fn engine_in_play(
+    settings: &Settings,
+    engines: &[(TranscriptionEngine, EngineAvailability)],
+) -> TranscriptionEngine {
+    engine_that_can_run(settings.primary_engine, engines).unwrap_or(settings.primary_engine)
+}
+
+/// Whether the Whisper ggml file on disk gates dictation on this machine.
+///
+/// "Local model" meant one thing when Whisper was the only engine. Now that
+/// engines are plural it means *the assets for the engine that will actually
+/// run*, and every other engine already reports its own assets through
+/// [`EngineAvailability`] — Apple SpeechTranscriber's are system-managed and
+/// Parakeet's are installed from Settings. So the Whisper download is required
+/// only when Whisper is the engine in play, and a Parakeet-primary machine is
+/// no longer blocked on a file it will never open (slugtale-y4m).
+fn whisper_model_is_required(
+    settings: &Settings,
+    engines: &[(TranscriptionEngine, EngineAvailability)],
+) -> bool {
+    engine_in_play(settings, engines) == TranscriptionEngine::Whisper
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +110,7 @@ pub fn settings_readiness_report(
     engines: &[(TranscriptionEngine, EngineAvailability)],
 ) -> SettingsReadinessReport {
     let engine_blocker = engine_blocked_reason(settings.primary_engine, engines);
+    let whisper_model_required = whisper_model_is_required(settings, engines);
 
     SettingsReadinessReport {
         dictation_available: dictation_ready(settings, platform, local_model_ready, engines),
@@ -100,7 +128,20 @@ pub fn settings_readiness_report(
                 platform.insertion_granted(),
             ),
             readiness_item("hotkey", "Hotkey", true, settings.hotkey.is_some()),
-            readiness_item("local_model", "Local model", true, local_model_ready),
+            readiness_item(
+                "local_model",
+                "Local model",
+                whisper_model_required,
+                local_model_ready,
+            )
+            .with_detail(if whisper_model_required {
+                None
+            } else {
+                Some(format!(
+                    "Not needed: {} transcribes without the Whisper model.",
+                    engine_in_play(settings, engines).display_name()
+                ))
+            }),
             readiness_item(
                 "transcription_engine",
                 "Transcription engine",
@@ -390,6 +431,121 @@ mod tests {
             engine,
             &ReadinessItem::ready("transcription_engine", "Transcription engine", true)
         );
+    }
+
+    #[test]
+    fn a_machine_whose_engine_needs_no_whisper_model_is_ready_without_one() {
+        // slugtale-y4m: Parakeet decodes its own installed assets, so blocking
+        // dictation on a 148 MB Whisper download the user will never open is
+        // over-blocking, not safety.
+        assert!(dictation_ready(
+            &parakeet_settings(),
+            &FakePlatform::all_ready(),
+            false,
+            &parakeet_available(),
+        ));
+    }
+
+    #[test]
+    fn the_local_model_is_optional_and_says_why_when_another_engine_runs() {
+        let report = settings_readiness_report(
+            &parakeet_settings(),
+            &FakePlatform::all_ready(),
+            false,
+            &parakeet_available(),
+        );
+        let local_model = report
+            .items
+            .iter()
+            .find(|item| item.id == "local_model")
+            .unwrap();
+
+        assert!(report.dictation_available);
+        assert_eq!(
+            local_model,
+            &ReadinessItem::missing("local_model", "Local model", false).with_detail(Some(
+                "Not needed: Parakeet TDT v2 transcribes without the Whisper model.".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_whisper_model_is_required_again_when_the_fallback_is_whisper() {
+        // The chosen engine lost its assets, so the router falls back to Whisper
+        // — which means the Whisper download is once more the thing standing
+        // between this machine and a transcription.
+        let engines = [
+            (
+                crate::TranscriptionEngine::Parakeet,
+                crate::EngineAvailability::Unavailable(crate::EngineUnavailable::AssetsMissing {
+                    detail: "Parakeet assets are not installed.".to_string(),
+                }),
+            ),
+            (
+                crate::TranscriptionEngine::Whisper,
+                crate::EngineAvailability::Available,
+            ),
+        ];
+        let report = settings_readiness_report(
+            &parakeet_settings(),
+            &FakePlatform::all_ready(),
+            false,
+            &engines,
+        );
+        let local_model = report
+            .items
+            .iter()
+            .find(|item| item.id == "local_model")
+            .unwrap();
+
+        assert!(!report.dictation_available);
+        assert_eq!(
+            local_model,
+            &ReadinessItem::missing("local_model", "Local model", true)
+        );
+    }
+
+    #[test]
+    fn the_whisper_model_stays_required_when_nothing_can_run_for_a_whisper_user() {
+        // Nothing runs, so there is no engine in play to defer to; the user
+        // chose Whisper, so the report keeps describing Whisper's requirements.
+        let report = settings_readiness_report(
+            &configured_settings(),
+            &FakePlatform::all_ready(),
+            false,
+            &whisper_runtime_not_built(),
+        );
+        let local_model = report
+            .items
+            .iter()
+            .find(|item| item.id == "local_model")
+            .unwrap();
+
+        assert!(!report.dictation_available);
+        assert!(local_model.required);
+    }
+
+    fn parakeet_settings() -> Settings {
+        Settings {
+            hotkey: Some("cmd+shift+d".to_string()),
+            primary_engine: crate::TranscriptionEngine::Parakeet,
+            ..Settings::default()
+        }
+    }
+
+    fn parakeet_available() -> Vec<(crate::TranscriptionEngine, crate::EngineAvailability)> {
+        vec![
+            (
+                crate::TranscriptionEngine::Whisper,
+                crate::EngineAvailability::Unavailable(crate::EngineUnavailable::AssetsMissing {
+                    detail: "The Whisper model has not been downloaded yet.".to_string(),
+                }),
+            ),
+            (
+                crate::TranscriptionEngine::Parakeet,
+                crate::EngineAvailability::Available,
+            ),
+        ]
     }
 
     fn whisper_available() -> Vec<(crate::TranscriptionEngine, crate::EngineAvailability)> {
