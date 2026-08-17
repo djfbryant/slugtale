@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Slugtale Typing Challenge</title>
+  <style>
+    /* Same tokens as the settings window, so the two read as one app and both
+       follow the system appearance without an in-app theme selector. */
+    :root {
+      --bg: #eef0ef;
+      --surface: #ffffff;
+      --surface-sunken: #f6f7f5;
+      --text: #1f2933;
+      --text-dim: #6c757d;
+      --text-faint: #8a929a;
+      --border: #e3e6e8;
+      --border-strong: #d4d9dc;
+      --accent: #2674a6;
+      --accent-soft: #eaf2f8;
+      --ok: #2f9e5f;
+      --ok-text: #1f7a44;
+      --danger: #9a3726;
+      --on-fill: #ffffff;
+
+      color-scheme: light dark;
+      color: var(--text);
+      background: var(--bg);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #17191c;
+        --surface: #212529;
+        --surface-sunken: #1a1d20;
+        --text: #e9edf0;
+        --text-dim: #9aa4ad;
+        --text-faint: #79838c;
+        --border: #2c3238;
+        --border-strong: #3a4148;
+        --accent: #4a9fd8;
+        --accent-soft: #1b2a35;
+        --ok: #3fbb75;
+        --ok-text: #5ccb8b;
+        --danger: #e08072;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 24px 28px 26px;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    h1 { margin: 0; font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
+    .sub { margin: 3px 0 0; color: var(--text-dim); font-size: 0.86rem; }
+
+    /* The countdown is the only thing on screen that changes on its own, so it
+       is set in tabular figures — otherwise the digits jiggle every second and
+       pull the eye away from the passage. */
+    .clock {
+      flex: 0 0 auto;
+      min-width: 94px;
+      padding: 8px 14px;
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      background: var(--surface);
+      font-size: 1.5rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+      letter-spacing: -0.02em;
+    }
+
+    .clock[data-running="true"] { border-color: var(--accent); color: var(--accent); }
+
+    .passage {
+      margin: 0;
+      padding: 18px 20px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface-sunken);
+      font-size: 1.05rem;
+      line-height: 1.75;
+      user-select: none;
+    }
+
+    /* Each passage word is its own element so typing can mark it right or wrong
+       as it goes. Words are compared in order, which is what the score does. */
+    .word { border-radius: 4px; padding: 0 2px; }
+    .word[data-state="correct"] { color: var(--ok-text); }
+    .word[data-state="wrong"] { color: var(--danger); text-decoration: underline wavy; }
+    .word[data-state="current"] { background: var(--accent-soft); color: var(--accent); }
+
+    textarea {
+      flex: 1 1 auto;
+      min-height: 128px;
+      resize: none;
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 1rem;
+      line-height: 1.6;
+      padding: 12px 14px;
+    }
+
+    textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    textarea:disabled { opacity: 0.6; }
+
+    footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+    .progress-text { margin: 0; color: var(--text-dim); font-size: 0.86rem; }
+    .actions { display: inline-flex; gap: 8px; }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 32px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.9rem;
+      font-weight: 600;
+      padding: 4px 14px;
+      cursor: pointer;
+    }
+
+    button.primary { border-color: var(--accent); background: var(--accent); color: var(--on-fill); }
+    button:disabled { cursor: not-allowed; opacity: 0.5; }
+    button[hidden] { display: none; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    .note { margin: 0; color: var(--text-dim); font-size: 0.82rem; }
+    .note.error { color: var(--danger); }
+
+    .done { text-align: center; padding: 26px 20px; }
+    .done-value { margin: 6px 0 0; font-size: 2.1rem; font-weight: 700; letter-spacing: -0.02em; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 id="title">Typing challenge</h1>
+      <p id="subtitle" class="sub">Type the passage as accurately as you can. Corrections are fine.</p>
+    </div>
+    <div id="clock" class="clock" data-running="false">30</div>
+  </header>
+
+  <section id="run">
+    <p id="passage" class="passage"></p>
+  </section>
+
+  <textarea id="typing" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
+            aria-label="Type the passage here" placeholder="Start typing to begin the thirty seconds…"></textarea>
+
+  <section id="done" class="done" hidden>
+    <p class="note">Your typing speed</p>
+    <p id="done-value" class="done-value">—</p>
+    <p id="done-note" class="note"></p>
+  </section>
+
+  <footer>
+    <p id="progress" class="progress-text">Challenge 1 of 3</p>
+    <span class="actions">
+      <button id="abort" type="button" hidden>Start over</button>
+      <button id="next" type="button" class="primary" hidden>Next challenge</button>
+      <button id="close" type="button">Close</button>
+    </span>
+  </footer>
+
+  <p id="message" class="note" aria-live="polite"></p>
+
+  <script>
+    // Local-Only Processing applies here as much as to dictation: the passages
+    // ship in the app, nothing is downloaded, and the only thing that leaves
+    // this window is a word-per-minute number.
+
+    function tauriInvoke() {
+      const core = window.__TAURI__ && window.__TAURI__.core;
+      return core && core.invoke;
+    }
+
+    // Shown outside the desktop app so the window is never blank.
+    const fallbackState = {
+      passage: "The harbour was quiet that morning, and the boats leaned together at their moorings as if sharing a long and complicated secret.",
+      passage_index: 0,
+      completed: 0,
+      total: 3,
+      seconds: 30,
+      measured_wpm: null
+    };
+
+    let state = fallbackState;
+    let words = [];
+    // null until the first keystroke. The thirty seconds start when the user
+    // starts typing, not when the window opens — otherwise reading the passage
+    // costs them the measurement.
+    let startedAt = null;
+    let ticker = null;
+    let finished = false;
+    let submitting = false;
+
+    function el(id) {
+      return document.getElementById(id);
+    }
+
+    function setMessage(text, isError = false) {
+      const message = el("message");
+      message.classList.toggle("error", Boolean(isError));
+      message.textContent = text || "";
+    }
+
+    function renderPassage() {
+      words = (state.passage || "").split(/\s+/).filter(Boolean);
+      el("passage").innerHTML = words
+        .map((word, index) => `<span class="word" data-index="${index}"></span>`)
+        .join(" ");
+      words.forEach((word, index) => {
+        el("passage").querySelector(`[data-index="${index}"]`).textContent = word;
+      });
+      markTypedWords("");
+    }
+
+    // Mark each passage word against what has been typed so far, comparing in
+    // order — the same rule the score uses, so what the user sees while typing
+    // is what they are actually being credited for.
+    function markTypedWords(typed) {
+      const typedWords = typed.split(/\s+/).filter(Boolean);
+      const inWord = typed.length > 0 && !/\s$/.test(typed);
+      const currentIndex = inWord ? typedWords.length - 1 : typedWords.length;
+
+      words.forEach((word, index) => {
+        const span = el("passage").querySelector(`[data-index="${index}"]`);
+        if (!span) return;
+        if (index < typedWords.length && !(inWord && index === currentIndex)) {
+          span.dataset.state = typedWords[index] === word ? "correct" : "wrong";
+        } else if (index === currentIndex) {
+          span.dataset.state = "current";
+        } else {
+          delete span.dataset.state;
+        }
+      });
+    }
+
+    function renderState() {
+      const measured = state.measured_wpm !== null && state.measured_wpm !== undefined;
+      const allDone = state.passage_index === null || state.passage_index === undefined;
+
+      el("progress").textContent = allDone
+        ? `${state.total} of ${state.total} challenges done`
+        : `Challenge ${state.completed + 1} of ${state.total}`;
+      el("clock").textContent = String(state.seconds);
+      el("clock").dataset.running = "false";
+
+      if (allDone) {
+        el("run").hidden = true;
+        el("typing").hidden = true;
+        el("abort").hidden = true;
+        el("next").hidden = true;
+        el("done").hidden = false;
+        el("done-value").textContent = measured ? `${state.measured_wpm} WPM` : "—";
+        el("done-note").textContent = measured
+          ? "This is the median of your three runs. Time saved in Settings now uses it."
+          : "";
+        el("subtitle").textContent = "All three challenges are done.";
+        el("close").textContent = "Done";
+        return;
+      }
+
+      el("run").hidden = false;
+      el("typing").hidden = false;
+      el("done").hidden = true;
+      el("close").textContent = "Close";
+      el("subtitle").textContent =
+        `Type the passage as accurately as you can. Corrections are fine. The ${state.seconds} seconds start when you do.`;
+      renderPassage();
+      resetRun();
+    }
+
+    function resetRun() {
+      stopTicker();
+      startedAt = null;
+      finished = false;
+      el("typing").value = "";
+      el("typing").disabled = false;
+      el("clock").textContent = String(state.seconds);
+      el("clock").dataset.running = "false";
+      el("abort").hidden = true;
+      el("next").hidden = true;
+      markTypedWords("");
+      setMessage("");
+    }
+
+    function stopTicker() {
+      if (ticker !== null) {
+        clearInterval(ticker);
+        ticker = null;
+      }
+    }
+
+    function remainingSeconds() {
+      if (startedAt === null) return state.seconds;
+      const elapsed = (Date.now() - startedAt) / 1000;
+      return Math.max(0, Math.ceil(state.seconds - elapsed));
+    }
+
+    function startRun() {
+      startedAt = Date.now();
+      el("clock").dataset.running = "true";
+      el("abort").hidden = false;
+      // A wall-clock deadline rather than a countdown of ticks: a tab that is
+      // throttled or a machine that sleeps must not hand out extra seconds.
+      ticker = setInterval(() => {
+        const left = remainingSeconds();
+        el("clock").textContent = String(left);
+        if (left <= 0) finishRun();
+      }, 100);
+    }
+
+    async function finishRun() {
+      if (finished || submitting) return;
+      finished = true;
+      stopTicker();
+
+      const typed = el("typing").value;
+      el("typing").disabled = true;
+      el("clock").textContent = "0";
+      el("clock").dataset.running = "false";
+      el("abort").hidden = false;
+
+      const invoke = tauriInvoke();
+      if (!invoke) {
+        setMessage("Typing challenges only score inside the Slugtale app.");
+        return;
+      }
+
+      submitting = true;
+      setMessage("Scoring…");
+      try {
+        state = await invoke("submit_typing_challenge", {
+          passageIndex: state.passage_index,
+          typed
+        });
+        submitting = false;
+        // Land on a deliberate step rather than snapping to the next passage:
+        // three runs back to back with no pause is not a measurement of typing.
+        if (state.passage_index === null || state.passage_index === undefined) {
+          renderState();
+          return;
+        }
+        el("next").hidden = false;
+        el("next").focus();
+        setMessage(`Challenge ${state.completed} of ${state.total} done.`);
+      } catch (error) {
+        submitting = false;
+        finished = false;
+        el("typing").disabled = false;
+        setMessage(String(error), true);
+      }
+    }
+
+    async function loadState() {
+      const invoke = tauriInvoke();
+      if (!invoke) {
+        renderState();
+        return;
+      }
+
+      try {
+        state = await invoke("get_typing_challenge");
+        renderState();
+      } catch (error) {
+        setMessage(String(error), true);
+      }
+    }
+
+    function closeWindow() {
+      const invoke = tauriInvoke();
+      if (invoke) {
+        // Closing part-way through keeps the challenges already finished; only
+        // the run in progress is lost, and its slot is served again next time.
+        invoke("close_typing_challenge").catch(() => window.close());
+        return;
+      }
+      window.close();
+    }
+
+    function init() {
+      el("typing").addEventListener("input", (event) => {
+        if (finished) return;
+        if (startedAt === null && event.target.value.length > 0) startRun();
+        markTypedWords(event.target.value);
+        if (startedAt !== null && remainingSeconds() <= 0) finishRun();
+      });
+
+      // Enter would otherwise add a line the passage never asked for, and the
+      // score splits on whitespace so it would be free correctness noise.
+      el("typing").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") event.preventDefault();
+      });
+
+      el("abort").addEventListener("click", () => {
+        // Abort retries this slot. A finished run has already been stored, so
+        // starting over here just re-serves whatever is outstanding.
+        loadState();
+      });
+      el("next").addEventListener("click", () => renderState());
+      el("close").addEventListener("click", closeWindow);
+
+      el("typing").focus();
+      loadState();
+    }
+
+    init();
+  </script>
+</body>
+</html>

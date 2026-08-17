@@ -117,6 +117,17 @@ pub struct Settings {
     /// Off reproduces the single-engine behaviour exactly.
     #[serde(default)]
     pub second_opinion: crate::SecondOpinionMode,
+    /// Whether Slugtale may write Daily Usage Records at all (ADR-0025). Off by
+    /// default and off for every Settings File written before Usage existed:
+    /// nothing reaches the Usage File until the user asks for it, and dictations
+    /// before that are gone rather than backfilled.
+    #[serde(default)]
+    pub store_usage: bool,
+    /// The Typing Baseline that Time Saved is measured against (ADR-0025). It
+    /// lives here rather than in the Usage File so that opting out of storing
+    /// counts does not throw away a measurement the user sat through.
+    #[serde(default)]
+    pub typing_baseline: crate::TypingBaseline,
 }
 
 impl Default for Settings {
@@ -133,8 +144,19 @@ impl Default for Settings {
             bar_display: BarDisplay::default(),
             primary_engine: crate::TranscriptionEngine::default(),
             second_opinion: crate::SecondOpinionMode::default(),
+            store_usage: false,
+            typing_baseline: crate::TypingBaseline::default(),
         }
     }
+}
+
+/// Update whether Slugtale stores Daily Usage Records (ADR-0025).
+///
+/// This only records the choice. Deleting the Usage File when the user opts out
+/// is the caller's job, because the file's location is a platform concern and
+/// the Settings File must not know where it lives.
+pub fn apply_usage_settings(settings: &mut Settings, store_usage: bool) {
+    settings.store_usage = store_usage;
 }
 
 /// Update which Transcription Engine leads and whether a second local engine
@@ -242,6 +264,53 @@ mod tests {
         assert!(!settings.diagnostic_logging);
         assert_eq!(settings.model, None);
         assert_eq!(settings.speed_profile, SpeedProfile::Balanced);
+        assert!(!settings.store_usage);
+        assert_eq!(settings.typing_baseline, crate::TypingBaseline::default());
+    }
+
+    #[test]
+    fn a_settings_file_written_before_usage_existed_stores_nothing_and_has_no_baseline() {
+        // The opt-in only means something if an upgrade is silent: an existing
+        // user who never opens the Usage pane keeps writing no Usage File.
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-settings-legacy-usage-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"hotkey":null,"activation_mode":"toggle","launch_at_login":false,"diagnostic_logging":false,"model":null,"speed_profile":"balanced"}"#,
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        assert!(!loaded.store_usage);
+        assert_eq!(loaded.typing_baseline.effective_wpm(), None);
+    }
+
+    #[test]
+    fn apply_usage_settings_stores_the_opt_in_choice() {
+        let mut settings = Settings::default();
+
+        apply_usage_settings(&mut settings, true);
+        assert!(settings.store_usage);
+
+        apply_usage_settings(&mut settings, false);
+        assert!(!settings.store_usage);
+    }
+
+    #[test]
+    fn opting_out_of_usage_leaves_the_typing_baseline_alone() {
+        // The Typing Baseline lives in the Settings File precisely so that the
+        // toggle cannot take it: the challenges were the user's time to spend.
+        let mut settings = Settings::default();
+        crate::apply_typed_estimate(&mut settings.typing_baseline, Some(48)).unwrap();
+        apply_usage_settings(&mut settings, true);
+
+        apply_usage_settings(&mut settings, false);
+
+        assert_eq!(settings.typing_baseline.effective_wpm(), Some(48));
     }
     #[test]
     fn settings_round_trip_through_saved_file() {
@@ -259,6 +328,14 @@ mod tests {
             bar_display: BarDisplay::Monitor("Studio Display".to_string()),
             primary_engine: crate::TranscriptionEngine::Parakeet,
             second_opinion: crate::SecondOpinionMode::Automatic,
+            store_usage: true,
+            typing_baseline: crate::TypingBaseline {
+                challenges: vec![crate::TypingChallengeResult {
+                    passage_index: 0,
+                    words_per_minute: 58,
+                }],
+                typed_estimate: Some(45),
+            },
         };
 
         save_settings(&path, &settings).unwrap();

@@ -33,6 +33,19 @@ At the time of this policy:
 - No telemetry, analytics, or remote transcription service is used.
 - The app may download a local speech model during setup.
 - Non-secret preferences are stored locally in the app settings file.
+- Usage counts are opt-in, off by default, and stay on the machine. Nothing is
+  written until the user turns them on in Settings, and turning them off deletes
+  the usage file.
+- A daily usage record contains only a local date, a dictation count, a word
+  count, and a speaking duration in seconds. It contains no transcription text,
+  no audio, no application names, and nothing that identifies what was dictated.
+- Time saved is calculated when it is shown and is never stored.
+- The typing challenges that measure typing speed run entirely on the machine.
+  Their passages ship with the app, and only the resulting words-per-minute
+  number is stored, in the settings file.
+
+Dictation history remains absent: no transcript log, no audio archive, and no
+record of which application was dictated into.
 
 If future work changes these data-handling guarantees, the security policy and
 user-facing documentation should be updated in the same change.

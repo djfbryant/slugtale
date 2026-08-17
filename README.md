@@ -52,6 +52,11 @@ The first version deliberately keeps the workflow narrow:
 There is no dictation history in the first version, no live partial transcript,
 no remote transcription service, and no telemetry.
 
+The Usage section of Settings can count your dictations, words, and speaking
+time, and work out roughly how much typing time that saved. It is off until you
+turn it on, the counts never leave the machine, and turning it off deletes them.
+No transcript or audio is ever part of a count (ADR-0025).
+
 ## Requirements
 
 The runnable slice is macOS-first. The code keeps operating-system behavior
