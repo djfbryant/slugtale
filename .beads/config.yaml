@@ -73,3 +73,5 @@
 # rather than changing the global setting, which other projects rely on.
 dolt:
     shared-server: false
+sync:
+    remote: "git+https://github.com/djfbryant/slugtale.git"
