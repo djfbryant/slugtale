@@ -9,6 +9,11 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const DICTATION_ESCAPE_KEY: &str = "Escape";
 
+/// The Typing Challenge window's label. It is created on demand rather than
+/// declared in tauri.conf.json: most users never open it, and a hidden window
+/// carrying a live webview for the life of the app is a cost with no benefit.
+const TYPING_CHALLENGE_WINDOW: &str = "typing-challenge";
+
 #[derive(Default)]
 struct RecordingFeedbackState(Mutex<slugtale_lib::RecordingFeedback>);
 
@@ -138,6 +143,57 @@ impl DictationSegments {
             .ok()
             .and_then(|guard| guard.as_ref().map(|sender| sender.send(job).is_ok()))
             .unwrap_or(false)
+    }
+}
+
+/// One Counted Segment on its way to the Usage File (ADR-0025).
+///
+/// The local date rides along rather than being resolved by the writer, because
+/// a Counted Segment belongs to the date it landed on — and by the time a
+/// backed-up queue is drained, midnight may have passed.
+struct UsageUpdate {
+    date: slugtale_lib::LocalDate,
+    segment: slugtale_lib::CountedSegment,
+}
+
+/// Whether the Typing Challenge window is on screen.
+///
+/// A flag rather than asking the window itself, because the only reader is the
+/// global key worker and that runs on every hotkey press. Querying window
+/// visibility from a background thread costs a round trip to the main thread,
+/// and the hotkey path is the one place in this app where latency is felt.
+#[derive(Default)]
+struct TypingChallengeOpen(std::sync::atomic::AtomicBool);
+
+impl TypingChallengeOpen {
+    fn set(&self, open: bool) {
+        self.0.store(open, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn get(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// The queue that carries Counted Segments to the Usage File.
+///
+/// Usage must never slow or fail Dictation (ADR-0025), so the dictation path
+/// only ever does a non-blocking channel send. Reading the Settings File,
+/// reading the Usage File, and writing it back all happen on the writer thread,
+/// where being slow costs nothing and failing costs only a count.
+#[derive(Default)]
+struct UsageRecorder(Mutex<Option<std::sync::mpsc::Sender<UsageUpdate>>>);
+
+impl UsageRecorder {
+    /// Hand a Counted Segment to the writer without waiting for it. A closed or
+    /// unstarted queue is dropped on the floor: the insertion already happened,
+    /// which is the part that mattered.
+    fn record(&self, update: UsageUpdate) {
+        if let Ok(guard) = self.0.lock() {
+            if let Some(sender) = guard.as_ref() {
+                let _ = sender.send(update);
+            }
+        }
     }
 }
 
@@ -803,6 +859,17 @@ fn start_dictation_segment_worker(app: &tauri::AppHandle) -> Result<(), String> 
                     } else {
                         slugtale_lib::DictationSegmentPosition::First
                     };
+                    // Read the speaking duration before the audio is handed to
+                    // the workflow, which consumes it.
+                    let speaking_seconds = if audio.sample_rate_hz > 0 {
+                        audio.samples.len() as f64 / f64::from(audio.sample_rate_hz)
+                    } else {
+                        0.0
+                    };
+                    // Whether this segment opens the dictation is the same
+                    // question `position` already answered, and it is what makes
+                    // Usage count dictations rather than Pause Flushes.
+                    let starts_dictation = !inserted_any;
                     // One worker serves every dictation for the life of the app,
                     // so a panic here would silently disable insertion from now
                     // on rather than spoiling a single dictation. Contain it.
@@ -816,6 +883,22 @@ fn start_dictation_segment_worker(app: &tauri::AppHandle) -> Result<(), String> 
                                     "inserted dictation segment: {} chars",
                                     outcome.transcription.text.chars().count()
                                 );
+                                // A Counted Segment is one that reached the text
+                                // target, whether by insertion or by the rescue
+                                // (ADR-0025) — `inserted` is true for both. A
+                                // segment that heard nothing, and a segment whose
+                                // rescue also failed, never get here, which is
+                                // exactly the rule the design asked for.
+                                app.state::<UsageRecorder>().record(UsageUpdate {
+                                    date: slugtale_lib::today_local(),
+                                    segment: slugtale_lib::CountedSegment {
+                                        words: slugtale_lib::count_words(
+                                            &outcome.transcription.text,
+                                        ),
+                                        speaking_seconds,
+                                        starts_dictation,
+                                    },
+                                });
                             } else {
                                 eprintln!("dictation segment heard nothing; inserted nothing");
                             }
@@ -926,6 +1009,14 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                         }
                     }
                     GlobalKeyCommand::Input(key, input) => {
+                        // The Typing Challenge measures how fast the user types,
+                        // so their hotkey has to be plain text for those thirty
+                        // seconds. Swallow it here, before any lifecycle state
+                        // moves, so releasing it later cannot resume anything.
+                        if typing_challenge_is_open(&app) {
+                            continue;
+                        }
+
                         let starts_dictation = matches!(
                             (key, input),
                             (
@@ -1822,6 +1913,254 @@ fn remove_engine_assets(
     build_engine_view(&app, &settings, engine)
 }
 
+/// One span of the Usage pane — today, this week, or all time — with Time Saved
+/// already computed and already worded.
+///
+/// Time Saved is sent as text rather than a number the frontend rounds, because
+/// there is exactly one right way to say it (ADR-0025: prefix About, no
+/// decimals) and duplicating that rule in JavaScript is how the two drift apart.
+/// Speaking duration is deliberately not here: it is stored, but it is not a
+/// number the pane shows.
+#[derive(serde::Serialize)]
+struct UsageSpan {
+    dictations: u32,
+    words: u32,
+    /// `null` when there is no Typing Baseline, which is the hole the pane draws
+    /// with a take-the-baseline action rather than an invented default WPM.
+    time_saved: Option<String>,
+}
+
+fn usage_span(totals: &slugtale_lib::UsageTotals, words_per_minute: Option<u32>) -> UsageSpan {
+    let seconds = slugtale_lib::time_saved_seconds(totals, words_per_minute);
+    UsageSpan {
+        dictations: totals.dictations,
+        words: totals.words,
+        time_saved: seconds.map(|seconds| slugtale_lib::format_time_saved(Some(seconds))),
+    }
+}
+
+/// Everything the Usage pane draws, in one answer.
+#[derive(serde::Serialize)]
+struct UsageSummary {
+    /// Whether Daily Usage Records are being written at all.
+    store_usage: bool,
+    today: UsageSpan,
+    this_week: UsageSpan,
+    all_time: UsageSpan,
+    /// The measured Typing Baseline, or `null` until all three Typing Challenges
+    /// are done.
+    measured_wpm: Option<u32>,
+    /// The user's typed stand-in, whether or not it is the one in use.
+    typed_estimate: Option<u32>,
+    /// How many of the three Typing Challenges are finished, for "2 of 3".
+    completed_challenges: usize,
+    challenge_count: usize,
+}
+
+#[tauri::command]
+fn get_usage_summary(app: tauri::AppHandle) -> UsageSummary {
+    let settings = load_current_settings(&app);
+    let baseline = &settings.typing_baseline;
+    let words_per_minute = baseline.effective_wpm();
+    // With storing off there is no Usage File, so every span is zero — but the
+    // Typing Baseline still reads, because the challenges work either way.
+    let usage = if settings.store_usage {
+        load_current_usage(&app)
+    } else {
+        slugtale_lib::UsageFile::default()
+    };
+    let today = slugtale_lib::today_local();
+    let week_start = locale_week_start(&app);
+
+    UsageSummary {
+        store_usage: settings.store_usage,
+        today: usage_span(&slugtale_lib::totals_for_day(&usage, today), words_per_minute),
+        this_week: usage_span(
+            &slugtale_lib::totals_for_week(&usage, today, week_start),
+            words_per_minute,
+        ),
+        all_time: usage_span(&slugtale_lib::totals_all_time(&usage), words_per_minute),
+        measured_wpm: baseline.measured_wpm(),
+        typed_estimate: baseline.typed_estimate,
+        completed_challenges: baseline.completed_challenges(),
+        challenge_count: slugtale_lib::TYPING_CHALLENGE_COUNT,
+    }
+}
+
+/// Turn storing Daily Usage Records on or off.
+///
+/// Turning it off deletes the Usage File outright rather than leaving it to rot
+/// unread: "stop storing this" has to mean the stored thing is gone. The Typing
+/// Baseline is in the Settings File and is untouched.
+#[tauri::command]
+fn set_usage_storing(app: tauri::AppHandle, enabled: bool) -> Result<UsageSummary, String> {
+    let mut settings = load_current_settings(&app);
+    slugtale_lib::apply_usage_settings(&mut settings, enabled);
+    save_current_settings(&app, &settings)?;
+
+    if !enabled {
+        if let Some(path) = usage_path(&app) {
+            slugtale_lib::delete_usage(&path).map_err(|error| error.to_string())?;
+        }
+    }
+
+    Ok(get_usage_summary(app))
+}
+
+/// Set or clear the typed typing-speed estimate. Refused once the three Typing
+/// Challenges have produced a measurement.
+#[tauri::command]
+fn set_typing_estimate(app: tauri::AppHandle, estimate: Option<u32>) -> Result<UsageSummary, String> {
+    let mut settings = load_current_settings(&app);
+    slugtale_lib::apply_typed_estimate(&mut settings.typing_baseline, estimate)
+        .map_err(|error| error.to_string())?;
+    save_current_settings(&app, &settings)?;
+
+    Ok(get_usage_summary(app))
+}
+
+/// The state of the Typing Challenge window: which passage to show next and how
+/// far through the three the user is.
+#[derive(serde::Serialize)]
+struct TypingChallengeState {
+    /// The passage to type, or `null` when all three are done.
+    passage: Option<String>,
+    passage_index: Option<usize>,
+    completed: usize,
+    total: usize,
+    seconds: u32,
+    measured_wpm: Option<u32>,
+}
+
+fn typing_challenge_state(baseline: &slugtale_lib::TypingBaseline) -> TypingChallengeState {
+    let passage_index = baseline.next_passage_index();
+    TypingChallengeState {
+        passage: passage_index.map(|index| {
+            slugtale_lib::TYPING_CHALLENGE_PASSAGES[index]
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        }),
+        passage_index,
+        completed: baseline.completed_challenges(),
+        total: slugtale_lib::TYPING_CHALLENGE_COUNT,
+        seconds: slugtale_lib::TYPING_CHALLENGE_SECONDS,
+        measured_wpm: baseline.measured_wpm(),
+    }
+}
+
+#[tauri::command]
+fn get_typing_challenge(app: tauri::AppHandle) -> TypingChallengeState {
+    typing_challenge_state(&load_current_settings(&app).typing_baseline)
+}
+
+/// Score one finished Typing Challenge and store it.
+///
+/// The window sends the text as it finally stood, so backspacing is free — which
+/// is how people type, and the point is to measure that.
+#[tauri::command]
+fn submit_typing_challenge(
+    app: tauri::AppHandle,
+    passage_index: usize,
+    typed: String,
+) -> Result<TypingChallengeState, String> {
+    let passage = slugtale_lib::TYPING_CHALLENGE_PASSAGES
+        .get(passage_index)
+        .ok_or_else(|| format!("there is no typing challenge passage {passage_index}"))?;
+    let words_per_minute = slugtale_lib::score_typing_challenge(
+        passage,
+        &typed,
+        slugtale_lib::TYPING_CHALLENGE_SECONDS,
+    );
+
+    let mut settings = load_current_settings(&app);
+    slugtale_lib::record_typing_challenge(
+        &mut settings.typing_baseline,
+        passage_index,
+        words_per_minute,
+    );
+    save_current_settings(&app, &settings)?;
+
+    notify_usage_changed(&app);
+    Ok(typing_challenge_state(&settings.typing_baseline))
+}
+
+/// Clear all three challenge results so the user can sit them again. Historical
+/// Time Saved moves with the new baseline, because it was never stored.
+#[tauri::command]
+fn redo_typing_challenges(app: tauri::AppHandle) -> Result<TypingChallengeState, String> {
+    let mut settings = load_current_settings(&app);
+    slugtale_lib::redo_typing_challenges(&mut settings.typing_baseline);
+    save_current_settings(&app, &settings)?;
+
+    notify_usage_changed(&app);
+    Ok(typing_challenge_state(&settings.typing_baseline))
+}
+
+/// Open the Typing Challenge window, creating it on first use.
+///
+/// It is its own window and larger than Settings on purpose: thirty seconds of
+/// typing against a passage needs room to read, and the 480x520 settings frame
+/// would put the passage and the typing box in a column too narrow to follow.
+#[tauri::command]
+fn open_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
+    // Raised before the window exists, so the hotkey is already inert by the
+    // time the webview can steal focus and the user can start typing.
+    app.state::<TypingChallengeOpen>().set(true);
+
+    if let Some(window) = app.get_webview_window(TYPING_CHALLENGE_WINDOW) {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let built = tauri::WebviewWindowBuilder::new(
+        &app,
+        TYPING_CHALLENGE_WINDOW,
+        tauri::WebviewUrl::App("typing-challenge.html".into()),
+    )
+    .title("Slugtale Typing Challenge")
+    .inner_size(760.0, 620.0)
+    .resizable(false)
+    .build();
+
+    match built {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            // The window never appeared, so the hotkey must work again.
+            app.state::<TypingChallengeOpen>().set(false);
+            Err(error.to_string())
+        }
+    }
+}
+
+#[tauri::command]
+fn close_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
+    app.state::<TypingChallengeOpen>().set(false);
+    if let Some(window) = app.get_webview_window(TYPING_CHALLENGE_WINDOW) {
+        window.close().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Tell an open Usage pane that its numbers moved. Redoing the challenges shifts
+/// every Time Saved on screen, so the pane cannot be left showing the old ones.
+fn notify_usage_changed(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.emit("usage-changed", ());
+    }
+}
+
+/// Whether the Typing Challenge window is on screen right now.
+///
+/// While it is, the dictation Hotkey does nothing at all (ADR-0025): the user is
+/// typing a passage, and their hotkey is very likely inside it. Doing nothing —
+/// rather than starting a dictation, or refusing with a notification — is what
+/// keeps the thirty seconds being a measurement of typing.
+fn typing_challenge_is_open(app: &tauri::AppHandle) -> bool {
+    app.state::<TypingChallengeOpen>().get()
+}
+
 #[tauri::command]
 fn get_local_model_status(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelStatus, String> {
     Ok(model_manager(&app)?.status())
@@ -1951,6 +2290,92 @@ fn model_manager(app: &tauri::AppHandle) -> Result<slugtale_lib::LocalModelManag
     ))
 }
 
+/// The Usage File (CONTEXT.md): a sibling of the Settings File, so opting out
+/// deletes one obvious file and nothing else.
+fn usage_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join("usage.json"))
+}
+
+fn load_current_usage(app: &tauri::AppHandle) -> slugtale_lib::UsageFile {
+    usage_path(app)
+        .map(|path| slugtale_lib::load_usage(&path))
+        .unwrap_or_default()
+}
+
+/// Which week the Usage pane means by "this week", asked of the OS rather than
+/// assumed (ADR-0021: locale is platform behaviour).
+fn locale_week_start(_app: &tauri::AppHandle) -> slugtale_lib::WeekStart {
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        slugtale_lib::locale_week_start()
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        slugtale_lib::WeekStart::default()
+    }
+}
+
+/// Start the single worker that writes Daily Usage Records.
+///
+/// It is a worker rather than an inline write for one reason: a Counted Segment
+/// has already reached the user's document by the time it is counted, so nothing
+/// here may be allowed to delay the next segment or fail the dictation. Every
+/// failure below is therefore a skip, not an error.
+fn start_usage_worker(app: &tauri::AppHandle) -> Result<(), String> {
+    let (sender, receiver) = std::sync::mpsc::channel::<UsageUpdate>();
+    {
+        let recorder = app.state::<UsageRecorder>();
+        let mut queue = recorder
+            .0
+            .lock()
+            .map_err(|_| "usage queue mutex poisoned".to_string())?;
+        *queue = Some(sender);
+    }
+
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("slugtale-usage".to_string())
+        .spawn(move || {
+            while let Ok(update) = receiver.recv() {
+                // The opt-in is checked here, at the last possible moment, so a
+                // segment that was in flight when the user turned storing off
+                // does not land in a file they just asked to be deleted.
+                if !load_current_settings(&app).store_usage {
+                    continue;
+                }
+                let Some(path) = usage_path(&app) else {
+                    continue;
+                };
+                if let Some(parent) = path.parent() {
+                    if std::fs::create_dir_all(parent).is_err() {
+                        continue;
+                    }
+                }
+
+                let mut usage = slugtale_lib::load_usage(&path);
+                slugtale_lib::record_counted_segment(&mut usage, update.date, update.segment);
+                if let Err(error) = slugtale_lib::save_usage(&path, &usage) {
+                    eprintln!("could not write the usage file: {error}");
+                    continue;
+                }
+
+                // The Usage pane is the only surface that shows any of this, so
+                // it is the only thing told. Nothing reaches the Pill, the tray,
+                // or a notification (ADR-0025).
+                if let Some(window) = app.get_webview_window("settings") {
+                    let _ = window.emit("usage-changed", ());
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
 fn diagnostic_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path()
         .app_config_dir()
@@ -2048,6 +2473,8 @@ fn main() {
         .manage(DictationSegments::default())
         .manage(HotkeyRegistrationState::default())
         .manage(AppleSpeechEngineState::default())
+        .manage(UsageRecorder::default())
+        .manage(TypingChallengeOpen::default())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -2060,6 +2487,9 @@ fn main() {
             // The Dictation Segment worker outlives every dictation: it is what
             // keeps segments landing in the order they were spoken.
             start_dictation_segment_worker(app.handle()).map_err(std::io::Error::other)?;
+            // Usage writes happen off the Dictation Workflow path (ADR-0025), so
+            // the queue that carries them has to exist before the first segment.
+            start_usage_worker(app.handle()).map_err(std::io::Error::other)?;
             // Reconcile the OS login item with the stored preference so a moved or
             // rebuilt app (dev binaries change path) does not drift out of sync.
             let settings = load_current_settings(app.handle());
@@ -2085,6 +2515,17 @@ fn main() {
                     let _ = window.hide();
                 }
             }
+            // The Typing Challenge window can also be closed from its title bar,
+            // which never reaches the close command. Either way, the hotkey has
+            // to start working again the moment the window goes.
+            if window.label() == TYPING_CHALLENGE_WINDOW
+                && matches!(
+                    event,
+                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+                )
+            {
+                window.state::<TypingChallengeOpen>().set(false);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             show_settings,
@@ -2107,7 +2548,15 @@ fn main() {
             install_engine_assets,
             remove_engine_assets,
             transcribe_captured_audio,
-            dictation_event
+            dictation_event,
+            get_usage_summary,
+            set_usage_storing,
+            set_typing_estimate,
+            get_typing_challenge,
+            submit_typing_challenge,
+            redo_typing_challenges,
+            open_typing_challenge,
+            close_typing_challenge
         ])
         .build(tauri::generate_context!())
         .expect("error while building Slugtale");

@@ -113,8 +113,12 @@ A speech recognition model file stored on the user's machine and used for local 
 _Avoid_: AI backend, remote model
 
 **Settings File**:
-The local non-secret configuration file that stores Slugtale preferences such as hotkey, activation mode, model choice, and launch-at-login preference.
+The local non-secret configuration file that stores Slugtale preferences such as hotkey, activation mode, model choice, launch-at-login, and Typing Baseline.
 _Avoid_: Database, keychain
+
+**Usage File**:
+The optional local file of Daily Usage Records, written only when the user chooses to store them. It is not the Settings File.
+_Avoid_: Stats store, usage database, telemetry file
 
 **Local Diagnostic Log**:
 A local troubleshooting log for development and support. It must not include captured audio or transcription text.
@@ -125,8 +129,32 @@ The spoken language Slugtale expects during dictation. The first version is Engl
 _Avoid_: Locale, model language
 
 **Dictation History**:
-A durable record of prior dictations, potentially including transcript text, target application context, or captured audio. Slugtale does not create dictation history in the first version.
+A durable record of prior dictations, potentially including transcript text, target application context, or captured audio. Slugtale does not create dictation history in the first version. Daily Usage Records are not dictation history: they contain no transcription, audio, or text target.
 _Avoid_: Recent dictations, transcript log
+
+**Usage**:
+The Settings window section that shows counted dictation totals and Time Saved. It is not Dictation History and not telemetry.
+_Avoid_: Statistics, analytics, dashboard
+
+**Daily Usage Record**:
+One local day's counted dictation totals: dictation count, word count, and speaking duration, with no transcription text.
+_Avoid_: History entry, session log, day bucket
+
+**Counted Segment**:
+A Dictation Segment that was inserted or rescued, and whose words and speaking duration therefore belong to Usage.
+_Avoid_: Successful dictation, completed job
+
+**Typing Baseline**:
+The user's typing speed in whitespace words per minute, taken from three Typing Challenges or from a typed estimate until those challenges are finished.
+_Avoid_: WPM setting, typing speed, perceived WPM
+
+**Typing Challenge**:
+A thirty-second English prose typing run used to measure the Typing Baseline. Three completed challenges produce the measured baseline.
+_Avoid_: Typing test, WPM quiz
+
+**Time Saved**:
+An estimate of how much typing time counted dictation avoided, using the current Typing Baseline minus speaking duration. It is computed from Daily Usage Records, never stored as its own total.
+_Avoid_: Hours saved, productivity score
 
 **Rewrite**:
 A future workflow where selected text in a text target is replaced or transformed using dictated instructions. Rewrite is not part of the first version.
