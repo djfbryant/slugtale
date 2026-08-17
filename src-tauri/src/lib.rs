@@ -30,6 +30,18 @@ pub use text_insertion::*;
 mod settings;
 pub use settings::*;
 
+/// Usage (CONTEXT.md, ADR-0025): the opt-in Daily Usage Records and the Time
+/// Saved derived from them. Aggregates only — no transcription, no audio, no
+/// text target — which is what keeps this outside Dictation History (ADR-0002).
+mod usage;
+pub use usage::*;
+
+/// The Typing Baseline and the three Typing Challenges that measure it
+/// (CONTEXT.md, ADR-0025). Lives in the Settings File so it survives turning
+/// Usage off.
+mod typing_baseline;
+pub use typing_baseline::*;
+
 /// Dictation Bar geometry: where the bar sits on screen and which part of its
 /// transparent window actually paints (slugtale-z7a).
 mod dictation_bar;
@@ -91,9 +103,10 @@ mod macos;
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    accessibility_trusted, activate_app, frontmost_app_pid, notify, open_accessibility_settings,
-    request_microphone_access, MacosInsertionRescue, MacosMicrophonePermissionSetup, MacosPlatform,
-    MacosTextInsertion, MacosTextInsertionPermissionSetup,
+    accessibility_trusted, activate_app, frontmost_app_pid, locale_week_start, notify,
+    open_accessibility_settings, request_microphone_access, MacosInsertionRescue,
+    MacosMicrophonePermissionSetup, MacosPlatform, MacosTextInsertion,
+    MacosTextInsertionPermissionSetup,
 };
 
 /// Windows implementation of platform adapters (ADR-0021, PRD slugtale-5pc).
@@ -105,9 +118,9 @@ mod windows;
 
 #[cfg(target_os = "windows")]
 pub use windows::{
-    activate_app, frontmost_app_pid, notify, open_microphone_settings, WindowsInsertionRescue,
-    WindowsMicrophonePermissionSetup, WindowsPlatform, WindowsTextInsertion,
-    WindowsTextInsertionPermissionSetup,
+    activate_app, frontmost_app_pid, locale_week_start, notify, open_microphone_settings,
+    WindowsInsertionRescue, WindowsMicrophonePermissionSetup, WindowsPlatform,
+    WindowsTextInsertion, WindowsTextInsertionPermissionSetup,
 };
 
 /// Linux implementation of platform adapters (ADR-0021, ADR-0023, PRD
@@ -119,9 +132,10 @@ mod linux;
 
 #[cfg(target_os = "linux")]
 pub use linux::{
-    activate_app, detect_session, frontmost_app_pid, notify, open_microphone_settings,
-    DisplayServerSession, LinuxInsertionRescue, LinuxMicrophonePermissionSetup, LinuxPlatform,
-    LinuxTextInsertion, LinuxTextInsertionPermissionSetup,
+    activate_app, detect_session, frontmost_app_pid, locale_week_start, notify,
+    open_microphone_settings, DisplayServerSession, LinuxInsertionRescue,
+    LinuxMicrophonePermissionSetup, LinuxPlatform, LinuxTextInsertion,
+    LinuxTextInsertionPermissionSetup,
 };
 
 #[cfg(test)]

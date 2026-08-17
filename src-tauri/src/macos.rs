@@ -2,11 +2,12 @@ use crate::{
     ClipboardInsertionRescue, FinalTranscription, InsertionRescue, InsertionRescueError,
     InsertionRescueOutcome, InsertionRescueSystem, MicrophonePermissionSetup, PlatformReadiness,
     TextInsertion, TextInsertionError, TextInsertionOutcome, TextInsertionPermissionSetup,
-    TextInsertionPipeline, TextInsertionSystem,
+    TextInsertionPipeline, TextInsertionSystem, WeekStart,
 };
 use block2::RcBlock;
 use objc2::runtime::Bool;
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
+use objc2_foundation::NSCalendar;
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use std::ffi::c_void;
 use std::io::Write;
@@ -397,5 +398,51 @@ pub fn activate_app(pid: i32) -> bool {
     match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
         Some(app) => app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows),
         None => false,
+    }
+}
+
+/// Which day the user's macOS locale calls the first of the week, for the Usage
+/// pane's "this week" (ADR-0025).
+///
+/// `NSCalendar.firstWeekday` is 1-based from Sunday and already reflects both
+/// the region and any explicit override in System Settings, which is exactly the
+/// question being asked. Anything other than Sunday collapses to Monday: those
+/// are the only two weeks the Usage pane knows how to draw, and Monday is the
+/// ISO answer that a Saturday-start locale is closest to.
+pub fn locale_week_start() -> WeekStart {
+    week_start_from_first_weekday(NSCalendar::currentCalendar().firstWeekday() as i64)
+}
+
+/// The mapping from Cocoa's 1-based weekday to the two weeks Usage supports.
+/// Split out from the framework call so it can be tested without a live locale.
+fn week_start_from_first_weekday(first_weekday: i64) -> WeekStart {
+    match first_weekday {
+        1 => WeekStart::Sunday,
+        _ => WeekStart::Monday,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sunday_start_locale_is_the_only_thing_that_moves_the_week_off_monday() {
+        // Cocoa counts weekdays from Sunday = 1. A US locale reports 1; the UK
+        // and most of Europe report 2; a handful of locales report 7 (Saturday),
+        // which Usage draws as the ISO week rather than inventing a third shape.
+        assert_eq!(week_start_from_first_weekday(1), WeekStart::Sunday);
+        assert_eq!(week_start_from_first_weekday(2), WeekStart::Monday);
+        assert_eq!(week_start_from_first_weekday(7), WeekStart::Monday);
+        // A calendar that will not answer must not silently become Sunday.
+        assert_eq!(week_start_from_first_weekday(0), WeekStart::Monday);
+    }
+
+    #[test]
+    fn the_live_locale_answers_with_one_of_the_two_supported_weeks() {
+        assert!(matches!(
+            locale_week_start(),
+            WeekStart::Sunday | WeekStart::Monday
+        ));
     }
 }

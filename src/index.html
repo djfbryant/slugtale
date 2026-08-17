@@ -562,6 +562,119 @@
 
     .engine-progress { margin-top: 8px; }
 
+    /* ---------- usage ---------- */
+
+    /* Time Saved is the hero, so it gets the only large number in the window.
+       Everything else on the pane is a supporting row. */
+    .usage-hero {
+      margin-top: 14px;
+      padding: 18px 18px 16px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface-sunken);
+      text-align: center;
+    }
+
+    .usage-hero-label {
+      margin: 0;
+      color: var(--text-dim);
+      font-size: 0.78rem;
+      font-weight: 650;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .usage-hero-value {
+      margin: 4px 0 0;
+      font-size: 1.85rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+    }
+
+    /* The hole: no Typing Baseline, so there is no honest number to print. */
+    .usage-hero[data-baseline="false"] .usage-hero-value { color: var(--text-faint); }
+
+    .usage-hero-note { margin: 6px 0 0; color: var(--text-dim); font-size: 0.79rem; }
+    .usage-hero-note[hidden] { display: none; }
+    .usage-hero-action { margin-top: 10px; }
+
+    .usage-spans {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .usage-span {
+      padding: 11px 12px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
+    }
+
+    .usage-span-label {
+      margin: 0;
+      color: var(--text-dim);
+      font-size: 0.74rem;
+      font-weight: 650;
+    }
+
+    .usage-span-saved {
+      margin: 5px 0 0;
+      font-size: 0.94rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .usage-span[data-baseline="false"] .usage-span-saved { color: var(--text-faint); }
+
+    .usage-span-counts {
+      margin: 3px 0 0;
+      color: var(--text-dim);
+      font-size: 0.76rem;
+    }
+
+    .usage-empty {
+      margin-top: 12px;
+      padding: 14px 16px;
+      border: 1px dashed var(--border-strong);
+      border-radius: 10px;
+      color: var(--text-dim);
+      font-size: 0.83rem;
+    }
+
+    .usage-empty[hidden] { display: none; }
+    .usage-spans[hidden] { display: none; }
+
+    .usage-confirm {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+      padding: 14px 16px;
+      border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+      border-radius: 10px;
+      background: var(--surface-sunken);
+    }
+
+    .usage-confirm[hidden] { display: none; }
+    .usage-confirm-text { margin: 0; font-size: 0.85rem; }
+    .usage-confirm-actions { display: inline-flex; justify-content: flex-end; gap: 8px; }
+
+    input[type="number"] {
+      min-height: 28px;
+      width: 84px;
+      border: 1px solid var(--border-strong);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.84rem;
+      padding: 3px 8px;
+    }
+
+    input[type="number"]:disabled { opacity: 0.5; cursor: not-allowed; }
+
     .pane[hidden] { display: none; }
   </style>
 </head>
@@ -577,6 +690,11 @@
         <span id="rail-icon-dictation" class="rail-icon"></span>
         <span>Dictation</span>
         <span id="badge-dictation" class="rail-badge" hidden></span>
+      </button>
+      <button id="rail-usage" class="rail-button" type="button" data-pane="usage" data-active="false">
+        <span id="rail-icon-usage" class="rail-icon"></span>
+        <span>Usage</span>
+        <span id="badge-usage" class="rail-badge" hidden></span>
       </button>
       <button id="rail-model" class="rail-button" type="button" data-pane="model" data-active="false">
         <span id="rail-icon-model" class="rail-icon"></span>
@@ -705,6 +823,82 @@
           <p id="dictation-bar-message" class="note" aria-live="polite"></p>
         </section>
 
+        <!-- Usage (ADR-0025). Everything here is a count: no transcript, no
+             audio, and no record of which app was dictated into. -->
+        <section id="pane-usage" class="pane" aria-labelledby="pane-title" hidden>
+          <div class="row">
+            <span class="row-label">
+              Store usage counts
+              <span class="row-sub">Daily counts of dictations, words, and speaking time, kept on this machine. No transcripts and no audio.</span>
+            </span>
+            <span class="row-control">
+              <input id="usage-store-toggle" type="checkbox" aria-label="Store usage counts" />
+            </span>
+          </div>
+
+          <div id="usage-hero" class="usage-hero" data-baseline="false">
+            <p class="usage-hero-label">Time saved, all time</p>
+            <p id="usage-hero-value" class="usage-hero-value">—</p>
+            <p id="usage-hero-note" class="usage-hero-note" hidden></p>
+            <div id="usage-hero-action" class="usage-hero-action">
+              <button id="usage-baseline-button" type="button" class="primary"></button>
+            </div>
+          </div>
+
+          <!-- Confirmation is in the pane rather than a browser dialog: the
+               webview implements no JS confirm panel, so window.confirm would
+               silently answer "no" and the user could never opt out. -->
+          <div id="usage-confirm" class="usage-confirm" hidden>
+            <p id="usage-confirm-text" class="usage-confirm-text"></p>
+            <span class="usage-confirm-actions">
+              <button id="usage-confirm-cancel" type="button">Cancel</button>
+              <button id="usage-confirm-accept" type="button" class="danger"></button>
+            </span>
+          </div>
+
+          <p id="usage-empty" class="usage-empty" hidden></p>
+
+          <div id="usage-spans" class="usage-spans">
+            <div id="usage-span-today" class="usage-span" data-baseline="false">
+              <p class="usage-span-label">Today</p>
+              <p id="usage-today-saved" class="usage-span-saved">—</p>
+              <p id="usage-today-counts" class="usage-span-counts">0 dictations · 0 words</p>
+            </div>
+            <div id="usage-span-week" class="usage-span" data-baseline="false">
+              <p class="usage-span-label">This week</p>
+              <p id="usage-week-saved" class="usage-span-saved">—</p>
+              <p id="usage-week-counts" class="usage-span-counts">0 dictations · 0 words</p>
+            </div>
+            <div id="usage-span-all" class="usage-span" data-baseline="false">
+              <p class="usage-span-label">All time</p>
+              <p id="usage-all-saved" class="usage-span-saved">—</p>
+              <p id="usage-all-counts" class="usage-span-counts">0 dictations · 0 words</p>
+            </div>
+          </div>
+
+          <div class="row">
+            <span class="row-label">
+              Typing speed
+              <span id="usage-baseline-state" class="row-sub">Not measured yet.</span>
+            </span>
+            <span class="row-control">
+              <button id="usage-redo-button" type="button" class="ghost" hidden>Redo</button>
+            </span>
+          </div>
+          <div id="usage-estimate-row" class="row">
+            <span class="row-label">
+              Estimate instead
+              <span class="row-sub">A stand-in until you take the challenge, in words per minute. The measured speed replaces it.</span>
+            </span>
+            <span class="row-control">
+              <input id="usage-estimate-input" type="number" min="10" max="150" step="1" inputmode="numeric" aria-label="Typing speed estimate in words per minute" />
+              <button id="usage-estimate-save" type="button" class="ghost">Save</button>
+              <button id="usage-estimate-clear" type="button" class="ghost">Clear</button>
+            </span>
+          </div>
+          <p id="usage-message" class="note" aria-live="polite"></p>
+        </section>
+
         <section id="pane-model" class="pane" aria-labelledby="pane-title" hidden>
           <div class="row">
             <span class="row-label">
@@ -777,6 +971,7 @@
       activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
       keyboard: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>',
       cpu: '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/>',
+      gauge: '<path d="M12 14v-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/><circle cx="12" cy="14" r="2"/>',
       sliders: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>'
     };
 
@@ -921,9 +1116,23 @@
     const PANES = [
       { id: "status", title: "Status", icon: "activity" },
       { id: "dictation", title: "Dictation", icon: "keyboard" },
+      { id: "usage", title: "Usage", icon: "gauge", subtitle: "Counts only, and only if you ask. Nothing is shared." },
       { id: "model", title: "Model", icon: "cpu", subtitle: "Runs locally. Nothing leaves this machine." },
       { id: "general", title: "General", icon: "sliders", subtitle: "How Slugtale behaves in the background." }
     ];
+
+    // Shown only outside the desktop app (no Tauri bridge), so the pane is never
+    // blank. Mirrors a fresh install: storing off, no baseline, nothing counted.
+    const fallbackUsage = {
+      store_usage: false,
+      today: { dictations: 0, words: 0, time_saved: null },
+      this_week: { dictations: 0, words: 0, time_saved: null },
+      all_time: { dictations: 0, words: 0, time_saved: null },
+      measured_wpm: null,
+      typed_estimate: null,
+      completed_challenges: 0,
+      challenge_count: 3
+    };
 
     const HOTKEY_GLYPHS = { Cmd: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧" };
 
@@ -947,6 +1156,23 @@
     // install/remove runs at a time, same discipline as `downloading` above.
     let installingEngine = null;
     let installProgress = null;
+    let latestUsage = fallbackUsage;
+    let savingUsage = false;
+    // Which destructive Usage action is waiting to be confirmed, or null.
+    let pendingUsageConfirm = null;
+
+    // Both of these throw something away that cannot be got back, so both ask
+    // first — in the pane, because this webview has no JS confirm dialog.
+    const USAGE_CONFIRMATIONS = {
+      "stop-storing": {
+        text: "Stop storing usage counts and delete the ones already stored? Your measured typing speed is kept.",
+        accept: "Delete counts"
+      },
+      redo: {
+        text: "Take all three typing challenges again? This replaces your measured speed, and the time saved shown here will move with it.",
+        accept: "Redo challenges"
+      }
+    };
 
     function stateWord(item) {
       if (item.ready) return "ready";
@@ -1091,6 +1317,115 @@
 
       renderBadges(report);
       renderBlocker(report);
+    }
+
+    function plural(count, word) {
+      return `${count} ${word}${count === 1 ? "" : "s"}`;
+    }
+
+    // Time Saved arrives already worded from the backend — "About 12 min" — so
+    // there is one place that decides how it reads. `null` is the hole: no
+    // Typing Baseline, so no honest number to print.
+    function renderUsageSpan(prefix, span, hasBaseline) {
+      document.getElementById(`usage-span-${prefix}`).dataset.baseline = String(hasBaseline);
+      document.getElementById(`usage-${prefix}-saved`).textContent = span.time_saved || "—";
+      document.getElementById(`usage-${prefix}-counts`).textContent =
+        `${plural(span.dictations, "dictation")} · ${plural(span.words, "word")}`;
+    }
+
+    function renderUsage(usage, message, isError = false) {
+      latestUsage = usage;
+
+      const hasBaseline = usage.measured_wpm !== null || usage.typed_estimate !== null;
+      const wpm = usage.measured_wpm !== null ? usage.measured_wpm : usage.typed_estimate;
+      const storing = Boolean(usage.store_usage);
+      const anyDays = usage.all_time.dictations > 0 || usage.all_time.words > 0;
+
+      // The toggle always shows what is actually stored, so an unconfirmed
+      // flick of it does not leave the switch lying about the state.
+      document.getElementById("usage-store-toggle").checked = storing;
+      document.getElementById("usage-store-toggle").disabled = savingUsage;
+
+      const confirmBlock = document.getElementById("usage-confirm");
+      const confirmation = USAGE_CONFIRMATIONS[pendingUsageConfirm];
+      confirmBlock.hidden = !confirmation;
+      if (confirmation) {
+        document.getElementById("usage-confirm-text").textContent = confirmation.text;
+        document.getElementById("usage-confirm-accept").textContent = confirmation.accept;
+      }
+
+      const hero = document.getElementById("usage-hero");
+      hero.dataset.baseline = String(hasBaseline);
+      document.getElementById("usage-hero-value").textContent = usage.all_time.time_saved || "—";
+
+      // Three empty states, and they say different things because the user is in
+      // three different situations (ADR-0025).
+      const empty = document.getElementById("usage-empty");
+      if (!storing) {
+        empty.hidden = false;
+        empty.textContent =
+          "Nothing is being stored. Turn on storing above and Slugtale will start counting from then on — dictations before that are not kept. You can still measure your typing speed.";
+      } else if (!anyDays) {
+        empty.hidden = false;
+        empty.textContent = "No dictations counted yet.";
+      } else {
+        empty.hidden = true;
+      }
+
+      // With storing off the numbers are all zero, so showing three zero cards
+      // would only imply the user had a quiet week.
+      document.getElementById("usage-spans").hidden = !storing;
+      renderUsageSpan("today", usage.today, hasBaseline);
+      renderUsageSpan("week", usage.this_week, hasBaseline);
+      renderUsageSpan("all", usage.all_time, hasBaseline);
+
+      const heroNote = document.getElementById("usage-hero-note");
+      heroNote.hidden = hasBaseline;
+      heroNote.textContent = hasBaseline
+        ? ""
+        : "Slugtale needs to know how fast you type before it can say what dictating saved you.";
+
+      // The take-the-baseline action stays until the three challenges are done;
+      // after that Redo on the row below is the way back in.
+      const baselineButton = document.getElementById("usage-baseline-button");
+      const measured = usage.measured_wpm !== null;
+      document.getElementById("usage-hero-action").hidden = measured;
+      baselineButton.disabled = savingUsage;
+      baselineButton.textContent = usage.completed_challenges > 0
+        ? `Continue typing challenge (${usage.completed_challenges} of ${usage.challenge_count})`
+        : "Measure my typing speed";
+
+      const state = document.getElementById("usage-baseline-state");
+      if (measured) {
+        state.textContent = `${usage.measured_wpm} words per minute, measured over ${usage.challenge_count} typing challenges.`;
+      } else if (usage.typed_estimate !== null) {
+        state.textContent = `${usage.typed_estimate} words per minute, your estimate. Take the challenge to measure it.`;
+      } else if (usage.completed_challenges > 0) {
+        state.textContent = `${usage.completed_challenges} of ${usage.challenge_count} typing challenges done.`;
+      } else {
+        state.textContent = "Not measured yet.";
+      }
+      document.getElementById("usage-redo-button").hidden = usage.completed_challenges === 0;
+      document.getElementById("usage-redo-button").disabled = savingUsage;
+
+      // Once measured, the estimate cannot be typed over the measurement, so the
+      // field is disabled rather than silently ignoring what is typed into it.
+      const estimateInput = document.getElementById("usage-estimate-input");
+      if (document.activeElement !== estimateInput) {
+        estimateInput.value = usage.typed_estimate === null ? "" : String(usage.typed_estimate);
+      }
+      estimateInput.disabled = measured || savingUsage;
+      document.getElementById("usage-estimate-save").disabled = measured || savingUsage;
+      document.getElementById("usage-estimate-clear").disabled =
+        measured || savingUsage || usage.typed_estimate === null;
+      document.getElementById("usage-estimate-row").hidden = measured;
+
+      const messageEl = document.getElementById("usage-message");
+      messageEl.classList.toggle("error", Boolean(isError));
+      messageEl.textContent = message
+        || (wpm === null || wpm === undefined
+          ? "Time saved is worked out from your counts and your typing speed. It is never stored as a number."
+          : "Counts stay on this machine. Time saved is worked out from them, so it moves if you measure your typing again.");
     }
 
     function renderModel(status, message, isError = false) {
@@ -1733,6 +2068,10 @@
       return core && core.invoke;
     }
 
+    function tauriEvent() {
+      return window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen;
+    }
+
     function makeChannel(onMessage) {
       const core = tauriCore();
       if (!core || typeof core.Channel !== "function") return null;
@@ -1830,7 +2169,8 @@
         loadModelStatus(),
         loadSettings(),
         loadDictationBarDisplays(),
-        loadEngines()
+        loadEngines(),
+        loadUsage()
       ]);
     }
 
@@ -1881,6 +2221,117 @@
       } catch (error) {
         await loadModelStatus();
         showMessageError(String(error));
+      }
+    }
+
+    async function loadUsage() {
+      const invoke = tauriInvoke();
+      if (!invoke) {
+        renderUsage(fallbackUsage);
+        return;
+      }
+
+      try {
+        renderUsage(await invoke("get_usage_summary"));
+      } catch (error) {
+        renderUsage(latestUsage, String(error), true);
+      }
+    }
+
+    // Every Usage write goes through here so the pane can only have one in
+    // flight, and so a refused change (an estimate typed over a measurement)
+    // leaves the controls showing what is actually stored.
+    async function saveUsage(command, args, confirmedMessage) {
+      const invoke = tauriInvoke();
+      if (!invoke || savingUsage) return;
+
+      savingUsage = true;
+      renderUsage(latestUsage);
+
+      let message = confirmedMessage;
+      let isError = false;
+      try {
+        renderUsage(await invoke(command, args), message);
+      } catch (error) {
+        message = String(error);
+        isError = true;
+      }
+
+      // Re-render once the controls are enabled again, carrying the message: a
+      // refusal has to survive the re-enable, or the user is left looking at a
+      // field that silently snapped back to the stored value.
+      savingUsage = false;
+      renderUsage(latestUsage, message, isError);
+    }
+
+    // Turning storing off deletes the counts, and there is no undo, so it asks
+    // first. Turning it on needs no confirmation: it only starts a count.
+    function setUsageStoring(enabled) {
+      if (!enabled) {
+        pendingUsageConfirm = "stop-storing";
+        renderUsage(latestUsage);
+        return;
+      }
+      pendingUsageConfirm = null;
+      saveUsage("set_usage_storing", { enabled });
+    }
+
+    function cancelUsageConfirm() {
+      pendingUsageConfirm = null;
+      renderUsage(latestUsage);
+    }
+
+    async function acceptUsageConfirm() {
+      const pending = pendingUsageConfirm;
+      pendingUsageConfirm = null;
+      if (pending === "stop-storing") {
+        await saveUsage("set_usage_storing", { enabled: false });
+        return;
+      }
+      if (pending === "redo") await redoTypingChallenges();
+    }
+
+    function saveTypingEstimate() {
+      const raw = document.getElementById("usage-estimate-input").value.trim();
+      if (raw === "") {
+        saveUsage("set_typing_estimate", { estimate: null });
+        return;
+      }
+
+      const estimate = Number(raw);
+      if (!Number.isInteger(estimate)) {
+        renderUsage(latestUsage, "Enter a whole number of words per minute.", true);
+        return;
+      }
+      saveUsage("set_typing_estimate", { estimate });
+    }
+
+    async function openTypingChallenge() {
+      const invoke = tauriInvoke();
+      if (!invoke) return;
+
+      try {
+        await invoke("open_typing_challenge");
+      } catch (error) {
+        renderUsage(latestUsage, String(error), true);
+      }
+    }
+
+    function askRedoTypingChallenges() {
+      pendingUsageConfirm = "redo";
+      renderUsage(latestUsage);
+    }
+
+    async function redoTypingChallenges() {
+      const invoke = tauriInvoke();
+      if (!invoke) return;
+
+      try {
+        await invoke("redo_typing_challenges");
+        await loadUsage();
+        await openTypingChallenge();
+      } catch (error) {
+        renderUsage(latestUsage, String(error), true);
       }
     }
 
@@ -1988,6 +2439,27 @@
         saveLaunchAtLogin(event.target.checked);
       });
 
+      document.getElementById("usage-store-toggle").addEventListener("change", (event) => {
+        setUsageStoring(event.target.checked);
+      });
+      document.getElementById("usage-baseline-button").addEventListener("click", openTypingChallenge);
+      document.getElementById("usage-redo-button").addEventListener("click", askRedoTypingChallenges);
+      document.getElementById("usage-confirm-cancel").addEventListener("click", cancelUsageConfirm);
+      document.getElementById("usage-confirm-accept").addEventListener("click", acceptUsageConfirm);
+      document.getElementById("usage-estimate-save").addEventListener("click", saveTypingEstimate);
+      document.getElementById("usage-estimate-clear").addEventListener("click", () => {
+        document.getElementById("usage-estimate-input").value = "";
+        saveTypingEstimate();
+      });
+      document.getElementById("usage-estimate-input").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") saveTypingEstimate();
+      });
+
+      // The only push Usage gets: a Counted Segment landed, or the Typing
+      // Challenge window changed the baseline every number here is read against.
+      const listen = tauriEvent();
+      if (listen) listen("usage-changed", () => loadUsage());
+
       document.getElementById("blocker-action").addEventListener("click", (event) => {
         const itemId = event.currentTarget.dataset.item;
         if (!itemId) return;
@@ -1998,10 +2470,14 @@
         if (PANE_FOR_ITEM[itemId]) selectPane(PANE_FOR_ITEM[itemId]);
       });
 
-      window.addEventListener("focus", () => loadReadiness({ background: true }));
+      window.addEventListener("focus", () => {
+        loadReadiness({ background: true });
+        loadUsage();
+      });
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") {
           loadReadiness({ background: true });
+          loadUsage();
         }
       });
 

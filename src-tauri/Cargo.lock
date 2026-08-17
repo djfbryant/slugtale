@@ -4296,6 +4296,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "block2",
+ "chrono",
  "cpal",
  "enigo",
  "notify-rust",
@@ -4303,6 +4304,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-av-foundation",
+ "objc2-foundation",
  "parakeet-rs",
  "serde",
  "serde_json",

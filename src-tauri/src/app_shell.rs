@@ -111,6 +111,15 @@ mod tests {
     }
 
     #[test]
+    fn the_typing_challenge_window_is_destroyed_rather_than_hidden() {
+        // It is created on demand and most users never open it, so keeping a
+        // live webview around for the life of the app would be a cost with no
+        // benefit. Closing it also has to actually end the run in progress, not
+        // park a half-typed passage behind a hidden window (ADR-0025).
+        assert!(!hides_on_close("typing-challenge"));
+    }
+
+    #[test]
     fn dictation_bar_preserves_the_active_text_target_focus() {
         assert!(!dictation_bar_should_take_focus());
     }

@@ -43,10 +43,12 @@ use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
     InsertionRescueError, InsertionRescueOutcome, InsertionRescueSystem, MicrophonePermissionSetup,
     PlatformReadiness, TextInsertion, TextInsertionError, TextInsertionOutcome,
-    TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem,
+    TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem, WeekStart,
 };
 use std::ptr;
 use windows_sys::Win32::Foundation::{GlobalFree, BOOL, ERROR_SUCCESS, HANDLE, HWND, LPARAM};
+use windows_sys::Win32::Globalization::{GetLocaleInfoEx, LOCALE_IFIRSTDAYOFWEEK};
+use windows_sys::core::PCWSTR;
 use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -625,9 +627,66 @@ pub fn notify(title: &str, body: &str) -> Result<(), String> {
     notify_user(title, body)
 }
 
+/// Which day the user's Windows locale calls the first of the week, for the
+/// Usage pane's "this week" (ADR-0025).
+///
+/// `LOCALE_IFIRSTDAYOFWEEK` counts from Monday = 0, unlike Cocoa's Sunday = 1,
+/// so the two platform adapters cannot share a mapping. It is returned as a
+/// decimal string, which is why this asks for the text and parses it rather
+/// than using the `LOCALE_RETURN_NUMBER` form.
+pub fn locale_week_start() -> WeekStart {
+    let mut buffer = [0u16; 8];
+    // A null locale name is Win32's LOCALE_NAME_USER_DEFAULT.
+    let written = unsafe {
+        GetLocaleInfoEx(
+            ptr::null::<u16>() as PCWSTR,
+            LOCALE_IFIRSTDAYOFWEEK,
+            buffer.as_mut_ptr(),
+            buffer.len() as i32,
+        )
+    };
+    if written <= 0 {
+        return WeekStart::default();
+    }
+
+    // The count includes the terminating null.
+    let text = String::from_utf16_lossy(&buffer[..(written as usize).saturating_sub(1)]);
+    week_start_from_first_day_of_week(text.trim().parse::<i64>().ok())
+}
+
+/// The mapping from Windows' Monday-based weekday to the two weeks Usage
+/// supports. Split out from the framework call so it can be tested without a
+/// live locale.
+fn week_start_from_first_day_of_week(first_day: Option<i64>) -> WeekStart {
+    match first_day {
+        Some(6) => WeekStart::Sunday,
+        _ => WeekStart::Monday,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sunday_start_locale_is_the_only_thing_that_moves_the_week_off_monday() {
+        // Windows counts from Monday = 0, so Sunday is 6 — the opposite end from
+        // Cocoa's Sunday = 1. Getting this backwards would put a US user's week
+        // a day out, so it is worth pinning.
+        assert_eq!(week_start_from_first_day_of_week(Some(6)), WeekStart::Sunday);
+        assert_eq!(week_start_from_first_day_of_week(Some(0)), WeekStart::Monday);
+        assert_eq!(week_start_from_first_day_of_week(Some(5)), WeekStart::Monday);
+        // A locale that will not answer must not silently become Sunday.
+        assert_eq!(week_start_from_first_day_of_week(None), WeekStart::Monday);
+    }
+
+    #[test]
+    fn the_live_locale_answers_with_one_of_the_two_supported_weeks() {
+        assert!(matches!(
+            locale_week_start(),
+            WeekStart::Sunday | WeekStart::Monday
+        ));
+    }
 
     #[test]
     fn microphone_is_granted_when_both_consent_toggles_allow() {

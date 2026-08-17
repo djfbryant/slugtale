@@ -32,7 +32,7 @@ use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
     InsertionRescueError, InsertionRescueOutcome, InsertionRescueSystem, MicrophonePermissionSetup,
     PlatformReadiness, TextInsertion, TextInsertionError, TextInsertionOutcome,
-    TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem,
+    TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem, WeekStart,
 };
 use cpal::traits::HostTrait;
 
@@ -563,9 +563,88 @@ pub fn open_microphone_settings() -> Result<(), String> {
     Ok(())
 }
 
+/// Which day the user's Linux locale calls the first of the week, for the Usage
+/// pane's "this week" (ADR-0025).
+///
+/// The authoritative answer is glibc's `_NL_TIME_FIRST_WEEKDAY`, which needs
+/// libc — a dependency this adapter does not otherwise carry, for one integer.
+/// So this reads the locale environment instead and asks only the question that
+/// actually changes the answer: is this one of the regions that starts its week
+/// on Sunday? Everywhere else, including an unset locale, gets the ISO week,
+/// which is what the overwhelming majority of Linux locales use anyway.
+pub fn locale_week_start() -> WeekStart {
+    let locale = std::env::var("LC_ALL")
+        .or_else(|_| std::env::var("LC_TIME"))
+        .or_else(|_| std::env::var("LANG"))
+        .ok();
+    week_start_from_locale(locale.as_deref())
+}
+
+/// The regions whose locales start the week on Sunday. Territory codes rather
+/// than languages, because `es_ES` starts on Monday while `es_MX` starts on
+/// Sunday — the language says nothing about the week.
+const SUNDAY_START_TERRITORIES: [&str; 16] = [
+    "US", "CA", "MX", "BR", "AR", "CO", "PE", "VE", "JP", "KR", "TW", "PH", "IL", "ZA", "IN", "CN",
+];
+
+fn week_start_from_locale(locale: Option<&str>) -> WeekStart {
+    let Some(locale) = locale else {
+        return WeekStart::default();
+    };
+    // `en_US.UTF-8@euro` — the territory is between the underscore and whatever
+    // codeset or modifier follows it.
+    let Some(rest) = locale.split('_').nth(1) else {
+        return WeekStart::default();
+    };
+    let territory = rest
+        .split(['.', '@'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+
+    if SUNDAY_START_TERRITORIES.contains(&territory.as_str()) {
+        WeekStart::Sunday
+    } else {
+        WeekStart::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_week_starts_on_sunday_only_where_the_territory_says_so() {
+        assert_eq!(week_start_from_locale(Some("en_US.UTF-8")), WeekStart::Sunday);
+        assert_eq!(week_start_from_locale(Some("en_GB.UTF-8")), WeekStart::Monday);
+        assert_eq!(week_start_from_locale(Some("de_DE.UTF-8")), WeekStart::Monday);
+    }
+
+    #[test]
+    fn the_language_alone_does_not_decide_the_week() {
+        // The case a language-only guess gets wrong: Spain starts on Monday and
+        // Mexico on Sunday, and both speak Spanish.
+        assert_eq!(week_start_from_locale(Some("es_ES.UTF-8")), WeekStart::Monday);
+        assert_eq!(week_start_from_locale(Some("es_MX.UTF-8")), WeekStart::Sunday);
+    }
+
+    #[test]
+    fn an_absent_or_shapeless_locale_falls_back_to_the_iso_week() {
+        assert_eq!(week_start_from_locale(None), WeekStart::Monday);
+        assert_eq!(week_start_from_locale(Some("C")), WeekStart::Monday);
+        assert_eq!(week_start_from_locale(Some("POSIX")), WeekStart::Monday);
+        assert_eq!(week_start_from_locale(Some("")), WeekStart::Monday);
+    }
+
+    #[test]
+    fn codesets_and_modifiers_are_stripped_before_the_territory_is_read() {
+        assert_eq!(week_start_from_locale(Some("en_US")), WeekStart::Sunday);
+        assert_eq!(week_start_from_locale(Some("en_us.utf8")), WeekStart::Sunday);
+        assert_eq!(
+            week_start_from_locale(Some("ca_ES.UTF-8@valencia")),
+            WeekStart::Monday
+        );
+    }
 
     #[test]
     fn xdg_session_type_x11_is_authoritative() {
