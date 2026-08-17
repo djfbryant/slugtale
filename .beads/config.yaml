@@ -65,7 +65,7 @@
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
 
-sync.remote: "git+ssh://git@github.com/djfbryant/slugtale.git"
+# sync.remote: "git+ssh://git@github.com/djfbryant/slugtale.git"
 # This project's Dolt database is embedded (.beads/metadata.json pins
 # dolt_mode="embedded", data in .beads/embeddeddolt/slugtale). The user-level
 # ~/.beads/config.yaml turns shared-server mode on for every project, which sent
