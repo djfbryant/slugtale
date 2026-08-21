@@ -877,10 +877,7 @@ mod tests {
 
         let completed = session.on_event(DictationEvent::Stop).unwrap();
 
-        assert!(matches!(
-            completed,
-            Some(AudioCaptureOutcome::Completed(_))
-        ));
+        assert!(matches!(completed, Some(AudioCaptureOutcome::Completed(_))));
     }
 
     #[test]

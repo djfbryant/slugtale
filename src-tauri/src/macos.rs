@@ -7,8 +7,8 @@ use crate::{
 use block2::RcBlock;
 use objc2::runtime::Bool;
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
-use objc2_foundation::NSCalendar;
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
+use objc2_foundation::NSCalendar;
 use std::ffi::c_void;
 use std::io::Write;
 use std::process::{Command, Stdio};

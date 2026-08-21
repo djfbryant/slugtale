@@ -53,7 +53,9 @@ impl FinalTranscription {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AsrError {
-    ModelMissing { path: std::path::PathBuf },
+    ModelMissing {
+        path: std::path::PathBuf,
+    },
     UnsupportedAudio(String),
     Runtime(String),
     /// A Transcription Engine was asked to transcribe on a machine or a build
@@ -67,7 +69,9 @@ pub enum AsrError {
     /// A second opinion ran past its bounded budget. The router keeps the first
     /// usable transcript when this happens, so the user never waits on a slow
     /// engine (slugtale-vjs.3).
-    Timeout { engine: crate::TranscriptionEngine },
+    Timeout {
+        engine: crate::TranscriptionEngine,
+    },
 }
 
 impl std::fmt::Display for AsrError {
@@ -509,7 +513,9 @@ impl crate::TranscriptionProvider for WhisperTranscriptionProvider {
 
     fn availability(&self) -> crate::EngineAvailability {
         if !cfg!(feature = "local-whisper-runtime") {
-            return crate::EngineAvailability::Unavailable(crate::EngineUnavailable::RuntimeNotBuilt);
+            return crate::EngineAvailability::Unavailable(
+                crate::EngineUnavailable::RuntimeNotBuilt,
+            );
         }
         if !self.runtime.model_path().exists() {
             return crate::EngineAvailability::Unavailable(
@@ -813,8 +819,7 @@ mod tests {
 
     #[test]
     fn negative_whisper_timestamps_clamp_to_zero() {
-        let transcription =
-            transcript_from_whisper_segments(vec![(" Hi.".to_string(), -5, -1)]);
+        let transcription = transcript_from_whisper_segments(vec![(" Hi.".to_string(), -5, -1)]);
 
         assert_eq!(transcription.segments[0].start_ms, 0);
         assert_eq!(transcription.segments[0].end_ms, 0);

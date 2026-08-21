@@ -67,8 +67,7 @@ impl LocalDate {
         let month = self.month as i64;
         let day = self.day as i64;
         let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-        let day_of_era =
-            year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
         era * 146_097 + day_of_era - 719_468
     }
 
@@ -105,8 +104,7 @@ impl LocalDate {
         let year_of_era =
             (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
         let year = year_of_era + era * 400;
-        let day_of_year =
-            day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
         let month_index = (5 * day_of_year + 2) / 153;
         let day = day_of_year - (153 * month_index + 2) / 5 + 1;
         let month = month_index + if month_index < 10 { 3 } else { -9 };
@@ -627,7 +625,10 @@ mod tests {
         };
 
         assert_eq!(time_saved_seconds(&totals, Some(60)), Some(0.0));
-        assert_eq!(format_time_saved(time_saved_seconds(&totals, Some(60))), "0 min");
+        assert_eq!(
+            format_time_saved(time_saved_seconds(&totals, Some(60))),
+            "0 min"
+        );
     }
 
     #[test]
@@ -693,8 +694,10 @@ mod tests {
     fn an_unreadable_usage_file_reads_as_no_days_rather_than_failing() {
         // Usage must never be able to break the app, and there is nothing here
         // worth recovering: the counts are a mirror, not the user's work.
-        let path = std::env::temp_dir()
-            .join(format!("slugtale-usage-corrupt-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-usage-corrupt-{}.json",
+            std::process::id()
+        ));
         std::fs::write(&path, "{ not json").unwrap();
 
         let usage = load_usage(&path);

@@ -256,7 +256,11 @@ mod tests {
     #[test]
     fn a_challenge_scores_correct_words_per_minute() {
         // Six correct words in thirty seconds is twelve a minute.
-        let score = score_typing_challenge("the quick brown fox jumps over", "the quick brown fox jumps over", 30);
+        let score = score_typing_challenge(
+            "the quick brown fox jumps over",
+            "the quick brown fox jumps over",
+            30,
+        );
         assert_eq!(score, 12);
     }
 
@@ -272,7 +276,11 @@ mod tests {
         assert_eq!(score, 5);
 
         // Typing one easy word repeatedly scores one word, not six.
-        let score = score_typing_challenge("the quick brown fox jumps over", "the the the the the the", 60);
+        let score = score_typing_challenge(
+            "the quick brown fox jumps over",
+            "the the the the the the",
+            60,
+        );
         assert_eq!(score, 1);
     }
 
@@ -287,7 +295,10 @@ mod tests {
 
     #[test]
     fn a_zero_second_challenge_scores_nothing_rather_than_dividing_by_zero() {
-        assert_eq!(score_typing_challenge("the quick brown fox", "the quick brown fox", 0), 0);
+        assert_eq!(
+            score_typing_challenge("the quick brown fox", "the quick brown fox", 0),
+            0
+        );
     }
 
     #[test]

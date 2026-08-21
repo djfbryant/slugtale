@@ -578,7 +578,10 @@ mod tests {
     #[test]
     fn an_empty_transcript_is_replaced_by_the_second_opinion() {
         let primary = FakeProvider::new(TranscriptionEngine::Whisper, "   ");
-        let second = FakeProvider::new(TranscriptionEngine::Parakeet, "Book the meeting for Tuesday");
+        let second = FakeProvider::new(
+            TranscriptionEngine::Parakeet,
+            "Book the meeting for Tuesday",
+        );
         let second_calls = second.calls.clone();
         let router = router_with(primary, second, SecondOpinionMode::Automatic);
 
@@ -646,9 +649,8 @@ mod tests {
         // Confidence from two engines is not on the same scale until it has been
         // calibrated on the same recordings, so the second opinion must clear
         // its own threshold. An engine that reports nothing cannot clear it.
-        let primary =
-            FakeProvider::new(TranscriptionEngine::Whisper, "meet at the sluggish tail")
-                .with_confidence(0.2);
+        let primary = FakeProvider::new(TranscriptionEngine::Whisper, "meet at the sluggish tail")
+            .with_confidence(0.2);
 
         let silent = FakeProvider::new(TranscriptionEngine::Parakeet, "meet at the Slugtale");
         let routed = router_with(primary.clone(), silent, SecondOpinionMode::Automatic)
@@ -660,9 +662,8 @@ mod tests {
             SelectionReason::PrimaryKeptAfterSecondOpinion
         );
 
-        let confident =
-            FakeProvider::new(TranscriptionEngine::Parakeet, "meet at the Slugtale")
-                .with_confidence(0.93);
+        let confident = FakeProvider::new(TranscriptionEngine::Parakeet, "meet at the Slugtale")
+            .with_confidence(0.93);
         let routed = router_with(primary, confident, SecondOpinionMode::Automatic)
             .route(&speech_of_seconds(3.0))
             .unwrap();
@@ -703,7 +704,10 @@ mod tests {
             routed.selection,
             SelectionReason::PrimaryKeptSecondOpinionUnavailable
         );
-        assert_eq!(routed.second_opinion_engine, Some(TranscriptionEngine::Parakeet));
+        assert_eq!(
+            routed.second_opinion_engine,
+            Some(TranscriptionEngine::Parakeet)
+        );
     }
 
     #[test]
@@ -755,8 +759,14 @@ mod tests {
         let diagnostics = routed.diagnostics();
         let json = serde_json::to_string(&diagnostics).unwrap();
 
-        assert_eq!(diagnostics.escalation, Some(EscalationReason::EmptyTranscript));
-        assert_eq!(diagnostics.selection, SelectionReason::SecondOpinionSelected);
+        assert_eq!(
+            diagnostics.escalation,
+            Some(EscalationReason::EmptyTranscript)
+        );
+        assert_eq!(
+            diagnostics.selection,
+            SelectionReason::SecondOpinionSelected
+        );
         // The whole point of the reason codes: a maintainer can read why the
         // router acted without the log ever holding what the user said.
         assert!(

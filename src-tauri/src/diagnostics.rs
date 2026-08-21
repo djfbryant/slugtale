@@ -8,8 +8,8 @@
 
 use crate::{
     AsrError, AsrRuntime, AudioCaptureError, CapturedAudio, DictationEvent, FinalTranscription,
-    InsertionRescue, InsertionRescueError, InsertionRescueOutcome, ReadinessItem, RoutingDiagnostics,
-    TextInsertion, TextInsertionError, TextInsertionOutcome,
+    InsertionRescue, InsertionRescueError, InsertionRescueOutcome, ReadinessItem,
+    RoutingDiagnostics, TextInsertion, TextInsertionError, TextInsertionOutcome,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -405,7 +405,7 @@ mod tests {
         let mut log = LocalDiagnosticLog::new(true, |line: &str| lines.push(line.to_string()));
 
         log.record(DiagnosticEvent::transcription_completed(
-            &FinalTranscription::plain(secret)
+            &FinalTranscription::plain(secret),
         ));
 
         assert_eq!(lines.len(), 1);
@@ -556,7 +556,8 @@ mod tests {
         ];
 
         for secret in secrets {
-            let event = DiagnosticEvent::transcription_completed(&FinalTranscription::plain(secret));
+            let event =
+                DiagnosticEvent::transcription_completed(&FinalTranscription::plain(secret));
             let line = render_diagnostic_event(&event);
 
             assert!(!line.contains(secret), "leaked transcript text: {line}");
@@ -604,7 +605,7 @@ mod tests {
 
         log.record(DiagnosticEvent::hotkey_transition(DictationEvent::Start));
         log.record(DiagnosticEvent::transcription_completed(
-            &FinalTranscription::plain(secret)
+            &FinalTranscription::plain(secret),
         ));
 
         let contents = std::fs::read_to_string(&log_path).unwrap();

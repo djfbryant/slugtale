@@ -603,7 +603,10 @@ impl ParakeetProvider {
     /// the shutdown path does not need a `cfg`.
     pub fn shutdown(&self) {}
 
-    fn transcribe_validated(&self, _audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
+    fn transcribe_validated(
+        &self,
+        _audio: &CapturedAudio,
+    ) -> Result<EngineTranscription, AsrError> {
         Err(runtime_not_built())
     }
 }
@@ -678,8 +681,7 @@ impl ParakeetProvider {
                         PARAKEET_ASSETS.len()
                     ),
                 };
-                *lock(&self.availability) =
-                    EngineAvailability::Unavailable(reason.clone());
+                *lock(&self.availability) = EngineAvailability::Unavailable(reason.clone());
                 return Err(AsrError::EngineUnavailable {
                     engine: PARAKEET_ENGINE,
                     reason,
@@ -878,7 +880,10 @@ mod tests {
             assert!(asset.bytes > 0);
 
             let url = asset.download_url();
-            assert!(url.contains(PARAKEET_REVISION_COMMIT), "{url} must be pinned");
+            assert!(
+                url.contains(PARAKEET_REVISION_COMMIT),
+                "{url} must be pinned"
+            );
             assert!(!url.contains("/main/"), "{url} must not float to a branch");
             assert!(url.ends_with(asset.filename));
         }
@@ -936,14 +941,18 @@ mod tests {
         let downloader = FixtureDownloader::faithful();
         let mut updates = Vec::new();
 
-        let status = install_parakeet_manifest(&asset_dir, &manifest, &downloader, &mut |progress| {
-            updates.push(progress)
-        })
-        .expect("a faithful download installs");
+        let status =
+            install_parakeet_manifest(&asset_dir, &manifest, &downloader, &mut |progress| {
+                updates.push(progress)
+            })
+            .expect("a faithful download installs");
 
         assert!(status.present);
         assert!(status.missing.is_empty());
-        assert_eq!(status.installed_bytes, parakeet_manifest_total_bytes(&manifest));
+        assert_eq!(
+            status.installed_bytes,
+            parakeet_manifest_total_bytes(&manifest)
+        );
         assert_eq!(
             std::fs::read(asset_dir.join("vocab.txt")).unwrap(),
             b"parakeet vocabulary"
