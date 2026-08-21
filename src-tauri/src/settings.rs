@@ -128,6 +128,11 @@ pub struct Settings {
     /// counts does not throw away a measurement the user sat through.
     #[serde(default)]
     pub typing_baseline: crate::TypingBaseline,
+    /// How much local Transcript Cleanup runs before insertion (slugtale-kyc).
+    /// Older Settings Files predate this field and therefore keep Basic, which
+    /// is what they always got.
+    #[serde(default)]
+    pub transcript_cleanup: crate::TranscriptCleanupMode,
 }
 
 impl Default for Settings {
@@ -146,6 +151,7 @@ impl Default for Settings {
             second_opinion: crate::SecondOpinionMode::default(),
             store_usage: false,
             typing_baseline: crate::TypingBaseline::default(),
+            transcript_cleanup: crate::TranscriptCleanupMode::default(),
         }
     }
 }
@@ -199,6 +205,16 @@ pub fn apply_hotkey_settings(
 /// restarts, applying to all future transcriptions (CONTEXT.md).
 pub fn apply_transcription_settings(settings: &mut Settings, speed_profile: SpeedProfile) {
     settings.speed_profile = speed_profile;
+}
+
+/// Update the Transcript Cleanup mode stored in the Settings File (slugtale-kyc).
+/// Applies to every future Dictation Segment; nothing about it needs the model
+/// reloaded or the platform asked.
+pub fn apply_transcript_cleanup_settings(
+    settings: &mut Settings,
+    transcript_cleanup: crate::TranscriptCleanupMode,
+) {
+    settings.transcript_cleanup = transcript_cleanup;
 }
 
 /// Update the Dictation Bar's appearance: where it sits on screen and which
@@ -329,6 +345,7 @@ mod tests {
             primary_engine: crate::TranscriptionEngine::Parakeet,
             second_opinion: crate::SecondOpinionMode::Automatic,
             store_usage: true,
+            transcript_cleanup: crate::TranscriptCleanupMode::CleanDictation,
             typing_baseline: crate::TypingBaseline {
                 challenges: vec![crate::TypingChallengeResult {
                     passage_index: 0,
@@ -395,6 +412,66 @@ mod tests {
 
         apply_transcription_settings(&mut settings, SpeedProfile::Accurate);
         assert_eq!(settings.speed_profile, SpeedProfile::Accurate);
+    }
+
+    #[test]
+    fn transcript_cleanup_defaults_to_basic_and_can_be_disabled() {
+        assert_eq!(
+            Settings::default().transcript_cleanup,
+            crate::TranscriptCleanupMode::Basic
+        );
+
+        let mut settings = Settings::default();
+        apply_transcript_cleanup_settings(
+            &mut settings,
+            crate::TranscriptCleanupMode::CleanDictation,
+        );
+        assert_eq!(
+            settings.transcript_cleanup,
+            crate::TranscriptCleanupMode::CleanDictation
+        );
+
+        // The whole point of the setting: turning it off restores exactly the
+        // behaviour users had before filler cleanup existed.
+        apply_transcript_cleanup_settings(&mut settings, crate::TranscriptCleanupMode::Basic);
+        assert_eq!(
+            settings.transcript_cleanup,
+            crate::TranscriptCleanupMode::Basic
+        );
+    }
+
+    #[test]
+    fn a_settings_file_written_before_transcript_cleanup_loads_as_basic() {
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-settings-legacy-cleanup-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"hotkey":null,"activation_mode":"toggle","launch_at_login":false,"diagnostic_logging":false,"model":null,"speed_profile":"balanced"}"#,
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        assert_eq!(
+            loaded.transcript_cleanup,
+            crate::TranscriptCleanupMode::Basic
+        );
+    }
+
+    #[test]
+    fn transcript_cleanup_persists_as_a_stable_kebab_string() {
+        let settings = Settings {
+            transcript_cleanup: crate::TranscriptCleanupMode::CleanDictation,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(
+            json.contains("\"transcript_cleanup\":\"clean-dictation\""),
+            "got: {json}"
+        );
     }
     #[test]
     fn apply_launch_at_login_settings_stores_choice() {

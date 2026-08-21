@@ -768,6 +768,16 @@
           </div>
           <div class="row">
             <span class="row-label">
+              Transcript cleanup
+              <span class="row-sub">Clean dictation removes hesitations like “um” locally before typing. Nothing leaves this device.</span>
+            </span>
+            <span class="segmented" role="group" aria-label="Transcript cleanup">
+              <button id="cleanup-basic" type="button" data-cleanup="basic" aria-pressed="true">Basic</button>
+              <button id="cleanup-clean-dictation" type="button" data-cleanup="clean-dictation" aria-pressed="false">Clean dictation</button>
+            </span>
+          </div>
+          <div class="row">
+            <span class="row-label">
               Transcription engines
               <span class="row-sub">On-device only. Audio and transcripts never leave this machine, and there is no cloud fallback.</span>
             </span>
@@ -1014,7 +1024,8 @@
       accent_color: "red",
       bar_display: "primary",
       primary_engine: "whisper",
-      second_opinion: "off"
+      second_opinion: "off",
+      transcript_cleanup: "basic"
     };
 
     // Shown only outside the desktop app (no Tauri bridge), so the pane is never
@@ -1139,6 +1150,7 @@
     let downloading = false;
     let savingSettings = false;
     let savingProfile = false;
+    let savingCleanup = false;
     let savingDictationBar = false;
     let savingLaunchAtLogin = false;
     let openingReadinessAction = false;
@@ -1518,6 +1530,13 @@
         button.disabled = savingProfile;
       });
 
+      const cleanupMode = currentSettings.transcript_cleanup || "basic";
+      ["basic", "clean-dictation"].forEach((option) => {
+        const button = document.getElementById(`cleanup-${option}`);
+        button.setAttribute("aria-pressed", String(option === cleanupMode));
+        button.disabled = savingCleanup;
+      });
+
       const barPosition = currentSettings.bar_position || "bottom-center";
       BAR_POSITIONS.forEach((option) => {
         const button = document.getElementById(`position-${option}`);
@@ -1633,6 +1652,37 @@
         messageEl.textContent = "Saved. Applies to your next dictation.";
       } catch (error) {
         savingProfile = false;
+        renderSettings(previousSettings);
+        messageEl.classList.add("error");
+        messageEl.textContent = String(error);
+      }
+    }
+
+    async function saveTranscriptCleanupSettings(cleanupMode) {
+      const invoke = tauriInvoke();
+      const previousSettings = { ...currentSettings };
+      const nextSettings = { ...currentSettings, transcript_cleanup: cleanupMode };
+      const messageEl = document.getElementById("transcription-message");
+
+      if (!invoke) {
+        renderSettings(nextSettings);
+        return;
+      }
+
+      savingCleanup = true;
+      renderSettings(nextSettings);
+      messageEl.classList.remove("error");
+      messageEl.textContent = "Saving…";
+
+      try {
+        const saved = await invoke("save_transcript_cleanup_settings", { cleanupMode });
+        savingCleanup = false;
+        renderSettings(saved);
+        messageEl.textContent = cleanupMode === "clean-dictation"
+          ? "Saved. Applies to your next dictation."
+          : "Saved.";
+      } catch (error) {
+        savingCleanup = false;
         renderSettings(previousSettings);
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
@@ -2403,6 +2453,13 @@
         document.getElementById(`speed-${profile}`).addEventListener("click", () => {
           if (profile === currentSettings.speed_profile) return;
           saveTranscriptionSettings(profile);
+        });
+      });
+
+      ["basic", "clean-dictation"].forEach((mode) => {
+        document.getElementById(`cleanup-${mode}`).addEventListener("click", () => {
+          if (mode === (currentSettings.transcript_cleanup || "basic")) return;
+          saveTranscriptCleanupSettings(mode);
         });
       });
 

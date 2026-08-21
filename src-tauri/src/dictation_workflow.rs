@@ -1,6 +1,6 @@
 use crate::{
     transcribe_captured_audio, AsrError, AsrRuntime, CapturedAudio, FinalTranscription,
-    InsertionRescue, InsertionRescueError, TextInsertion,
+    InsertionRescue, InsertionRescueError, TextInsertion, TranscriptCleanupMode,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +51,7 @@ pub struct DictationWorkflow<'a> {
     runtime: &'a dyn AsrRuntime,
     text_insertion: &'a dyn TextInsertion,
     insertion_rescue: &'a dyn InsertionRescue,
+    transcript_cleanup: TranscriptCleanupMode,
 }
 
 impl<'a> DictationWorkflow<'a> {
@@ -58,11 +59,13 @@ impl<'a> DictationWorkflow<'a> {
         runtime: &'a dyn AsrRuntime,
         text_insertion: &'a dyn TextInsertion,
         insertion_rescue: &'a dyn InsertionRescue,
+        transcript_cleanup: TranscriptCleanupMode,
     ) -> Self {
         Self {
             runtime,
             text_insertion,
             insertion_rescue,
+            transcript_cleanup,
         }
     }
 
@@ -77,7 +80,8 @@ impl<'a> DictationWorkflow<'a> {
     ) -> Result<DictationSegmentOutcome, DictationWorkflowError> {
         let transcription = transcribe_captured_audio(self.runtime, audio)
             .map_err(DictationWorkflowError::Transcription)?;
-        let transcription = clean_dictation_segment(transcription, position);
+        let transcription =
+            clean_dictation_segment(transcription, position, self.transcript_cleanup);
 
         // A segment that heard nothing must not be inserted. Before Segment
         // Pauses this only mattered for a whole silent dictation; now a user who
@@ -121,15 +125,23 @@ impl<'a> DictationWorkflow<'a> {
 ///
 /// Preserved ASR segments ride along untouched; cleanup that consumes their
 /// timing comes later (slugtale-gnx).
+///
+/// The cleanup mode selects how much runs (slugtale-kyc): Basic is whitespace
+/// normalization only, while Clean Dictation additionally removes safe filler
+/// words such as "um" before the position rules apply.
 pub fn clean_dictation_segment(
     transcription: FinalTranscription,
     position: DictationSegmentPosition,
+    cleanup: TranscriptCleanupMode,
 ) -> FinalTranscription {
-    let normalized = transcription
-        .text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let normalized = match cleanup {
+        TranscriptCleanupMode::Basic => transcription
+            .text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+        TranscriptCleanupMode::CleanDictation => crate::remove_filler_words(&transcription.text),
+    };
     if normalized.is_empty() {
         return FinalTranscription {
             text: normalized,
@@ -159,7 +171,11 @@ pub fn clean_dictation_segment(
 /// Transcript Cleanup for a dictation's opening text. Retained as the name the
 /// rest of the app already uses for the single-insertion case.
 pub fn clean_final_transcription(transcription: FinalTranscription) -> FinalTranscription {
-    clean_dictation_segment(transcription, DictationSegmentPosition::First)
+    clean_dictation_segment(
+        transcription,
+        DictationSegmentPosition::First,
+        TranscriptCleanupMode::Basic,
+    )
 }
 
 #[cfg(test)]
@@ -172,7 +188,8 @@ mod tests {
         let runtime = FakeAsrRuntime::new("  hello   from slugtale  ");
         let insertion = FakeTextInsertion::default();
         let rescue = FakeInsertionRescue::default();
-        let workflow = DictationWorkflow::new(&runtime, &insertion, &rescue);
+        let workflow =
+            DictationWorkflow::new(&runtime, &insertion, &rescue, TranscriptCleanupMode::Basic);
 
         let outcome = workflow
             .complete(
@@ -197,7 +214,8 @@ mod tests {
         let runtime = FakeAsrRuntime::new("This is the second paragraph.");
         let insertion = FakeTextInsertion::default();
         let rescue = FakeInsertionRescue::default();
-        let workflow = DictationWorkflow::new(&runtime, &insertion, &rescue);
+        let workflow =
+            DictationWorkflow::new(&runtime, &insertion, &rescue, TranscriptCleanupMode::Basic);
 
         let outcome = workflow
             .complete(
@@ -222,7 +240,8 @@ mod tests {
         let runtime = FakeAsrRuntime::new("   ");
         let insertion = FakeTextInsertion::default();
         let rescue = FakeInsertionRescue::default();
-        let workflow = DictationWorkflow::new(&runtime, &insertion, &rescue);
+        let workflow =
+            DictationWorkflow::new(&runtime, &insertion, &rescue, TranscriptCleanupMode::Basic);
 
         for position in [
             DictationSegmentPosition::First,
@@ -244,7 +263,8 @@ mod tests {
         let runtime = FakeAsrRuntime::new("  rescue   this transcription ");
         let insertion = FakeTextInsertion::fails();
         let rescue = FakeInsertionRescue::default();
-        let workflow = DictationWorkflow::new(&runtime, &insertion, &rescue);
+        let workflow =
+            DictationWorkflow::new(&runtime, &insertion, &rescue, TranscriptCleanupMode::Basic);
 
         let outcome = workflow
             .complete(
@@ -272,9 +292,59 @@ mod tests {
         let cleaned = clean_dictation_segment(
             FinalTranscription::plain("  and then   we left  ".to_string()),
             DictationSegmentPosition::Continuation,
+            TranscriptCleanupMode::Basic,
         );
 
         assert_eq!(cleaned.text, " and then we left");
+    }
+
+    #[test]
+    fn clean_dictation_removes_fillers_before_the_position_rules_apply() {
+        // The dropped opening filler leaves lowercase text, which the
+        // first-segment capitalization rule then lifts as usual.
+        let cleaned = clean_dictation_segment(
+            FinalTranscription::plain("Um,   hello  from slugtale".to_string()),
+            DictationSegmentPosition::First,
+            TranscriptCleanupMode::CleanDictation,
+        );
+
+        assert_eq!(cleaned.text, "Hello from slugtale");
+    }
+
+    #[test]
+    fn clean_dictation_never_damages_meaningful_words() {
+        // "like" carries meaning; filler cleanup must prefer leaving it alone
+        // over ever guessing wrong about it.
+        let cleaned = clean_dictation_segment(
+            FinalTranscription::plain("I like coffee".to_string()),
+            DictationSegmentPosition::First,
+            TranscriptCleanupMode::CleanDictation,
+        );
+
+        assert_eq!(cleaned.text, "I like coffee");
+    }
+
+    #[test]
+    fn a_segment_that_is_all_filler_inserts_nothing() {
+        let runtime = FakeAsrRuntime::new("um... uh");
+        let insertion = FakeTextInsertion::default();
+        let rescue = FakeInsertionRescue::default();
+        let workflow = DictationWorkflow::new(
+            &runtime,
+            &insertion,
+            &rescue,
+            TranscriptCleanupMode::CleanDictation,
+        );
+
+        let outcome = workflow
+            .complete(
+                CapturedAudio::mono_16khz(vec![0.0]),
+                DictationSegmentPosition::First,
+            )
+            .unwrap();
+
+        assert!(!outcome.inserted);
+        assert!(insertion.inserted.borrow().is_empty());
     }
 
     #[test]
@@ -282,6 +352,7 @@ mod tests {
         let cleaned = clean_dictation_segment(
             FinalTranscription::plain("   ".to_string()),
             DictationSegmentPosition::Continuation,
+            TranscriptCleanupMode::Basic,
         );
 
         assert_eq!(cleaned.text, "");
@@ -305,7 +376,11 @@ mod tests {
             },
         ]);
 
-        let cleaned = clean_dictation_segment(transcription, DictationSegmentPosition::First);
+        let cleaned = clean_dictation_segment(
+            transcription,
+            DictationSegmentPosition::First,
+            TranscriptCleanupMode::Basic,
+        );
 
         assert_eq!(cleaned.text, "Hello from slugtale.");
         assert_eq!(cleaned.segments.len(), 2);
@@ -315,7 +390,9 @@ mod tests {
     }
     #[test]
     fn clean_final_transcription_trims_and_normalizes_repeated_spaces() {
-        let transcription = clean_final_transcription(FinalTranscription::plain("  hello   from    slugtale  ".to_string()));
+        let transcription = clean_final_transcription(FinalTranscription::plain(
+            "  hello   from    slugtale  ".to_string(),
+        ));
 
         assert_eq!(transcription.text, "Hello from slugtale");
     }

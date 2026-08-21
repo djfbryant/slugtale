@@ -726,7 +726,12 @@ fn run_dictation_segment(
             let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
             let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
             let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
-            let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
+            let workflow = slugtale_lib::DictationWorkflow::new(
+                &runtime,
+                &insertion,
+                &rescue,
+                settings.transcript_cleanup,
+            );
             workflow
                 .complete(audio, position)
                 .map_err(|error| error.to_string())
@@ -739,7 +744,12 @@ fn run_dictation_segment(
             let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
             let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
             let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
-            let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
+            let workflow = slugtale_lib::DictationWorkflow::new(
+                &runtime,
+                &insertion,
+                &rescue,
+                settings.transcript_cleanup,
+            );
             workflow
                 .complete(audio, position)
                 .map_err(|error| error.to_string())
@@ -765,7 +775,12 @@ fn run_dictation_segment(
             let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
             let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
             let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
-            let workflow = slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue);
+            let workflow = slugtale_lib::DictationWorkflow::new(
+                &runtime,
+                &insertion,
+                &rescue,
+                settings.transcript_cleanup,
+            );
             workflow
                 .complete(audio, position)
                 .map_err(|error| error.to_string())
@@ -1560,6 +1575,17 @@ fn save_transcription_settings(
 ) -> Result<slugtale_lib::Settings, String> {
     let mut settings = load_current_settings(&app);
     slugtale_lib::apply_transcription_settings(&mut settings, speed_profile);
+    save_current_settings(&app, &settings)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+fn save_transcript_cleanup_settings(
+    app: tauri::AppHandle,
+    cleanup_mode: slugtale_lib::TranscriptCleanupMode,
+) -> Result<slugtale_lib::Settings, String> {
+    let mut settings = load_current_settings(&app);
+    slugtale_lib::apply_transcript_cleanup_settings(&mut settings, cleanup_mode);
     save_current_settings(&app, &settings)?;
     Ok(settings)
 }
@@ -2536,6 +2562,7 @@ fn main() {
             open_text_insertion_settings,
             save_hotkey_settings,
             save_transcription_settings,
+            save_transcript_cleanup_settings,
             save_dictation_bar_settings,
             dictation_bar_pointer_over,
             save_launch_at_login,
