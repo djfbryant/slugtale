@@ -46,9 +46,9 @@ use crate::{
     TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem, WeekStart,
 };
 use std::ptr;
+use windows_sys::core::PCWSTR;
 use windows_sys::Win32::Foundation::{GlobalFree, BOOL, ERROR_SUCCESS, HANDLE, HWND, LPARAM};
 use windows_sys::Win32::Globalization::{GetLocaleInfoEx, LOCALE_IFIRSTDAYOFWEEK};
-use windows_sys::core::PCWSTR;
 use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -673,9 +673,18 @@ mod tests {
         // Windows counts from Monday = 0, so Sunday is 6 — the opposite end from
         // Cocoa's Sunday = 1. Getting this backwards would put a US user's week
         // a day out, so it is worth pinning.
-        assert_eq!(week_start_from_first_day_of_week(Some(6)), WeekStart::Sunday);
-        assert_eq!(week_start_from_first_day_of_week(Some(0)), WeekStart::Monday);
-        assert_eq!(week_start_from_first_day_of_week(Some(5)), WeekStart::Monday);
+        assert_eq!(
+            week_start_from_first_day_of_week(Some(6)),
+            WeekStart::Sunday
+        );
+        assert_eq!(
+            week_start_from_first_day_of_week(Some(0)),
+            WeekStart::Monday
+        );
+        assert_eq!(
+            week_start_from_first_day_of_week(Some(5)),
+            WeekStart::Monday
+        );
         // A locale that will not answer must not silently become Sunday.
         assert_eq!(week_start_from_first_day_of_week(None), WeekStart::Monday);
     }

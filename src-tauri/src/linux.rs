@@ -375,9 +375,7 @@ pub(crate) fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()>
     }
 
     let mut paplay = std::process::Command::new("paplay");
-    paplay.arg(format!(
-        "/usr/share/sounds/freedesktop/stereo/{ogg}.oga"
-    ));
+    paplay.arg(format!("/usr/share/sounds/freedesktop/stereo/{ogg}.oga"));
     let _ = spawn_null(paplay);
     Ok(())
 }
@@ -615,17 +613,32 @@ mod tests {
 
     #[test]
     fn the_week_starts_on_sunday_only_where_the_territory_says_so() {
-        assert_eq!(week_start_from_locale(Some("en_US.UTF-8")), WeekStart::Sunday);
-        assert_eq!(week_start_from_locale(Some("en_GB.UTF-8")), WeekStart::Monday);
-        assert_eq!(week_start_from_locale(Some("de_DE.UTF-8")), WeekStart::Monday);
+        assert_eq!(
+            week_start_from_locale(Some("en_US.UTF-8")),
+            WeekStart::Sunday
+        );
+        assert_eq!(
+            week_start_from_locale(Some("en_GB.UTF-8")),
+            WeekStart::Monday
+        );
+        assert_eq!(
+            week_start_from_locale(Some("de_DE.UTF-8")),
+            WeekStart::Monday
+        );
     }
 
     #[test]
     fn the_language_alone_does_not_decide_the_week() {
         // The case a language-only guess gets wrong: Spain starts on Monday and
         // Mexico on Sunday, and both speak Spanish.
-        assert_eq!(week_start_from_locale(Some("es_ES.UTF-8")), WeekStart::Monday);
-        assert_eq!(week_start_from_locale(Some("es_MX.UTF-8")), WeekStart::Sunday);
+        assert_eq!(
+            week_start_from_locale(Some("es_ES.UTF-8")),
+            WeekStart::Monday
+        );
+        assert_eq!(
+            week_start_from_locale(Some("es_MX.UTF-8")),
+            WeekStart::Sunday
+        );
     }
 
     #[test]
@@ -639,7 +652,10 @@ mod tests {
     #[test]
     fn codesets_and_modifiers_are_stripped_before_the_territory_is_read() {
         assert_eq!(week_start_from_locale(Some("en_US")), WeekStart::Sunday);
-        assert_eq!(week_start_from_locale(Some("en_us.utf8")), WeekStart::Sunday);
+        assert_eq!(
+            week_start_from_locale(Some("en_us.utf8")),
+            WeekStart::Sunday
+        );
         assert_eq!(
             week_start_from_locale(Some("ca_ES.UTF-8@valencia")),
             WeekStart::Monday
