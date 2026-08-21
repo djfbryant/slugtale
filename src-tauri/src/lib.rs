@@ -89,6 +89,12 @@ pub use segmentation::*;
 mod dictation_workflow;
 pub use dictation_workflow::*;
 
+/// Transcript Cleanup (slugtale-m4h): the deterministic, entirely local passes
+/// that run between transcription and insertion — whitespace normalization in
+/// every mode, plus conservative filler-word removal when enabled.
+mod transcript_cleanup;
+pub use transcript_cleanup::*;
+
 mod readiness;
 pub use readiness::*;
 
