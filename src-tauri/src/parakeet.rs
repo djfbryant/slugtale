@@ -759,9 +759,7 @@ impl ParakeetProvider {
 
         Ok(EngineTranscription {
             engine: PARAKEET_ENGINE,
-            transcription: FinalTranscription {
-                text: result.text.trim().to_string(),
-            },
+            transcription: FinalTranscription::plain(result.text.trim()),
             // TDT greedy decoding produces a single hypothesis. There is no
             // n-best list to expose, so the router selects between engines
             // rather than between Parakeet's own alternatives.

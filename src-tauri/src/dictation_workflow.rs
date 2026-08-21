@@ -118,6 +118,9 @@ impl<'a> DictationWorkflow<'a> {
 /// - A continuation keeps whatever casing the engine produced. The first segment
 ///   still gets its first letter capitalised, but doing that mid-dictation would
 ///   force a capital onto speech that carried on from the previous sentence.
+///
+/// Preserved ASR segments ride along untouched; cleanup that consumes their
+/// timing comes later (slugtale-gnx).
 pub fn clean_dictation_segment(
     transcription: FinalTranscription,
     position: DictationSegmentPosition,
@@ -128,7 +131,10 @@ pub fn clean_dictation_segment(
         .collect::<Vec<_>>()
         .join(" ");
     if normalized.is_empty() {
-        return FinalTranscription { text: normalized };
+        return FinalTranscription {
+            text: normalized,
+            segments: transcription.segments,
+        };
     }
 
     let text = match position {
@@ -144,7 +150,10 @@ pub fn clean_dictation_segment(
         }
     };
 
-    FinalTranscription { text }
+    FinalTranscription {
+        text,
+        segments: transcription.segments,
+    }
 }
 
 /// Transcript Cleanup for a dictation's opening text. Retained as the name the
@@ -261,9 +270,7 @@ mod tests {
         // A continuation carries on from speech that may not have ended a
         // sentence, so forcing a capital here would corrupt the reading.
         let cleaned = clean_dictation_segment(
-            FinalTranscription {
-                text: "  and then   we left  ".to_string(),
-            },
+            FinalTranscription::plain("  and then   we left  ".to_string()),
             DictationSegmentPosition::Continuation,
         );
 
@@ -273,19 +280,42 @@ mod tests {
     #[test]
     fn continuation_cleanup_of_silence_stays_empty_rather_than_a_bare_space() {
         let cleaned = clean_dictation_segment(
-            FinalTranscription {
-                text: "   ".to_string(),
-            },
+            FinalTranscription::plain("   ".to_string()),
             DictationSegmentPosition::Continuation,
         );
 
         assert_eq!(cleaned.text, "");
     }
+
+    #[test]
+    fn cleanup_preserves_asr_segments_unchanged_alongside_the_flattened_text() {
+        // The flattened text is normalized for insertion while the raw segment
+        // text and timing ride along untouched, so the later pause-aware
+        // cleanup (slugtale-gnx) still sees the ASR boundaries.
+        let transcription = FinalTranscription::from_segments(vec![
+            crate::TranscriptSegment {
+                text: " Hello ".to_string(),
+                start_ms: 0,
+                end_ms: 1_500,
+            },
+            crate::TranscriptSegment {
+                text: " from slugtale.".to_string(),
+                start_ms: 1_600,
+                end_ms: 3_200,
+            },
+        ]);
+
+        let cleaned = clean_dictation_segment(transcription, DictationSegmentPosition::First);
+
+        assert_eq!(cleaned.text, "Hello from slugtale.");
+        assert_eq!(cleaned.segments.len(), 2);
+        assert_eq!(cleaned.segments[0].text, " Hello ");
+        assert_eq!(cleaned.segments[0].start_ms, 0);
+        assert_eq!(cleaned.segments[1].end_ms, 3_200);
+    }
     #[test]
     fn clean_final_transcription_trims_and_normalizes_repeated_spaces() {
-        let transcription = clean_final_transcription(FinalTranscription {
-            text: "  hello   from    slugtale  ".to_string(),
-        });
+        let transcription = clean_final_transcription(FinalTranscription::plain("  hello   from    slugtale  ".to_string()));
 
         assert_eq!(transcription.text, "Hello from slugtale");
     }
@@ -299,9 +329,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let transcription = clean_final_transcription(FinalTranscription {
-                text: input.to_string(),
-            });
+            let transcription = clean_final_transcription(FinalTranscription::plain(input));
 
             assert_eq!(transcription.text, expected);
         }
@@ -324,9 +352,7 @@ mod tests {
     impl AsrRuntime for FakeAsrRuntime {
         fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
             self.sample_counts.borrow_mut().push(audio.samples.len());
-            Ok(FinalTranscription {
-                text: self.text.to_string(),
-            })
+            Ok(FinalTranscription::plain(self.text))
         }
     }
 

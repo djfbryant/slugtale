@@ -817,9 +817,7 @@ mod tests {
     fn plain(text: &str) -> EngineTranscription {
         EngineTranscription::plain(
             TranscriptionEngine::Whisper,
-            FinalTranscription {
-                text: text.to_string(),
-            },
+            FinalTranscription::plain(text),
             Duration::from_millis(200),
         )
     }
@@ -916,9 +914,7 @@ mod tests {
             }
             Ok(EngineTranscription {
                 engine: self.engine,
-                transcription: FinalTranscription {
-                    text: self.text.clone(),
-                },
+                transcription: FinalTranscription::plain(self.text.clone()),
                 alternatives: Vec::new(),
                 confidence: EngineConfidence {
                     mean: self.confidence,

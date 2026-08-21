@@ -598,9 +598,7 @@ mod tests {
     fn a_plain_engine_result_reports_no_confidence_and_no_alternatives() {
         let result = EngineTranscription::plain(
             TranscriptionEngine::Whisper,
-            FinalTranscription {
-                text: "hello from slugtale".to_string(),
-            },
+            FinalTranscription::plain("hello from slugtale"),
             Duration::from_millis(240),
         );
 

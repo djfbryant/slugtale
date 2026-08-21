@@ -4,9 +4,51 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
+/// One recognized segment of a local Whisper transcription: the recognized
+/// text plus its start/end timing. Ordered segments are preserved through ASR
+/// so Transcript Cleanup can decide later whether pauses imply line breaks,
+/// instead of the runtime flattening them away immediately (slugtale-cqy).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptSegment {
+    pub text: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalTranscription {
     pub text: String,
+    /// The ordered recognized segments behind [`FinalTranscription::text`].
+    /// Empty when an engine exposes no segment timing (or in tests where
+    /// timing is irrelevant); cleanup must treat a flattened transcript with
+    /// no segments exactly like before.
+    #[serde(default)]
+    pub segments: Vec<TranscriptSegment>,
+}
+
+impl FinalTranscription {
+    /// Segmentless construction for engines that expose no segment timing and
+    /// for tests where timing is irrelevant.
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            segments: Vec::new(),
+        }
+    }
+
+    /// Flatten ordered segments into the final text. Joining is concatenation
+    /// followed by one overall trim — exactly what the Whisper runtime did
+    /// before segments were preserved — so existing behavior is unchanged
+    /// when no cleanup consumes the boundaries yet.
+    pub fn from_segments(segments: Vec<TranscriptSegment>) -> Self {
+        let text = segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect::<String>()
+            .trim()
+            .to_string();
+        Self { text, segments }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,17 +397,40 @@ impl AsrRuntime for LocalWhisperRuntime {
                 .full(params, &audio.samples)
                 .map_err(|error| AsrError::Runtime(error.to_string()))?;
 
-            let text = state
+            let segments = state
                 .as_iter()
-                .map(|segment| segment.to_string())
-                .collect::<Vec<_>>()
-                .join("")
-                .trim()
-                .to_string();
+                .map(|segment| {
+                    (
+                        segment.to_string(),
+                        segment.start_timestamp(),
+                        segment.end_timestamp(),
+                    )
+                })
+                .collect::<Vec<_>>();
 
-            Ok(FinalTranscription { text })
+            Ok(transcript_from_whisper_segments(segments))
         })
     }
+}
+
+/// Map raw Whisper segments (text plus centisecond timestamps) to a
+/// [`FinalTranscription`]. whisper.cpp reports t0/t1 in 10 ms ticks, so they
+/// are converted to milliseconds here; negative ticks (seen on some models
+/// before audio start) clamp to zero.
+#[cfg(any(test, feature = "local-whisper-runtime"))]
+fn transcript_from_whisper_segments(
+    segments: impl IntoIterator<Item = (String, i64, i64)>,
+) -> FinalTranscription {
+    FinalTranscription::from_segments(
+        segments
+            .into_iter()
+            .map(|(text, start_cs, end_cs)| TranscriptSegment {
+                text,
+                start_ms: start_cs.clamp(0, i64::MAX) as u64 * 10,
+                end_ms: end_cs.clamp(0, i64::MAX) as u64 * 10,
+            })
+            .collect(),
+    )
 }
 
 #[cfg(not(feature = "local-whisper-runtime"))]
@@ -705,10 +770,54 @@ mod tests {
     impl AsrRuntime for FakeAsrRuntime {
         fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
             self.sample_counts.borrow_mut().push(audio.samples.len());
-            Ok(FinalTranscription {
-                text: self.text.to_string(),
-            })
+            Ok(FinalTranscription::plain(self.text))
         }
+    }
+
+    #[test]
+    fn whisper_segments_preserve_ordered_text_and_timing() {
+        let transcription = transcript_from_whisper_segments(vec![
+            (" Hello".to_string(), 0, 150),
+            (" from slugtale.".to_string(), 160, 320),
+        ]);
+
+        assert_eq!(
+            transcription.segments,
+            vec![
+                TranscriptSegment {
+                    text: " Hello".to_string(),
+                    start_ms: 0,
+                    end_ms: 1_500
+                },
+                TranscriptSegment {
+                    text: " from slugtale.".to_string(),
+                    start_ms: 1_600,
+                    end_ms: 3_200
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn flattening_whisper_segments_matches_the_previous_immediate_join() {
+        // Before segments were preserved the runtime joined segment texts with
+        // no separator and trimmed once; the flattened text must stay identical
+        // so behavior is unchanged until cleanup consumes boundaries.
+        let transcription = transcript_from_whisper_segments(vec![
+            (" Hello ".to_string(), 0, 100),
+            (" from slugtale. ".to_string(), 110, 250),
+        ]);
+
+        assert_eq!(transcription.text, "Hello  from slugtale.");
+    }
+
+    #[test]
+    fn negative_whisper_timestamps_clamp_to_zero() {
+        let transcription =
+            transcript_from_whisper_segments(vec![(" Hi.".to_string(), -5, -1)]);
+
+        assert_eq!(transcription.segments[0].start_ms, 0);
+        assert_eq!(transcription.segments[0].end_ms, 0);
     }
 
     fn unique_test_dir(name: &str) -> std::path::PathBuf {

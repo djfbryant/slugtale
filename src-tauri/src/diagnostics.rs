@@ -405,9 +405,7 @@ mod tests {
         let mut log = LocalDiagnosticLog::new(true, |line: &str| lines.push(line.to_string()));
 
         log.record(DiagnosticEvent::transcription_completed(
-            &FinalTranscription {
-                text: secret.to_string(),
-            },
+            &FinalTranscription::plain(secret)
         ));
 
         assert_eq!(lines.len(), 1);
@@ -558,14 +556,31 @@ mod tests {
         ];
 
         for secret in secrets {
-            let event = DiagnosticEvent::transcription_completed(&FinalTranscription {
-                text: secret.to_string(),
-            });
+            let event = DiagnosticEvent::transcription_completed(&FinalTranscription::plain(secret));
             let line = render_diagnostic_event(&event);
 
             assert!(!line.contains(secret), "leaked transcript text: {line}");
             assert!(line.contains(&secret.chars().count().to_string()));
         }
+    }
+
+    #[test]
+    fn transcription_completed_log_reduces_segmented_transcripts_to_counts_too() {
+        // Preserved Whisper segments carry transcript text inside the
+        // transcription (slugtale-cqy); the log must keep reducing it to
+        // counts and never touch segment content (ADR-0019).
+        let secret = "the eagle lands at midnight";
+        let transcription = FinalTranscription::from_segments(vec![crate::TranscriptSegment {
+            text: secret.to_string(),
+            start_ms: 0,
+            end_ms: 1_500,
+        }]);
+        assert_eq!(transcription.text, secret);
+
+        let event = DiagnosticEvent::transcription_completed(&transcription);
+        let line = render_diagnostic_event(&event);
+
+        assert!(!line.contains(secret), "leaked segment text: {line}");
     }
 
     #[test]
@@ -589,9 +604,7 @@ mod tests {
 
         log.record(DiagnosticEvent::hotkey_transition(DictationEvent::Start));
         log.record(DiagnosticEvent::transcription_completed(
-            &FinalTranscription {
-                text: secret.to_string(),
-            },
+            &FinalTranscription::plain(secret)
         ));
 
         let contents = std::fs::read_to_string(&log_path).unwrap();
@@ -609,9 +622,7 @@ mod tests {
         let log = SharedDiagnosticLog::new(true, sink.clone());
         let secret = "do not log these dictated words";
         let runtime = FakeAsrRuntime {
-            result: Ok(FinalTranscription {
-                text: secret.to_string(),
-            }),
+            result: Ok(FinalTranscription::plain(secret)),
         };
         let runtime = DiagnosticAsrRuntime::new(&runtime, log.clone());
         let insertion = FailingTextInsertion;

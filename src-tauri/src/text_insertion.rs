@@ -169,9 +169,7 @@ mod tests {
         let insertion = TextInsertionPipeline::new(system);
 
         let outcome = insertion
-            .insert(&FinalTranscription {
-                text: "Inserted without clipboard".to_string(),
-            })
+            .insert(&FinalTranscription::plain("Inserted without clipboard".to_string()))
             .unwrap();
 
         assert_eq!(outcome, TextInsertionOutcome::ClipboardFree);
@@ -190,9 +188,7 @@ mod tests {
         let insertion = TextInsertionPipeline::new(system);
 
         let outcome = insertion
-            .insert(&FinalTranscription {
-                text: "Inserted through fallback".to_string(),
-            })
+            .insert(&FinalTranscription::plain("Inserted through fallback".to_string()))
             .unwrap();
 
         assert_eq!(outcome, TextInsertionOutcome::ClipboardFallback);
@@ -211,9 +207,7 @@ mod tests {
         let rescue = ClipboardInsertionRescue::new(system);
 
         let outcome = rescue
-            .rescue(&FinalTranscription {
-                text: "Preserve this transcription".to_string(),
-            })
+            .rescue(&FinalTranscription::plain("Preserve this transcription".to_string()))
             .unwrap();
 
         assert_eq!(
