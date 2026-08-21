@@ -123,24 +123,26 @@ impl<'a> DictationWorkflow<'a> {
 ///   still gets its first letter capitalised, but doing that mid-dictation would
 ///   force a capital onto speech that carried on from the previous sentence.
 ///
-/// Preserved ASR segments ride along untouched; cleanup that consumes their
-/// timing comes later (slugtale-gnx).
-///
 /// The cleanup mode selects how much runs (slugtale-kyc): Basic is whitespace
 /// normalization only, while Clean Dictation additionally removes safe filler
-/// words such as "um" before the position rules apply.
+/// words such as "um" before the position rules apply. Clean Dictation with
+/// Pause Breaks also uses the preserved segment timings to add conservative
+/// line breaks.
 pub fn clean_dictation_segment(
     transcription: FinalTranscription,
     position: DictationSegmentPosition,
     cleanup: TranscriptCleanupMode,
 ) -> FinalTranscription {
     let normalized = match cleanup {
-        TranscriptCleanupMode::Basic => transcription
-            .text
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" "),
+        TranscriptCleanupMode::Basic => crate::normalize_transcript_whitespace(&transcription.text),
         TranscriptCleanupMode::CleanDictation => crate::remove_filler_words(&transcription.text),
+        TranscriptCleanupMode::CleanDictationWithPauseBreaks => {
+            if transcription.segments.is_empty() {
+                crate::remove_filler_words(&transcription.text)
+            } else {
+                crate::clean_with_pause_line_breaks(&transcription.segments)
+            }
+        }
     };
     if normalized.is_empty() {
         return FinalTranscription {
@@ -325,6 +327,28 @@ mod tests {
     }
 
     #[test]
+    fn pause_break_mode_inserts_plain_text_line_breaks_from_asr_timing() {
+        let cleaned = clean_dictation_segment(
+            FinalTranscription::from_segments(vec![
+                crate::TranscriptSegment {
+                    text: "shopping list".to_string(),
+                    start_ms: 0,
+                    end_ms: 600,
+                },
+                crate::TranscriptSegment {
+                    text: "milk and bread".to_string(),
+                    start_ms: 2_400,
+                    end_ms: 3_000,
+                },
+            ]),
+            DictationSegmentPosition::First,
+            TranscriptCleanupMode::CleanDictationWithPauseBreaks,
+        );
+
+        assert_eq!(cleaned.text, "Shopping list\nmilk and bread");
+    }
+
+    #[test]
     fn a_segment_that_is_all_filler_inserts_nothing() {
         let runtime = FakeAsrRuntime::new("um... uh");
         let insertion = FakeTextInsertion::default();
@@ -395,6 +419,15 @@ mod tests {
         ));
 
         assert_eq!(transcription.text, "Hello from slugtale");
+    }
+
+    #[test]
+    fn basic_cleanup_preserves_existing_line_breaks() {
+        let transcription = clean_final_transcription(FinalTranscription::plain(
+            "  shopping  list \n milk and bread ".to_string(),
+        ));
+
+        assert_eq!(transcription.text, "Shopping list\nmilk and bread");
     }
     #[test]
     fn clean_final_transcription_handles_empty_and_non_lowercase_starts() {

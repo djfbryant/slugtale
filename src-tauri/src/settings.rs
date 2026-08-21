@@ -345,7 +345,7 @@ mod tests {
             primary_engine: crate::TranscriptionEngine::Parakeet,
             second_opinion: crate::SecondOpinionMode::Automatic,
             store_usage: true,
-            transcript_cleanup: crate::TranscriptCleanupMode::CleanDictation,
+            transcript_cleanup: crate::TranscriptCleanupMode::CleanDictationWithPauseBreaks,
             typing_baseline: crate::TypingBaseline {
                 challenges: vec![crate::TypingChallengeResult {
                     passage_index: 0,
@@ -431,6 +431,15 @@ mod tests {
             crate::TranscriptCleanupMode::CleanDictation
         );
 
+        apply_transcript_cleanup_settings(
+            &mut settings,
+            crate::TranscriptCleanupMode::CleanDictationWithPauseBreaks,
+        );
+        assert_eq!(
+            settings.transcript_cleanup,
+            crate::TranscriptCleanupMode::CleanDictationWithPauseBreaks
+        );
+
         // The whole point of the setting: turning it off restores exactly the
         // behaviour users had before filler cleanup existed.
         apply_transcript_cleanup_settings(&mut settings, crate::TranscriptCleanupMode::Basic);
@@ -464,12 +473,12 @@ mod tests {
     #[test]
     fn transcript_cleanup_persists_as_a_stable_kebab_string() {
         let settings = Settings {
-            transcript_cleanup: crate::TranscriptCleanupMode::CleanDictation,
+            transcript_cleanup: crate::TranscriptCleanupMode::CleanDictationWithPauseBreaks,
             ..Settings::default()
         };
         let json = serde_json::to_string(&settings).unwrap();
         assert!(
-            json.contains("\"transcript_cleanup\":\"clean-dictation\""),
+            json.contains("\"transcript_cleanup\":\"clean-dictation-with-pause-breaks\""),
             "got: {json}"
         );
     }

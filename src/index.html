@@ -782,11 +782,12 @@
           <div class="row">
             <span class="row-label">
               Transcript cleanup
-              <span class="row-sub">Clean dictation removes hesitations like “um” locally before typing. Nothing leaves this device.</span>
+              <span class="row-sub">Clean dictation removes hesitations like “um” locally. Pause breaks put short phrases on new lines after a clear pause. Nothing leaves this device.</span>
             </span>
             <span class="segmented" role="group" aria-label="Transcript cleanup">
               <button id="cleanup-basic" type="button" data-cleanup="basic" aria-pressed="true">Basic</button>
               <button id="cleanup-clean-dictation" type="button" data-cleanup="clean-dictation" aria-pressed="false">Clean dictation</button>
+              <button id="cleanup-clean-dictation-with-pause-breaks" type="button" data-cleanup="clean-dictation-with-pause-breaks" aria-pressed="false">Pause breaks</button>
             </span>
           </div>
           <div class="row">
@@ -1159,6 +1160,11 @@
     };
 
     const HOTKEY_GLYPHS = { Cmd: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧" };
+    const TRANSCRIPT_CLEANUP_MODES = [
+      "basic",
+      "clean-dictation",
+      "clean-dictation-with-pause-breaks"
+    ];
 
     let downloading = false;
     let savingSettings = false;
@@ -1544,7 +1550,7 @@
       });
 
       const cleanupMode = currentSettings.transcript_cleanup || "basic";
-      ["basic", "clean-dictation"].forEach((option) => {
+      TRANSCRIPT_CLEANUP_MODES.forEach((option) => {
         const button = document.getElementById(`cleanup-${option}`);
         button.setAttribute("aria-pressed", String(option === cleanupMode));
         button.disabled = savingCleanup;
@@ -1691,7 +1697,7 @@
         const saved = await invoke("save_transcript_cleanup_settings", { cleanupMode });
         savingCleanup = false;
         renderSettings(saved);
-        messageEl.textContent = cleanupMode === "clean-dictation"
+        messageEl.textContent = cleanupMode !== "basic"
           ? "Saved. Applies to your next dictation."
           : "Saved.";
       } catch (error) {
@@ -2469,7 +2475,7 @@
         });
       });
 
-      ["basic", "clean-dictation"].forEach((mode) => {
+      TRANSCRIPT_CLEANUP_MODES.forEach((mode) => {
         document.getElementById(`cleanup-${mode}`).addEventListener("click", () => {
           if (mode === (currentSettings.transcript_cleanup || "basic")) return;
           saveTranscriptCleanupSettings(mode);
