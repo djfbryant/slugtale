@@ -216,6 +216,32 @@ pub fn ensure_default_model(
     ensure_default_model_with_sha256(model_dir, downloader, DEFAULT_MODEL_SHA256, on_progress)
 }
 
+/// How much new data must arrive before the frontend hears about it again.
+/// A progress bar reads smoothly at a handful of updates per second; at 64 KiB
+/// chunks a ~140 MB model would otherwise flood the IPC channel with thousands
+/// of messages (slugtale-dtl).
+const PROGRESS_THROTTLE_BYTES: u64 = 1024 * 1024;
+
+/// Wrap a progress sink so it hears the initial zero-byte update and the final
+/// complete one, but intermediate updates only once per
+/// `PROGRESS_THROTTLE_BYTES`. The download commands hand this the Tauri IPC
+/// channel so the settings UI gets a smooth bar without the flood.
+pub fn throttled_progress(mut send: impl FnMut(DownloadProgress)) -> impl FnMut(DownloadProgress) {
+    let mut last_sent = 0u64;
+    move |progress| {
+        let complete = progress
+            .total
+            .is_some_and(|total| progress.downloaded >= total);
+        if progress.downloaded == 0
+            || complete
+            || progress.downloaded - last_sent >= PROGRESS_THROTTLE_BYTES
+        {
+            last_sent = progress.downloaded;
+            send(progress);
+        }
+    }
+}
+
 /// Install the managed default artifact only when it matches a trusted SHA-256
 /// digest. The staged file is removed on every validation failure so corrupt
 /// bytes can never become the active Local Model.
@@ -459,6 +485,69 @@ mod tests {
         // per chunk, so the bar advances rather than jumping straight to done.
         assert!(updates.len() >= 4);
     }
+    #[test]
+    fn throttled_progress_always_sends_the_first_and_last_update() {
+        let total = Some(2 * PROGRESS_THROTTLE_BYTES);
+        let mut sent = Vec::new();
+        {
+            let mut throttle = throttled_progress(|update| sent.push(update));
+            // The initial update, then a trickle of sub-threshold steps, then
+            // the final complete byte count.
+            for downloaded in [0, 1, 500_000, 999_999, 2 * PROGRESS_THROTTLE_BYTES] {
+                throttle(DownloadProgress { downloaded, total });
+            }
+        }
+
+        assert_eq!(sent.len(), 2);
+        assert_eq!(
+            sent.first().copied(),
+            Some(DownloadProgress {
+                downloaded: 0,
+                total
+            })
+        );
+        assert_eq!(
+            sent.last().copied(),
+            Some(DownloadProgress {
+                downloaded: 2 * PROGRESS_THROTTLE_BYTES,
+                total
+            })
+        );
+    }
+
+    #[test]
+    fn throttled_progress_sends_intermediate_updates_once_per_threshold() {
+        // No total: the first test pins the completion path, this one isolates
+        // the byte-threshold path.
+        let total = None;
+        let mut sent = Vec::new();
+        {
+            let mut throttle = throttled_progress(|update| sent.push(update));
+            let mut updates = vec![0u64];
+            for megabyte in 1..=3u64 {
+                // A step just past each megabyte boundary, plus one that lands
+                // short of the next boundary and must be swallowed.
+                updates.push(megabyte * PROGRESS_THROTTLE_BYTES + 1);
+                updates.push((megabyte + 1) * PROGRESS_THROTTLE_BYTES - 1);
+            }
+            for downloaded in updates {
+                throttle(DownloadProgress { downloaded, total });
+            }
+        }
+
+        assert_eq!(
+            sent.iter()
+                .map(|update| update.downloaded)
+                .collect::<Vec<_>>(),
+            vec![
+                0,
+                PROGRESS_THROTTLE_BYTES + 1,
+                2 * PROGRESS_THROTTLE_BYTES + 1,
+                3 * PROGRESS_THROTTLE_BYTES + 1
+            ]
+        );
+    }
+
     #[test]
     fn reveal_location_selects_existing_model_file() {
         let model_dir = unique_test_dir("reveal-present");

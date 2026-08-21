@@ -1837,19 +1837,11 @@ async fn install_engine_assets(
         slugtale_lib::TranscriptionEngine::Whisper => {
             let manager = model_manager(&app)?;
             let status = tauri::async_runtime::spawn_blocking(move || {
-                let mut last_sent = 0u64;
-                let mut forward = move |progress: slugtale_lib::DownloadProgress| {
-                    let complete = progress
-                        .total
-                        .is_some_and(|total| progress.downloaded >= total);
-                    if progress.downloaded == 0
-                        || complete
-                        || progress.downloaded - last_sent >= 1_048_576
-                    {
-                        last_sent = progress.downloaded;
-                        let _ = on_progress.send(progress);
-                    }
-                };
+                // Throttle IPC traffic: the initial update, then one per ~1 MB,
+                // plus the final update (slugtale-dtl).
+                let mut forward = slugtale_lib::throttled_progress(move |progress| {
+                    let _ = on_progress.send(progress);
+                });
                 manager
                     .download_default(&slugtale_lib::HttpModelDownloader, &mut forward)
                     .map_err(|error| error.to_string())
@@ -1867,19 +1859,11 @@ async fn install_engine_assets(
             let provider = engines.parakeet.clone();
             let asset_dir = provider.asset_dir().to_path_buf();
             tauri::async_runtime::spawn_blocking(move || {
-                let mut last_sent = 0u64;
-                let mut forward = move |progress: slugtale_lib::DownloadProgress| {
-                    let complete = progress
-                        .total
-                        .is_some_and(|total| progress.downloaded >= total);
-                    if progress.downloaded == 0
-                        || complete
-                        || progress.downloaded - last_sent >= 1_048_576
-                    {
-                        last_sent = progress.downloaded;
-                        let _ = on_progress.send(progress);
-                    }
-                };
+                // Throttle IPC traffic: the initial update, then one per ~1 MB,
+                // plus the final update (slugtale-dtl).
+                let mut forward = slugtale_lib::throttled_progress(move |progress| {
+                    let _ = on_progress.send(progress);
+                });
                 slugtale_lib::install_parakeet_assets(
                     &asset_dir,
                     &slugtale_lib::HttpModelDownloader,
@@ -2199,20 +2183,12 @@ async fn download_local_model(
 ) -> Result<slugtale_lib::LocalModelStatus, String> {
     let manager = model_manager(&app)?;
     let status = tauri::async_runtime::spawn_blocking(move || {
-        // Throttle IPC traffic: forward progress after ~1 MB of new data, plus
-        // the initial and final updates, so the bar stays smooth without
-        // flooding the channel with thousands of tiny messages.
-        let mut last_sent = 0u64;
-        let mut forward = move |progress: slugtale_lib::DownloadProgress| {
-            let complete = progress
-                .total
-                .is_some_and(|total| progress.downloaded >= total);
-            if progress.downloaded == 0 || complete || progress.downloaded - last_sent >= 1_048_576
-            {
-                last_sent = progress.downloaded;
+        // Throttle IPC traffic: the initial update, then one per ~1 MB, plus
+        // the final update (slugtale-dtl).
+        let mut forward =
+            slugtale_lib::throttled_progress(move |progress| {
                 let _ = on_progress.send(progress);
-            }
-        };
+            });
         manager
             .download_default(&slugtale_lib::HttpModelDownloader, &mut forward)
             .map_err(|error| error.to_string())
