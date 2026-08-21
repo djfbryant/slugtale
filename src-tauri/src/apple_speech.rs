@@ -544,9 +544,7 @@ mod bridge {
             engine: APPLE_SPEECH_ENGINE,
             // Matches the Whisper engine: leading and trailing whitespace is an
             // artefact of segment joining, not something the user said.
-            transcription: FinalTranscription {
-                text: text.trim().to_string(),
-            },
+            transcription: FinalTranscription::plain(text.trim()),
             alternatives: alternatives
                 .as_deref()
                 .map(split_alternatives)
