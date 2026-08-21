@@ -30,6 +30,16 @@
       /* Text drawn on top of an accent/ok/warn fill, in both appearances. */
       --on-fill: #ffffff;
 
+      /* The Dictation Bar orb palette (ADR-0004): fixed colours that must read
+         as the same accent in both appearances, so they live outside the dark
+         overrides. Each maps to one AccentColor enum value. */
+      --accent-swatch-red: #ff5a52;
+      --accent-swatch-amber: #f5a524;
+      --accent-swatch-green: #35c76a;
+      --accent-swatch-blue: #4c9ffe;
+      --accent-swatch-violet: #a78bfa;
+      --accent-swatch-graphite: #9aa4ad;
+
       color-scheme: light dark;
       color: var(--text);
       background: var(--bg);
@@ -58,6 +68,9 @@
         --warn-soft: #2a2115;
         --warn-text: #e0b165;
         --danger: #e08072;
+        /* White on accent/ok/warn fills reads in dark too; restated so every
+           colour token is explicitly overridden here. */
+        --on-fill: #ffffff;
         --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
       }
     }
@@ -820,12 +833,12 @@
               <span class="row-sub">Shown while dictating</span>
             </span>
             <span class="swatches" role="group" aria-label="Accent colour">
-              <button id="accent-red" type="button" data-accent="red" aria-pressed="true" aria-label="Red" title="Red" style="--swatch: #ff5a52"></button>
-              <button id="accent-amber" type="button" data-accent="amber" aria-pressed="false" aria-label="Amber" title="Amber" style="--swatch: #f5a524"></button>
-              <button id="accent-green" type="button" data-accent="green" aria-pressed="false" aria-label="Green" title="Green" style="--swatch: #35c76a"></button>
-              <button id="accent-blue" type="button" data-accent="blue" aria-pressed="false" aria-label="Blue" title="Blue" style="--swatch: #4c9ffe"></button>
-              <button id="accent-violet" type="button" data-accent="violet" aria-pressed="false" aria-label="Violet" title="Violet" style="--swatch: #a78bfa"></button>
-              <button id="accent-graphite" type="button" data-accent="graphite" aria-pressed="false" aria-label="Graphite" title="Graphite" style="--swatch: #9aa4ad"></button>
+              <button id="accent-red" type="button" data-accent="red" aria-pressed="true" aria-label="Red" title="Red" style="--swatch: var(--accent-swatch-red)"></button>
+              <button id="accent-amber" type="button" data-accent="amber" aria-pressed="false" aria-label="Amber" title="Amber" style="--swatch: var(--accent-swatch-amber)"></button>
+              <button id="accent-green" type="button" data-accent="green" aria-pressed="false" aria-label="Green" title="Green" style="--swatch: var(--accent-swatch-green)"></button>
+              <button id="accent-blue" type="button" data-accent="blue" aria-pressed="false" aria-label="Blue" title="Blue" style="--swatch: var(--accent-swatch-blue)"></button>
+              <button id="accent-violet" type="button" data-accent="violet" aria-pressed="false" aria-label="Violet" title="Violet" style="--swatch: var(--accent-swatch-violet)"></button>
+              <button id="accent-graphite" type="button" data-accent="graphite" aria-pressed="false" aria-label="Graphite" title="Graphite" style="--swatch: var(--accent-swatch-graphite)"></button>
             </span>
           </div>
           <p id="settings-message" class="note" aria-live="polite"></p>
