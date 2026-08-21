@@ -278,6 +278,35 @@ path and can reveal it in Finder.
 
 ## Using Dictation
 
+### Transcript cleanup
+
+Transcript cleanup happens on your device before Slugtale inserts plain text.
+It does not send audio or words to a service, and it does not save a dictation
+history.
+
+- **Basic** keeps the usual spacing and first-letter cleanup.
+- **Clean dictation** also removes safe hesitation words such as "um", "uh",
+  and "erm". It leaves words such as "like" alone because they can change the
+  meaning.
+- **Pause breaks** includes clean dictation. It can put short phrases on new
+  lines when you leave a clear pause between them. Continuous prose and normal
+  completed sentences stay on one line. It needs timing from the selected
+  transcription engine. If that engine has no timing, Slugtale still performs
+  clean dictation and does not add line breaks.
+
+For example, say "shopping list", pause, then say "milk and bread". Pause
+breaks can insert this:
+
+```text
+Shopping list
+milk and bread
+```
+
+Say a normal sentence without the long pause and it stays on one line.
+
+Choose the mode in Settings, under Transcription. Pick Basic to turn the extra
+cleanup off. Each change applies to your next Dictation.
+
 1. Click into a text field, editor, or document in another app.
 2. Press the configured hotkey.
 3. Speak while the dictation bar is visible.

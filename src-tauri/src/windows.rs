@@ -15,8 +15,10 @@
 //!   gate — the analogous failure is UIPI against an elevated target).
 //! * 5pc.3 — `WindowsTextInsertionSystem` (implemented: SendInput with
 //!   KEYEVENTF_UNICODE for clipboard-free insertion, and CF_UNICODETEXT +
-//!   SendInput Ctrl+V for the clipboard-paste fallback). Note the Unicode path
-//!   does not carry line breaks; see slugtale-z81.
+//!   SendInput Ctrl+V for the clipboard-paste fallback). The Unicode path uses
+//!   a virtual Return event for each line break, so direct and clipboard paths
+//!   preserve the same text structure; live-target validation remains in
+//!   slugtale-z81.
 //! * 5pc.4 — `WindowsInsertionRescueSystem` (implemented: CF_UNICODETEXT
 //!   clipboard copy shared with the paste fallback — both take the global
 //!   clipboard lock with a short retry, since ordinary contention is not an
@@ -58,7 +60,7 @@ use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    VK_CONTROL, VK_V,
+    VK_CONTROL, VK_RETURN, VK_V,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
@@ -315,19 +317,36 @@ fn send_keyboard_events(inputs: &[INPUT]) -> Result<(), String> {
     }
 }
 
-/// Type `text` into the focused control by synthesizing a Unicode key press per
-/// UTF-16 code unit. Surrogate pairs are sent as two consecutive units, as
-/// Windows expects.
+/// Type `text` into the focused control. Ordinary code units use Unicode key
+/// presses. Newlines use a virtual Return event because Windows controls do not
+/// reliably treat U+000A and U+000D as text input. CRLF is one line break.
 fn send_unicode_text(text: &str) -> Result<(), String> {
     if text.is_empty() {
         return Ok(());
     }
+
+    send_keyboard_events(&direct_text_input_events(text))
+}
+
+fn direct_text_input_events(text: &str) -> Vec<INPUT> {
     let mut inputs = Vec::with_capacity(text.encode_utf16().count() * 2);
-    for unit in text.encode_utf16() {
-        inputs.push(unicode_key_event(unit, false));
-        inputs.push(unicode_key_event(unit, true));
+    let mut units = text.encode_utf16().peekable();
+    while let Some(unit) = units.next() {
+        if unit == b'\r' as u16 {
+            if units.peek() == Some(&(b'\n' as u16)) {
+                units.next();
+            }
+            inputs.push(virtual_key_event(VK_RETURN, false));
+            inputs.push(virtual_key_event(VK_RETURN, true));
+        } else if unit == b'\n' as u16 {
+            inputs.push(virtual_key_event(VK_RETURN, false));
+            inputs.push(virtual_key_event(VK_RETURN, true));
+        } else {
+            inputs.push(unicode_key_event(unit, false));
+            inputs.push(unicode_key_event(unit, true));
+        }
     }
-    send_keyboard_events(&inputs)
+    inputs
 }
 
 /// Synthesize Ctrl+V to paste the current clipboard contents into the focused
@@ -737,5 +756,36 @@ mod tests {
     fn an_unrecognised_consent_value_is_not_an_allowance() {
         assert!(!microphone_access_granted(Some(""), Some("Allow")));
         assert!(!microphone_access_granted(Some("Prompt"), Some("Allow")));
+    }
+
+    #[test]
+    fn direct_text_input_uses_one_return_for_each_line_break() {
+        let inputs = direct_text_input_events("a\r\nb\nc\rd");
+        let downs: Vec<_> = inputs
+            .iter()
+            .step_by(2)
+            .map(|input| unsafe {
+                let key = &input.Anonymous.ki;
+                (key.wVk, key.wScan, key.dwFlags)
+            })
+            .collect();
+
+        assert_eq!(
+            downs,
+            vec![
+                (0, b'a' as u16, KEYEVENTF_UNICODE),
+                (VK_RETURN, 0, 0),
+                (0, b'b' as u16, KEYEVENTF_UNICODE),
+                (VK_RETURN, 0, 0),
+                (0, b'c' as u16, KEYEVENTF_UNICODE),
+                (VK_RETURN, 0, 0),
+                (0, b'd' as u16, KEYEVENTF_UNICODE),
+            ]
+        );
+        assert!(inputs
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .all(|input| unsafe { input.Anonymous.ki.dwFlags & KEYEVENTF_KEYUP != 0 }));
     }
 }
