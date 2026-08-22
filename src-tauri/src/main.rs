@@ -49,95 +49,40 @@ impl Default for AudioCaptureState {
     }
 }
 
-/// One unit of work for the Dictation Segment pipeline.
-///
-/// A Segment Pause sends a *request* rather than the audio itself, and that is
-/// deliberate. The request is raised from the recorder's own level-emitter
-/// thread, which `CpalAudioRecorder::stop` joins while holding the
-/// [`AudioCaptureState`] lock — so if that thread ever blocked on the same lock
-/// to drain the ring, pressing Stop mid-flush would deadlock the app. Draining
-/// on the worker instead keeps the emitter thread free of that lock entirely.
-enum DictationSegmentJob {
-    /// A Segment Pause elapsed: take whatever has been captured so far.
-    PauseFlush { dictation: u64 },
-    /// The dictation ended. Carries the audio left over after the last Segment
-    /// Pause, already drained by the Stop path.
-    Last {
-        dictation: u64,
-        audio: slugtale_lib::CapturedAudio,
-    },
-}
-
-/// The ordered pipeline that turns Dictation Segments into inserted text.
-///
-/// A single worker thread drains the queue, and that is the whole of the
-/// ordering guarantee: however long any one segment takes to decode, the text
-/// lands in the order it was spoken.
+/// Tauri transport for the ordered Dictation Segment module. The module owns
+/// the execution policy; this state only owns the channel that crosses into
+/// the worker thread.
 #[derive(Default)]
 struct DictationSegments {
-    /// `None` until the worker starts. Held behind a mutex because an mpsc
-    /// `Sender` is `Send` but not `Sync`, and Tauri state must be both.
-    jobs: Mutex<Option<std::sync::mpsc::Sender<DictationSegmentJob>>>,
-    /// Incremented on every Start, so each dictation's segments are
-    /// distinguishable from the previous dictation's still-decoding tail.
-    dictation: std::sync::atomic::AtomicU64,
-    /// Every dictation at or below this number has been cancelled. Escape
-    /// discards the remainder of a dictation, including segments already queued
-    /// but not yet inserted; text that has already landed stays where it is,
-    /// because Slugtale cannot un-type it (ADR-0014).
-    cancelled_through: std::sync::atomic::AtomicU64,
-    /// Set when a segment fell back to the Insertion Rescue. Further Segment
-    /// Pauses are held back for the rest of that dictation: without this, a
-    /// machine that has not granted Accessibility would clobber the clipboard
-    /// and raise a notification once every five seconds.
-    rescued: std::sync::atomic::AtomicBool,
+    jobs: Mutex<Option<std::sync::mpsc::Sender<slugtale_lib::DictationSegmentJob>>>,
+    control: slugtale_lib::DictationSegmentControl,
 }
 
 impl DictationSegments {
     fn current(&self) -> u64 {
-        self.dictation.load(std::sync::atomic::Ordering::SeqCst)
+        self.control.current()
     }
 
     /// Open a new dictation and return its number.
     fn begin(&self) -> u64 {
-        self.rescued
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        self.dictation
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1
+        self.control.begin()
     }
 
     /// Abandon the active dictation's un-inserted remainder.
     fn abandon(&self) {
-        self.cancelled_through
-            .store(self.current(), std::sync::atomic::Ordering::SeqCst);
-    }
-
-    fn is_cancelled(&self, dictation: u64) -> bool {
-        dictation
-            <= self
-                .cancelled_through
-                .load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// Whether `dictation` is still the one being recorded. A Pause Flush is
-    /// only honoured while this holds: draining the ring for a dictation that
-    /// has already ended would take the *next* dictation's opening words.
-    fn is_recording(&self, dictation: u64) -> bool {
-        self.current() == dictation && !self.is_cancelled(dictation)
-    }
-
-    fn suspend_pause_flushes(&self) {
-        self.rescued
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.control.abandon();
     }
 
     fn pause_flushes_suspended(&self) -> bool {
-        self.rescued.load(std::sync::atomic::Ordering::SeqCst)
+        self.control.pause_flushes_suspended()
+    }
+
+    fn control(&self) -> &slugtale_lib::DictationSegmentControl {
+        &self.control
     }
 
     /// Queue a job, reporting whether the worker accepted it.
-    fn send(&self, job: DictationSegmentJob) -> bool {
+    fn send(&self, job: slugtale_lib::DictationSegmentJob) -> bool {
         self.jobs
             .lock()
             .ok()
@@ -201,168 +146,6 @@ use slugtale_lib::{
     DiagnosticAsrRuntime, DiagnosticInsertionRescue, DiagnosticTextInsertion, FileDiagnosticSink,
     SharedDiagnosticLog, TranscriptionProvider,
 };
-
-/// The Transcription Engines that outlive a single dictation.
-///
-/// Whisper is deliberately absent: its runtime is keyed by the active model
-/// path, which the user can change from Settings, so it comes from
-/// [`slugtale_lib::WhisperRuntimeCache`] per dictation instead. Parakeet and
-/// Apple SpeechTranscriber own no such per-dictation state, and building them
-/// once is what lets them answer [`TranscriptionProvider::availability`] from a
-/// cached probe rather than a filesystem or OS query on every dictation.
-struct TranscriptionEngines {
-    parakeet: Arc<slugtale_lib::ParakeetProvider>,
-}
-
-impl TranscriptionEngines {
-    fn new(model_dir: &std::path::Path) -> Self {
-        Self {
-            parakeet: Arc::new(slugtale_lib::ParakeetProvider::new(
-                slugtale_lib::parakeet_asset_dir(model_dir),
-            )),
-        }
-    }
-
-    /// The provider for one engine, or `None` for Whisper, which the caller
-    /// supplies from the model-path-keyed cache.
-    fn provider(
-        &self,
-        engine: slugtale_lib::TranscriptionEngine,
-    ) -> Option<Arc<dyn TranscriptionProvider>> {
-        match engine {
-            slugtale_lib::TranscriptionEngine::Whisper => None,
-            slugtale_lib::TranscriptionEngine::Parakeet => Some(self.parakeet.clone()),
-            // Apple SpeechTranscriber lives in AppleSpeechEngineState, which is
-            // managed unconditionally because it needs no models directory.
-            slugtale_lib::TranscriptionEngine::AppleSpeech => None,
-        }
-    }
-}
-
-/// The Apple SpeechTranscriber provider, shared by Settings and the dictation
-/// path.
-///
-/// Held separately from [`TranscriptionEngines`] because it needs no models
-/// directory: Apple's assets belong to macOS, so this provider is available even
-/// on a machine where Slugtale could not resolve its own app data directory.
-///
-/// There is exactly one of these, and that is the point. The provider caches its
-/// own availability probe, so a second instance would mean Settings installing
-/// the system assets while the router went on reading a stale "not installed"
-/// from its own copy.
-struct AppleSpeechEngineState(Arc<slugtale_lib::AppleSpeechProvider>);
-
-impl Default for AppleSpeechEngineState {
-    fn default() -> Self {
-        Self(Arc::new(slugtale_lib::AppleSpeechProvider::new()))
-    }
-}
-
-/// Resolve every Transcription Engine to the one managed instance of its
-/// provider, so that installing assets from Settings is visible immediately.
-/// Two instances would each cache their own availability probe, and the router
-/// would keep reading "not installed" after the user had just installed it.
-///
-/// Whisper is passed in rather than looked up because its runtime is keyed by
-/// the active model path (see [`TranscriptionEngines`]); `None` there means the
-/// models directory could not be resolved, which is itself a Whisper that cannot
-/// run. Returning `None` for any engine means this build registered no provider
-/// for it at all.
-fn engine_resolver(
-    app: &tauri::AppHandle,
-    whisper_provider: Option<Arc<dyn TranscriptionProvider>>,
-) -> impl Fn(slugtale_lib::TranscriptionEngine) -> Option<Arc<dyn TranscriptionProvider>> + '_ {
-    let engines = app.try_state::<TranscriptionEngines>();
-    let apple = app.try_state::<AppleSpeechEngineState>();
-
-    move |engine| match engine {
-        slugtale_lib::TranscriptionEngine::Whisper => whisper_provider.clone(),
-        slugtale_lib::TranscriptionEngine::Parakeet => engines
-            .as_ref()
-            .and_then(|engines| engines.provider(engine)),
-        slugtale_lib::TranscriptionEngine::AppleSpeech => apple
-            .as_ref()
-            .map(|apple| apple.0.clone() as Arc<dyn TranscriptionProvider>),
-    }
-}
-
-/// What every Transcription Engine reports about itself right now, in
-/// [`slugtale_lib::TranscriptionEngine::ALL`] order.
-///
-/// Both the readiness report and the dictation router read availability through
-/// here so they cannot disagree: Settings saying "ready" while the router picks
-/// an engine that fails at transcription is exactly the bug this closes
-/// (slugtale-bre). Cheap enough for the hotkey path — every provider answers
-/// from a cached probe rather than re-examining the machine.
-fn engine_availability(
-    resolve: &impl Fn(slugtale_lib::TranscriptionEngine) -> Option<Arc<dyn TranscriptionProvider>>,
-) -> Vec<(
-    slugtale_lib::TranscriptionEngine,
-    slugtale_lib::EngineAvailability,
-)> {
-    slugtale_lib::TranscriptionEngine::ALL
-        .into_iter()
-        .filter_map(|engine| resolve(engine).map(|provider| (engine, provider.availability())))
-        .collect()
-}
-
-/// Assemble the engine stack for one dictation from the Settings File.
-///
-/// Two fallbacks here are worth stating plainly, because both trade the user's
-/// stated preference for finishing the dictation:
-///
-/// - A primary engine whose assets were deleted since it was chosen falls back
-///   to whichever engine can actually run
-///   ([`slugtale_lib::engine_that_can_run`]). Refusing to transcribe would
-///   punish the user for a setting they may not remember making — but falling
-///   back to Whisper unconditionally was worse, because a build without
-///   `local-whisper-runtime` has no Whisper to fall back to (slugtale-bre).
-/// - The second opinion is whichever *available* engine is not the primary, in
-///   the fixed [`slugtale_lib::TranscriptionEngine::ALL`] order. There is no
-///   setting for it because benchmark slugtale-9dv has not yet established
-///   which pairing is worth offering.
-fn transcription_router(
-    app: &tauri::AppHandle,
-    settings: &slugtale_lib::Settings,
-    whisper: Arc<slugtale_lib::LocalWhisperRuntime>,
-    diagnostic_log: SharedDiagnosticLog<FileDiagnosticSink>,
-) -> slugtale_lib::SecondOpinionRouter {
-    let whisper_provider: Arc<dyn TranscriptionProvider> =
-        Arc::new(slugtale_lib::WhisperTranscriptionProvider::new(whisper));
-    let resolve = engine_resolver(app, Some(whisper_provider.clone()));
-
-    let primary =
-        slugtale_lib::engine_that_can_run(settings.primary_engine, &engine_availability(&resolve))
-            .and_then(&resolve)
-            // Nothing on this machine can transcribe. Keep Whisper so the
-            // dictation fails with the reason readiness already showed the user,
-            // rather than leaving the router with no engine at all.
-            .unwrap_or_else(|| whisper_provider.clone());
-
-    let router = match settings.second_opinion {
-        slugtale_lib::SecondOpinionMode::Off => slugtale_lib::SecondOpinionRouter::single(primary),
-        slugtale_lib::SecondOpinionMode::Automatic => {
-            let second = slugtale_lib::TranscriptionEngine::ALL
-                .into_iter()
-                .filter(|engine| *engine != primary.engine())
-                .filter_map(resolve)
-                .find(|provider| provider.availability().is_available());
-
-            match second {
-                Some(second) => slugtale_lib::SecondOpinionRouter::new(
-                    primary,
-                    second,
-                    slugtale_lib::SecondOpinionMode::Automatic,
-                ),
-                None => slugtale_lib::SecondOpinionRouter::single(primary),
-            }
-        }
-    };
-
-    router.observing(move |routing| {
-        diagnostic_log.record(slugtale_lib::DiagnosticEvent::routing_decision(routing))
-    })
-}
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Default)]
@@ -512,13 +295,8 @@ fn apply_recording_feedback(
 }
 
 fn capture_focus_target(app: &tauri::AppHandle) {
-    let _ = app;
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    {
-        let pid = slugtale_lib::frontmost_app_pid();
-        if let Ok(mut guard) = app.state::<FocusTargetState>().0.lock() {
-            *guard = pid;
-        }
+    if let Ok(mut guard) = app.state::<FocusTargetState>().0.lock() {
+        *guard = slugtale_lib::capture_text_target();
     }
 }
 
@@ -568,7 +346,7 @@ fn handle_audio_capture_event(
             // landed too, not just this last one.
             show_dictation_bar(app, DictationPhase::Transcribing);
             let segments = app.state::<DictationSegments>();
-            let queued = segments.send(DictationSegmentJob::Last {
+            let queued = segments.send(slugtale_lib::DictationSegmentJob::Last {
                 dictation: segments.current(),
                 audio,
             });
@@ -629,7 +407,7 @@ fn request_pause_flush_if_due(
         return;
     }
 
-    segments.send(DictationSegmentJob::PauseFlush {
+    segments.send(slugtale_lib::DictationSegmentJob::PauseFlush {
         dictation: segments.current(),
     });
 }
@@ -655,8 +433,12 @@ fn warm_ready_local_whisper_runtime(app: &tauri::AppHandle) -> Result<(), String
 }
 
 fn warm_local_whisper_runtime(app: &tauri::AppHandle, model_path: &std::path::Path) {
-    let cache = app.state::<slugtale_lib::WhisperRuntimeCache>();
-    if let Some(runtime) = cache.begin_warming_existing_model(model_path) {
+    let settings = load_current_settings(app);
+    let catalogue = app.state::<slugtale_lib::TranscriptionEngineCatalogue>();
+    if catalogue.model_path(&settings).as_deref() != Some(model_path) {
+        return;
+    }
+    if let Some(runtime) = catalogue.warm_ready_whisper(&settings) {
         tauri::async_runtime::spawn_blocking(move || {
             let _ = runtime.warm_up();
         });
@@ -676,18 +458,16 @@ fn run_dictation_segment(
 ) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
     let settings = load_current_settings(app);
     let diagnostic_log = current_diagnostic_log(app, &settings);
-    let model_path = settings
-        .model
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or(slugtale_lib::default_model_path(&model_dir(app)?));
-    let whisper = app
-        .state::<slugtale_lib::WhisperRuntimeCache>()
-        .runtime_for(&model_path);
-    // Apply the current Transcription Speed Profile before decoding so the user's
-    // accuracy/speed choice takes effect without reloading the model.
-    whisper.set_speed_profile(settings.speed_profile);
-    let runtime = transcription_router(app, &settings, whisper, diagnostic_log.clone());
+    let routing_log = diagnostic_log.clone();
+    let runtime = app
+        .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+        .router(&settings)
+        .map_err(|error| error.to_string())
+        .map(|router| {
+            router.observing(move |routing| {
+                routing_log.record(slugtale_lib::DiagnosticEvent::routing_decision(routing))
+            })
+        })?;
     let target_pid = app
         .state::<FocusTargetState>()
         .0
@@ -695,103 +475,13 @@ fn run_dictation_segment(
         .ok()
         .and_then(|guard| *guard);
 
-    {
-        // Bring the user's app back to the front so synthesized keystrokes land
-        // in its focused field rather than wherever focus drifted (slugtale-squ).
-        // This repeats for every segment, which is what makes a Pause Flush
-        // behave exactly like the single insertion it replaces.
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        if let Some(pid) = target_pid {
-            if slugtale_lib::activate_app(pid) {
-                std::thread::sleep(std::time::Duration::from_millis(120));
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            // Without Accessibility trust every synthesized event is silently
-            // dropped; insertion falls back to the clipboard rescue, so tell the
-            // user how to fix it permanently (slugtale-avo).
-            if !slugtale_lib::accessibility_trusted() {
-                let _ = slugtale_lib::notify(
-                    "Slugtale needs Accessibility access",
-                    "Turn on Slugtale under System Settings \u{2192} Privacy & Security \u{2192} \
-                     Accessibility so it can type into other apps. Until then your transcription \
-                     is copied to the clipboard \u{2014} paste it with Cmd+V.",
-                );
-            }
-
-            let insertion = slugtale_lib::MacosTextInsertion::new();
-            let rescue = slugtale_lib::MacosInsertionRescue::new();
-            let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
-            let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
-            let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
-            let workflow = slugtale_lib::DictationWorkflow::new(
-                &runtime,
-                &insertion,
-                &rescue,
-                settings.transcript_cleanup,
-            );
-            workflow
-                .complete(audio, position)
-                .map_err(|error| error.to_string())
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let insertion = slugtale_lib::WindowsTextInsertion::new();
-            let rescue = slugtale_lib::WindowsInsertionRescue::new();
-            let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
-            let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
-            let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
-            let workflow = slugtale_lib::DictationWorkflow::new(
-                &runtime,
-                &insertion,
-                &rescue,
-                settings.transcript_cleanup,
-            );
-            workflow
-                .complete(audio, position)
-                .map_err(|error| error.to_string())
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            // On a Wayland session synthesized input is not yet supported; the
-            // insertion still runs and falls through to the clipboard rescue,
-            // but tell the user why so their transcription is not silently lost
-            // (mirrors the macOS Accessibility notice above).
-            if !slugtale_lib::detect_session().is_supported() {
-                let _ = slugtale_lib::notify(
-                    "Slugtale needs an X11 session",
-                    "Slugtale currently types into other apps only on an X11 session. Until you \
-                     switch to X11 your transcription is copied to the clipboard \u{2014} paste it \
-                     with Ctrl+V.",
-                );
-            }
-
-            let insertion = slugtale_lib::LinuxTextInsertion::new();
-            let rescue = slugtale_lib::LinuxInsertionRescue::new();
-            let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
-            let insertion = DiagnosticTextInsertion::new(&insertion, diagnostic_log.clone());
-            let rescue = DiagnosticInsertionRescue::new(&rescue, diagnostic_log);
-            let workflow = slugtale_lib::DictationWorkflow::new(
-                &runtime,
-                &insertion,
-                &rescue,
-                settings.transcript_cleanup,
-            );
-            workflow
-                .complete(audio, position)
-                .map_err(|error| error.to_string())
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-        {
-            let _ = (runtime, audio, target_pid, position);
-            Err("text insertion is not implemented for this platform".to_string())
-        }
-    }
+    let (insertion, rescue) = slugtale_lib::prepare_text_insertion(target_pid)?;
+    let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
+    let insertion = DiagnosticTextInsertion::new(insertion.as_ref(), diagnostic_log.clone());
+    let rescue = DiagnosticInsertionRescue::new(rescue.as_ref(), diagnostic_log);
+    slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue, settings.transcript_cleanup)
+        .complete(audio, position)
+        .map_err(|error| error.to_string())
 }
 
 /// Take the speech captured so far as a Dictation Segment, leaving the
@@ -813,6 +503,33 @@ fn take_dictation_segment(app: &tauri::AppHandle) -> Option<slugtale_lib::Captur
     }
 }
 
+struct AppSegmentExecution<'a> {
+    app: &'a tauri::AppHandle,
+}
+
+impl slugtale_lib::DictationSegmentExecution for AppSegmentExecution<'_> {
+    type Error = String;
+
+    fn take_pause_segment(&mut self) -> Option<slugtale_lib::CapturedAudio> {
+        take_dictation_segment(self.app)
+    }
+
+    fn complete(
+        &mut self,
+        audio: slugtale_lib::CapturedAudio,
+        position: slugtale_lib::DictationSegmentPosition,
+    ) -> Result<slugtale_lib::DictationSegmentOutcome, Self::Error> {
+        run_dictation_segment(self.app, audio, position)
+    }
+
+    fn record(&mut self, segment: slugtale_lib::CountedSegment) {
+        self.app.state::<UsageRecorder>().record(UsageUpdate {
+            date: slugtale_lib::today_local(),
+            segment,
+        });
+    }
+}
+
 /// Start the single worker that transcribes and inserts Dictation Segments.
 ///
 /// Segments are decoded one at a time on purpose. Whisper would happily be
@@ -820,7 +537,7 @@ fn take_dictation_segment(app: &tauri::AppHandle) -> Option<slugtale_lib::Captur
 /// the user's words would land out of order — so the queue is the ordering
 /// guarantee, and the cost is that a slow segment delays the next.
 fn start_dictation_segment_worker(app: &tauri::AppHandle) -> Result<(), String> {
-    let (sender, receiver) = std::sync::mpsc::channel::<DictationSegmentJob>();
+    let (sender, receiver) = std::sync::mpsc::channel::<slugtale_lib::DictationSegmentJob>();
     {
         let segments = app.state::<DictationSegments>();
         let mut jobs = segments
@@ -834,101 +551,31 @@ fn start_dictation_segment_worker(app: &tauri::AppHandle) -> Result<(), String> 
     std::thread::Builder::new()
         .name("slugtale-dictation-segments".to_string())
         .spawn(move || {
-            // Which dictation the worker is part-way through, and whether it has
-            // put anything into the text target yet. The second answers only one
-            // question — whether the next segment opens the text or appends to
-            // it — and it has to be the worker's, because only the worker knows
-            // that an earlier segment transcribed to nothing.
-            let mut dictation = 0u64;
-            let mut inserted_any = false;
+            let mut worker = slugtale_lib::DictationSegmentWorker::default();
 
             while let Ok(job) = receiver.recv() {
+                let last = job.is_last();
                 let segments = app.state::<DictationSegments>();
-                let (number, last) = match &job {
-                    DictationSegmentJob::PauseFlush { dictation } => (*dictation, false),
-                    DictationSegmentJob::Last { dictation, .. } => (*dictation, true),
-                };
-
-                if number != dictation {
-                    dictation = number;
-                    inserted_any = false;
-                }
-
-                let audio = match job {
-                    // A Pause Flush is honoured only while its dictation is
-                    // still recording. If Stop already drained the ring, this
-                    // finds nothing and skips — nothing is lost, because Stop
-                    // took the same audio into the last segment.
-                    DictationSegmentJob::PauseFlush { .. } => segments
-                        .is_recording(number)
-                        .then(|| take_dictation_segment(&app))
-                        .flatten(),
-                    DictationSegmentJob::Last { audio, .. } => {
-                        (!segments.is_cancelled(number)).then_some(audio)
-                    }
-                };
-
-                if let Some(audio) = audio {
-                    let position = if inserted_any {
-                        slugtale_lib::DictationSegmentPosition::Continuation
-                    } else {
-                        slugtale_lib::DictationSegmentPosition::First
-                    };
-                    // Read the speaking duration before the audio is handed to
-                    // the workflow, which consumes it.
-                    let speaking_seconds = if audio.sample_rate_hz > 0 {
-                        audio.samples.len() as f64 / f64::from(audio.sample_rate_hz)
-                    } else {
-                        0.0
-                    };
-                    // Whether this segment opens the dictation is the same
-                    // question `position` already answered, and it is what makes
-                    // Usage count dictations rather than Pause Flushes.
-                    let starts_dictation = !inserted_any;
-                    // One worker serves every dictation for the life of the app,
-                    // so a panic here would silently disable insertion from now
-                    // on rather than spoiling a single dictation. Contain it.
-                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        run_dictation_segment(&app, audio, position)
-                    }));
-                    match outcome {
-                        Ok(Ok(outcome)) => {
-                            if outcome.inserted {
-                                eprintln!(
-                                    "inserted dictation segment: {} chars",
-                                    outcome.transcription.text.chars().count()
-                                );
-                                // A Counted Segment is one that reached the text
-                                // target, whether by insertion or by the rescue
-                                // (ADR-0025) — `inserted` is true for both. A
-                                // segment that heard nothing, and a segment whose
-                                // rescue also failed, never get here, which is
-                                // exactly the rule the design asked for.
-                                app.state::<UsageRecorder>().record(UsageUpdate {
-                                    date: slugtale_lib::today_local(),
-                                    segment: slugtale_lib::CountedSegment {
-                                        words: slugtale_lib::count_words(
-                                            &outcome.transcription.text,
-                                        ),
-                                        speaking_seconds,
-                                        starts_dictation,
-                                    },
-                                });
-                            } else {
-                                eprintln!("dictation segment heard nothing; inserted nothing");
-                            }
-                            inserted_any |= outcome.inserted;
-                            if outcome.rescued {
-                                segments.suspend_pause_flushes();
-                            }
-                        }
-                        Ok(Err(error)) => eprintln!("dictation workflow failed: {error}"),
-                        Err(_) => {
-                            eprintln!("dictation segment panicked; the queue stays open")
+                let mut execution = AppSegmentExecution { app: &app };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    worker.process(job, segments.control(), &mut execution)
+                }));
+                match result {
+                    Ok(Ok(slugtale_lib::DictationSegmentJobResult::Completed {
+                        inserted,
+                        text_chars,
+                        ..
+                    })) => {
+                        if inserted {
+                            eprintln!("inserted dictation segment: {text_chars} chars");
+                        } else {
+                            eprintln!("dictation segment heard nothing; inserted nothing");
                         }
                     }
+                    Ok(Ok(slugtale_lib::DictationSegmentJobResult::Skipped { .. })) => {}
+                    Ok(Err(error)) => eprintln!("dictation workflow failed: {error}"),
+                    Err(_) => eprintln!("dictation segment panicked; the queue stays open"),
                 }
-
                 if last {
                     hide_dictation_bar(&app);
                 }
@@ -1371,11 +1018,8 @@ fn current_engine_availability(
     slugtale_lib::TranscriptionEngine,
     slugtale_lib::EngineAvailability,
 )> {
-    let whisper = whisper_engine_provider(app, settings)
-        .ok()
-        .map(|provider| Arc::new(provider) as Arc<dyn TranscriptionProvider>);
-
-    engine_availability(&engine_resolver(app, whisper))
+    app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+        .availability(settings)
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1709,12 +1353,10 @@ struct EngineAssetState {
 fn whisper_engine_provider(
     app: &tauri::AppHandle,
     settings: &slugtale_lib::Settings,
-) -> Result<slugtale_lib::WhisperTranscriptionProvider, String> {
-    let model_path = model_manager(app)?.active_model_path(settings);
-    let runtime = app
-        .state::<slugtale_lib::WhisperRuntimeCache>()
-        .runtime_for(&model_path);
-    Ok(slugtale_lib::WhisperTranscriptionProvider::new(runtime))
+) -> Result<Arc<dyn TranscriptionProvider>, String> {
+    app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+        .whisper_provider(settings)
+        .ok_or_else(|| "could not resolve a local model directory for Whisper".to_string())
 }
 
 /// Build one engine's Settings row from its cached provider. Never re-probes:
@@ -1743,10 +1385,10 @@ fn build_engine_view(
             )
         }
         slugtale_lib::TranscriptionEngine::Parakeet => {
-            let engines = app
-                .try_state::<TranscriptionEngines>()
+            let provider = app
+                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                .parakeet_provider()
                 .ok_or_else(|| "transcription engines are not ready yet".to_string())?;
-            let provider = &engines.parakeet;
             let status = provider.status();
             (
                 provider.metadata(),
@@ -1758,7 +1400,9 @@ fn build_engine_view(
             )
         }
         slugtale_lib::TranscriptionEngine::AppleSpeech => {
-            let provider = app.state::<AppleSpeechEngineState>().0.clone();
+            let provider = app
+                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                .apple_provider();
             (
                 provider.metadata(),
                 provider.availability(),
@@ -1853,10 +1497,10 @@ async fn install_engine_assets(
             }
         }
         slugtale_lib::TranscriptionEngine::Parakeet => {
-            let engines = app
-                .try_state::<TranscriptionEngines>()
+            let provider = app
+                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                .parakeet_provider()
                 .ok_or_else(|| "transcription engines are not ready yet".to_string())?;
-            let provider = engines.parakeet.clone();
             let asset_dir = provider.asset_dir().to_path_buf();
             tauri::async_runtime::spawn_blocking(move || {
                 // Throttle IPC traffic: the initial update, then one per ~1 MB,
@@ -1876,7 +1520,9 @@ async fn install_engine_assets(
             provider.refresh_availability();
         }
         slugtale_lib::TranscriptionEngine::AppleSpeech => {
-            let provider = app.state::<AppleSpeechEngineState>().0.clone();
+            let provider = app
+                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                .apple_provider();
             tauri::async_runtime::spawn_blocking(move || provider.request_asset_installation())
                 .await
                 .map_err(|error| error.to_string())??;
@@ -1903,12 +1549,13 @@ fn remove_engine_assets(
                 .map_err(|error| error.to_string())?;
         }
         slugtale_lib::TranscriptionEngine::Parakeet => {
-            let engines = app
-                .try_state::<TranscriptionEngines>()
+            let provider = app
+                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                .parakeet_provider()
                 .ok_or_else(|| "transcription engines are not ready yet".to_string())?;
-            slugtale_lib::delete_parakeet_assets(engines.parakeet.asset_dir())
+            slugtale_lib::delete_parakeet_assets(provider.asset_dir())
                 .map_err(|error| error.to_string())?;
-            engines.parakeet.refresh_availability();
+            provider.refresh_availability();
         }
         slugtale_lib::TranscriptionEngine::AppleSpeech => {
             return Err(
@@ -1984,7 +1631,10 @@ fn get_usage_summary(app: tauri::AppHandle) -> UsageSummary {
 
     UsageSummary {
         store_usage: settings.store_usage,
-        today: usage_span(&slugtale_lib::totals_for_day(&usage, today), words_per_minute),
+        today: usage_span(
+            &slugtale_lib::totals_for_day(&usage, today),
+            words_per_minute,
+        ),
         this_week: usage_span(
             &slugtale_lib::totals_for_week(&usage, today, week_start),
             words_per_minute,
@@ -2020,7 +1670,10 @@ fn set_usage_storing(app: tauri::AppHandle, enabled: bool) -> Result<UsageSummar
 /// Set or clear the typed typing-speed estimate. Refused once the three Typing
 /// Challenges have produced a measurement.
 #[tauri::command]
-fn set_typing_estimate(app: tauri::AppHandle, estimate: Option<u32>) -> Result<UsageSummary, String> {
+fn set_typing_estimate(
+    app: tauri::AppHandle,
+    estimate: Option<u32>,
+) -> Result<UsageSummary, String> {
     let mut settings = load_current_settings(&app);
     slugtale_lib::apply_typed_estimate(&mut settings.typing_baseline, estimate)
         .map_err(|error| error.to_string())?;
@@ -2185,10 +1838,9 @@ async fn download_local_model(
     let status = tauri::async_runtime::spawn_blocking(move || {
         // Throttle IPC traffic: the initial update, then one per ~1 MB, plus
         // the final update (slugtale-dtl).
-        let mut forward =
-            slugtale_lib::throttled_progress(move |progress| {
-                let _ = on_progress.send(progress);
-            });
+        let mut forward = slugtale_lib::throttled_progress(move |progress| {
+            let _ = on_progress.send(progress);
+        });
         manager
             .download_default(&slugtale_lib::HttpModelDownloader, &mut forward)
             .map_err(|error| error.to_string())
@@ -2218,20 +1870,25 @@ fn reveal_model_location(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn transcribe_captured_audio(
     app: tauri::AppHandle,
-    cache: tauri::State<'_, slugtale_lib::WhisperRuntimeCache>,
     sample_rate_hz: u32,
     samples: Vec<f32>,
 ) -> Result<slugtale_lib::FinalTranscription, String> {
     let settings = load_current_settings(&app);
-    let model_path = model_manager(&app)?.active_model_path(&settings);
-    let whisper = cache.runtime_for(&model_path);
-    whisper.set_speed_profile(settings.speed_profile);
     let diagnostic_log = current_diagnostic_log(&app, &settings);
+    let routing_log = diagnostic_log.clone();
     // Routed like the hotkey path, so a dictation driven from the frontend gets
     // the same engine stack and the same second opinion as one driven from the
     // hotkey. Two transcription paths that disagreed would be a bug the user
     // could only find by noticing that one of them was worse.
-    let runtime = transcription_router(&app, &settings, whisper, diagnostic_log.clone());
+    let runtime = app
+        .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+        .router(&settings)
+        .map_err(|error| error.to_string())
+        .map(|router| {
+            router.observing(move |routing| {
+                routing_log.record(slugtale_lib::DiagnosticEvent::routing_decision(routing))
+            })
+        })?;
     let audio = slugtale_lib::CapturedAudio {
         sample_rate_hz,
         samples,
@@ -2468,13 +2125,12 @@ fn main() {
     let reauthorize_permissions =
         slugtale_lib::permission_reauthorization_requested(std::env::args());
     let app = tauri::Builder::default()
-        .manage(slugtale_lib::WhisperRuntimeCache::default())
+        .manage(slugtale_lib::TranscriptionEngineCatalogue::default())
         .manage(RecordingFeedbackState::default())
         .manage(FocusTargetState::default())
         .manage(AudioCaptureState::default())
         .manage(DictationSegments::default())
         .manage(HotkeyRegistrationState::default())
-        .manage(AppleSpeechEngineState::default())
         .manage(UsageRecorder::default())
         .manage(TypingChallengeOpen::default())
         .plugin(tauri_plugin_autostart::init(
@@ -2496,11 +2152,9 @@ fn main() {
             // rebuilt app (dev binaries change path) does not drift out of sync.
             let settings = load_current_settings(app.handle());
             let _ = set_launch_at_login_state(app.handle(), settings.launch_at_login);
-            // Register the long-lived Transcription Engines once, so their
-            // availability is a cached answer rather than a filesystem probe on
-            // every dictation.
             if let Ok(model_dir) = model_dir(app.handle()) {
-                app.manage(TranscriptionEngines::new(&model_dir));
+                app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                    .set_model_dir(model_dir);
             }
             let _ = warm_ready_local_whisper_runtime(app.handle());
             if reauthorize_permissions {
@@ -2572,7 +2226,8 @@ fn main() {
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
-            app.state::<slugtale_lib::WhisperRuntimeCache>().shutdown();
+            app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                .shutdown();
         }
     });
 

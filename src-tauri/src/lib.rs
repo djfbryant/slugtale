@@ -27,6 +27,9 @@ pub use audio_capture::*;
 mod text_insertion;
 pub use text_insertion::*;
 
+mod platform_execution;
+pub use platform_execution::*;
+
 mod settings;
 pub use settings::*;
 
@@ -59,6 +62,9 @@ pub use permission_setup::*;
 mod transcription_engine;
 pub use transcription_engine::*;
 
+mod engine_catalogue;
+pub use engine_catalogue::*;
+
 mod asr;
 pub use asr::*;
 
@@ -88,6 +94,9 @@ pub use segmentation::*;
 
 mod dictation_workflow;
 pub use dictation_workflow::*;
+
+mod dictation_segments;
+pub use dictation_segments::*;
 
 /// Transcript Cleanup (slugtale-m4h): the deterministic, entirely local passes
 /// that run between transcription and insertion — whitespace normalization in
