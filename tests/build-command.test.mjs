@@ -4,16 +4,87 @@ import { createRequire } from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const { runTauri } = require("../scripts/run-tauri.js");
+const {
+  runTauri,
+  withResolvedRuntimeFeatures,
+  withoutUnsignedUpdaterArtifacts,
+} = require("../scripts/run-tauri.js");
 
 test("package build uses the Tauri launcher", () => {
   const packageJson = JSON.parse(
     readFileSync(new URL("../package.json", import.meta.url), "utf8"),
   );
 
-  assert.equal(
-    packageJson.scripts.build,
-    "node scripts/run-tauri.js build --features local-whisper-runtime --ci",
+  assert.equal(packageJson.scripts.build, "node scripts/run-tauri.js build --ci");
+});
+
+test("the release build resolves Cargo features through the shared helper", () => {
+  assert.deepEqual(
+    withResolvedRuntimeFeatures(["build", "--ci"], {
+      platform: "darwin",
+      environment: {},
+    }),
+    ["build", "--features", "local-whisper-runtime,local-whisper-runtime-metal", "--ci"],
+  );
+});
+
+test("the release build keeps plain Whisper on other platforms", () => {
+  assert.deepEqual(
+    withResolvedRuntimeFeatures(["build", "--ci"], {
+      platform: "win32",
+      environment: {},
+    }),
+    ["build", "--features", "local-whisper-runtime", "--ci"],
+  );
+});
+
+test("an explicit --features list is passed through untouched", () => {
+  assert.deepEqual(
+    withResolvedRuntimeFeatures(
+      ["build", "--features", "local-whisper-runtime"],
+      { platform: "darwin", environment: {} },
+    ),
+    ["build", "--features", "local-whisper-runtime"],
+  );
+});
+
+test("a local build without the signing key drops only the updater signature step", () => {
+  const features = "local-whisper-runtime,local-whisper-runtime-metal";
+  assert.deepEqual(
+    withoutUnsignedUpdaterArtifacts(["build", "--features", features, "--ci"], {
+      environment: {},
+    }),
+    [
+      "build",
+      "--features",
+      features,
+      "--ci",
+      "--config",
+      JSON.stringify({ bundle: { createUpdaterArtifacts: false } }),
+    ],
+  );
+});
+
+test("a build with the signing key keeps the signed updater artifacts", () => {
+  for (const key of [
+    "TAURI_SIGNING_PRIVATE_KEY",
+    "TAURI_SIGNING_PRIVATE_KEY_PATH",
+  ]) {
+    assert.deepEqual(
+      withoutUnsignedUpdaterArtifacts(["build", "--ci"], {
+        environment: { [key]: "secret" },
+      }),
+      ["build", "--ci"],
+    );
+  }
+});
+
+test("an explicit --config is never overridden", () => {
+  assert.deepEqual(
+    withoutUnsignedUpdaterArtifacts(["build", "--config", "custom.json"], {
+      environment: {},
+    }),
+    ["build", "--config", "custom.json"],
   );
 });
 
