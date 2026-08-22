@@ -848,6 +848,270 @@ fn update_registered_hotkey(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Voice Activation spike (slugtale-e95)
+//
+// An opt-in always-listening thread that scores rolling microphone windows
+// against the wake phrase and starts a dictation through the same lifecycle
+// the hotkey uses. The listener only exists on macOS builds with the
+// `voice-activation` cargo feature; everywhere else the setting is stored and
+// nothing holds the microphone open.
+// ---------------------------------------------------------------------------
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+#[derive(Default)]
+struct VoiceActivationState(std::sync::Mutex<Option<std::sync::mpsc::Sender<VoiceActivationCommand>>>);
+
+/// Placeholder where the feature is unsupported so the managed-state call site
+/// stays identical on every platform.
+#[cfg(not(all(target_os = "macos", feature = "voice-activation")))]
+#[derive(Default)]
+struct VoiceActivationState(());
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+enum VoiceActivationCommand {
+    /// Open the microphone and start scoring windows.
+    Listen,
+    /// Close the microphone and wait for the next Listen.
+    Stop,
+}
+
+/// Bring the running listener in line with the stored preference.
+///
+/// Called from app setup and from the Settings save command, so toggling the
+/// preference takes effect immediately rather than at next launch.
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+fn sync_voice_activation_worker(
+    app: &tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let state = app.state::<VoiceActivationState>();
+    let mut listener = state
+        .0
+        .lock()
+        .map_err(|_| "voice activation mutex poisoned".to_string())?;
+
+    match listener.as_ref() {
+        Some(sender) => {
+            let _ = sender.send(if enabled {
+                VoiceActivationCommand::Listen
+            } else {
+                VoiceActivationCommand::Stop
+            });
+            Ok(())
+        }
+        None if enabled => {
+            let (sender, receiver) = std::sync::mpsc::channel::<VoiceActivationCommand>();
+            let app_handle = app.clone();
+            std::thread::Builder::new()
+                .name("slugtale-voice-activation".to_string())
+                .spawn(move || run_voice_activation_worker(app_handle, receiver))
+                .map_err(|error| error.to_string())?;
+            *listener = Some(sender);
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+/// No-op where voice activation cannot run; the preference still saves.
+#[cfg(not(all(target_os = "macos", feature = "voice-activation")))]
+fn sync_voice_activation_worker(_app: &tauri::AppHandle, _enabled: bool) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+const VOICE_ACTIVATION_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+/// Transcribe at most every ~2s of new speech audio, keeping inference off the
+/// hot path while a phrase is still forming.
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+const VOICE_ACTIVATION_MIN_NEW_SAMPLES: usize = 32_000;
+/// Above the waveform's noise floor (0.012): a quiet room never reaches Whisper.
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+const VOICE_ACTIVATION_SPEECH_FLOOR: f32 = 0.02;
+/// Tail kept after each evaluation, so "hi" ending one window and "Slugtale"
+/// starting the next are still scored together.
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+const VOICE_ACTIVATION_OVERLAP_SAMPLES: usize = 16_000;
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+fn run_voice_activation_worker(
+    app: tauri::AppHandle,
+    receiver: std::sync::mpsc::Receiver<VoiceActivationCommand>,
+) {
+    use slugtale_lib::{CpalAudioRecorder, SpeechWindowBuffer, WakeWordConfig, WakeWordDetector};
+
+    // One recorder per listen session, rebuilt each time so a microphone change
+    // or permission revoke between sessions cannot strand a stale stream.
+    'sessions: while let Ok(command) = receiver.recv() {
+        if matches!(command, VoiceActivationCommand::Stop) {
+            continue;
+        }
+
+        let mut recorder = CpalAudioRecorder::new();
+        if let Err(error) = recorder.start() {
+            eprintln!("voice activation could not open the microphone: {error}");
+            // Wait for an explicit re-enable (a Settings toggle off/on recovers).
+            continue;
+        }
+        eprintln!("voice activation: listening for \"Hi Slugtale\"");
+
+        let mut window = SpeechWindowBuffer::new();
+        let mut detector = WakeWordDetector::new(WakeWordConfig::default());
+
+        loop {
+            use std::sync::mpsc::TryRecvError;
+            match receiver.try_recv() {
+                Ok(VoiceActivationCommand::Stop) | Err(TryRecvError::Disconnected) => break,
+                Ok(VoiceActivationCommand::Listen) | Err(TryRecvError::Empty) => {}
+            }
+
+            std::thread::sleep(VOICE_ACTIVATION_POLL);
+
+            // take_segment drains what arrived during the poll and resamples to
+            // mono 16 kHz — the same shape dictation hands to Whisper.
+            let chunk = match recorder.take_segment() {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    eprintln!("voice activation capture failed: {error}");
+                    break;
+                }
+            };
+            window.push(&chunk.samples);
+
+            // Never score our own dictation: the user is already talking to
+            // Slugtale, and speaker echo of playback must not fire a trigger.
+            if voice_activation_target_is_dictating(&app) {
+                window.clear();
+                continue;
+            }
+
+            // Energy gate: Whisper inference is expensive, silence never runs it.
+            if window.rms() < VOICE_ACTIVATION_SPEECH_FLOOR {
+                continue;
+            }
+            if !window.ready_for_evaluation(VOICE_ACTIVATION_MIN_NEW_SAMPLES) {
+                continue;
+            }
+
+            let audio = slugtale_lib::CapturedAudio::mono_16khz(window.take_for_evaluation());
+            window.retain_recent(VOICE_ACTIVATION_OVERLAP_SAMPLES);
+
+            let settings = load_current_settings(&app);
+            let provider = app
+                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                .whisper_provider(&settings);
+            let Some(provider) = provider else {
+                // No model installed yet; keep listening cheaply until one is.
+                continue;
+            };
+
+            match provider.transcribe(&audio) {
+                Ok(transcription) => {
+                    let text = transcription.transcription.text.trim();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    // Dogfooding confidence log. Transcript text only — audio is
+                    // dropped above and nothing here persists (ADR-0019).
+                    eprintln!(
+                        "voice activation: score {:.2} from {:?}",
+                        slugtale_lib::wake_phrase_score(text),
+                        text
+                    );
+                    if detector
+                        .on_transcript(text, now_unix_ms())
+                        .is_some()
+                    {
+                        window.clear();
+                        eprintln!("voice activation: wake phrase detected");
+                        trigger_voice_activation_start(&app);
+                    }
+                }
+                Err(error) => eprintln!("voice activation transcription failed: {error}"),
+            }
+        }
+
+        let _ = recorder.cancel();
+        eprintln!("voice activation: stopped listening");
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+fn voice_activation_target_is_dictating(app: &tauri::AppHandle) -> bool {
+    app.state::<HotkeyRegistrationState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|registration| {
+            registration
+                .lifecycle
+                .as_ref()
+                .map(slugtale_lib::DictationLifecycle::is_dictating)
+        })
+        .unwrap_or(false)
+}
+
+/// Start a dictation exactly as a hotkey press would, or not at all.
+///
+/// Mirrors the global key worker's start branch: readiness first (an unready
+/// app must never be left believing a wake-triggered dictation is active),
+/// then the lifecycle transition under the shared registration mutex, then the
+/// event itself with the lock released.
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+fn trigger_voice_activation_start(app: &tauri::AppHandle) {
+    if typing_challenge_is_open(app) {
+        return;
+    }
+    if !hotkey_dictation_is_ready(app) {
+        return;
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let transition = {
+        let state = app.state::<HotkeyRegistrationState>();
+        let mut registration = match state.0.lock() {
+            Ok(registration) => registration,
+            Err(_) => return,
+        };
+        // Only ever start: a wake phrase heard mid-dictation must not become an
+        // accidental toggle-off of a dictation the user began by hand.
+        let Some(lifecycle) = registration.lifecycle.as_mut() else {
+            return;
+        };
+        if lifecycle.is_dictating() {
+            return;
+        }
+        let event = lifecycle.on_hotkey(slugtale_lib::HotkeyInput::Pressed);
+        event.map(|event| (event, lifecycle.is_dictating()))
+    };
+
+    let Some((event, should_register_escape)) = transition else {
+        return;
+    };
+
+    // Global Escape goes through the key worker so its registration
+    // bookkeeping stays authoritative for hold/toggle stop events too.
+    if should_register_escape {
+        let state = app.state::<HotkeyRegistrationState>();
+        if let Ok(registration) = state.0.lock() {
+            request_escape_registration(&registration, true);
+        }
+    }
+
+    if let Err(error) = handle_dictation_event(app, event) {
+        eprintln!("voice activation could not start dictation: {error}");
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// The Dictation Bar's user-chosen appearance, pushed to the bar window so it can
 /// paint its accent and align its orb to the edge it was sent to.
 #[derive(Clone, serde::Serialize)]
@@ -1233,6 +1497,21 @@ fn save_transcript_cleanup_settings(
     let mut settings = load_current_settings(&app);
     slugtale_lib::apply_transcript_cleanup_settings(&mut settings, cleanup_mode);
     save_current_settings(&app, &settings)?;
+    Ok(settings)
+}
+
+/// Save the Voice Activation opt-in and bring the always-listening worker in
+/// line immediately (slugtale-e95). The preference persists on every platform;
+/// only supported builds actually hold the microphone open.
+#[tauri::command]
+fn save_voice_activation_settings(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<slugtale_lib::Settings, String> {
+    let mut settings = load_current_settings(&app);
+    slugtale_lib::apply_voice_activation_settings(&mut settings, enabled);
+    save_current_settings(&app, &settings)?;
+    sync_voice_activation_worker(&app, enabled)?;
     Ok(settings)
 }
 
@@ -2191,6 +2470,7 @@ fn main() {
         .manage(HotkeyRegistrationState::default())
         .manage(UsageRecorder::default())
         .manage(TypingChallengeOpen::default())
+        .manage(VoiceActivationState::default())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -2216,6 +2496,14 @@ fn main() {
                     .set_model_dir(model_dir);
             }
             let _ = warm_ready_local_whisper_runtime(app.handle());
+            // Voice Activation is opt-in: the always-on listener only starts
+            // when a previously saved preference asks for it (slugtale-e95).
+            if let Err(error) = sync_voice_activation_worker(
+                app.handle(),
+                load_current_settings(app.handle()).voice_activation_enabled,
+            ) {
+                eprintln!("voice activation worker did not start: {error}");
+            }
             if reauthorize_permissions {
                 slugtale_lib::show_settings(app.handle().clone());
                 #[cfg(target_os = "macos")]
@@ -2252,6 +2540,7 @@ fn main() {
             save_hotkey_settings,
             save_transcription_settings,
             save_transcript_cleanup_settings,
+            save_voice_activation_settings,
             save_dictation_bar_settings,
             dictation_bar_pointer_over,
             save_launch_at_login,

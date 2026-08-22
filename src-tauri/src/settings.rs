@@ -133,6 +133,12 @@ pub struct Settings {
     /// is what they always got.
     #[serde(default)]
     pub transcript_cleanup: crate::TranscriptCleanupMode,
+    /// Whether the experimental always-listening wake phrase may start a
+    /// dictation without the hotkey (slugtale-e95). Off by default and off for
+    /// every Settings File written before Voice Activation existed: the
+    /// microphone is only ever held open by an explicit user choice.
+    #[serde(default)]
+    pub voice_activation_enabled: bool,
 }
 
 impl Default for Settings {
@@ -152,6 +158,7 @@ impl Default for Settings {
             store_usage: false,
             typing_baseline: crate::TypingBaseline::default(),
             transcript_cleanup: crate::TranscriptCleanupMode::default(),
+            voice_activation_enabled: false,
         }
     }
 }
@@ -236,6 +243,14 @@ pub fn apply_dictation_bar_settings(
 /// platform concern handled at the Tauri layer (ADR-0021).
 pub fn apply_launch_at_login_settings(settings: &mut Settings, enabled: bool) {
     settings.launch_at_login = enabled;
+}
+
+/// Update whether the always-listening wake phrase may start a dictation
+/// (slugtale-e95). This only records the choice; starting or stopping the
+/// listener that holds the microphone open is the Tauri tier's job, because
+/// its lifetime depends on platform audio support.
+pub fn apply_voice_activation_settings(settings: &mut Settings, enabled: bool) {
+    settings.voice_activation_enabled = enabled;
 }
 
 /// Write the Settings File as human-readable JSON so it can be inspected
@@ -346,6 +361,7 @@ mod tests {
             second_opinion: crate::SecondOpinionMode::Automatic,
             store_usage: true,
             transcript_cleanup: crate::TranscriptCleanupMode::CleanDictationWithPauseBreaks,
+            voice_activation_enabled: true,
             typing_baseline: crate::TypingBaseline {
                 challenges: vec![crate::TypingChallengeResult {
                     passage_index: 0,
@@ -492,6 +508,62 @@ mod tests {
 
         apply_launch_at_login_settings(&mut settings, false);
         assert!(!settings.launch_at_login);
+    }
+    #[test]
+    fn voice_activation_defaults_to_off() {
+        // The whole point of the opt-in: a fresh install never holds the
+        // microphone open without an explicit user choice.
+        assert!(!Settings::default().voice_activation_enabled);
+    }
+
+    #[test]
+    fn a_settings_file_written_before_voice_activation_loads_as_disabled() {
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-settings-legacy-voice-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"hotkey":null,"activation_mode":"toggle","launch_at_login":false,"diagnostic_logging":false,"model":null,"speed_profile":"balanced"}"#,
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        assert!(!loaded.voice_activation_enabled);
+    }
+
+    #[test]
+    fn apply_voice_activation_settings_stores_the_opt_in_choice() {
+        let mut settings = Settings::default();
+
+        apply_voice_activation_settings(&mut settings, true);
+        assert!(settings.voice_activation_enabled);
+
+        apply_voice_activation_settings(&mut settings, false);
+        assert!(!settings.voice_activation_enabled);
+    }
+
+    #[test]
+    fn voice_activation_persists_as_a_plain_bool() {
+        let mut settings = Settings::default();
+        apply_voice_activation_settings(&mut settings, true);
+
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(
+            json.contains("\"voice_activation_enabled\":true"),
+            "got: {json}"
+        );
+
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-settings-voice-roundtrip-{}.json",
+            std::process::id()
+        ));
+        save_settings(&path, &settings).unwrap();
+        let loaded = load_settings(&path);
+        std::fs::remove_file(&path).ok();
+        assert!(loaded.voice_activation_enabled);
     }
     #[test]
     fn speed_profile_persists_as_stable_lowercase_strings() {

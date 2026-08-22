@@ -24,6 +24,10 @@ local-parakeet-runtime-coreml = ["local-parakeet-runtime", "parakeet-rs/coreml"]
 # `cfg(target_os = "macos")` on top of this feature so enabling it on Linux or
 # Windows is a no-op rather than a build failure.
 apple-speech-runtime = []
+# Voice Activation spike (slugtale-e95). An always-on microphone listener that
+# scores rolling windows against the wake phrase using the managed Whisper
+# model, so it needs the same runtime as dictation itself. macOS-only in code.
+voice-activation = ["local-whisper-runtime"]
 
 [lib]
 name = "slugtale_lib"
