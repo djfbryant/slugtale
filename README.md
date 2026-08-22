@@ -222,8 +222,7 @@ npm run macos:install -- --build-only
 ```
 
 Because the default certificate is self-signed rather than notarized by Apple,
-the resulting build is trusted only on the Mac that created it. See ADR-0022
-for the planned distribution story.
+the resulting build is trusted only on the Mac that created it.
 
 ### Building the optional Transcription Engines
 
@@ -406,9 +405,92 @@ launchers pass the same value to CMake. Lowering it below `10.15` breaks the
 build. On Apple Silicon the Rust target raises the real floor to macOS 11.0
 regardless of that setting.
 
-Signing here means a local self-signed identity. Apple notarization, installer
-polish, and release distribution still need product work before this is a
-friendlier end-user install.
+### App updates
+
+Slugtale checks for an update when it starts. It also has a **Check now**
+button in Settings. A failed check does not stop dictation.
+
+When GitHub has a newer release, Settings shows its version. Select **Update
+and restart** to download it. The app checks the update signature before it
+installs the update, then restarts. It does not download or install an update
+without your action.
+
+The update file is
+[`latest.json`](https://github.com/djfbryant/slugtale/releases/latest/download/latest.json)
+on the latest GitHub Release. It gives Tauri the release version, the download
+URL, and the signature for each supported platform. The app accepts only an
+update signed by the updater public key in `src-tauri/tauri.conf.json`.
+
+The Tauri updater signature is separate from macOS code signing. macOS code
+signing tells macOS who signed an app. The updater signature tells Slugtale
+that an update came from the same release owner.
+
+### Publish updates from a fork
+
+Do these steps before you give a forked app to anyone. A fork must use its own
+GitHub Release URL and its own updater key. Do not use the Slugtale private
+updater key.
+
+1. Change the app name and `identifier` in `src-tauri/tauri.conf.json`. Use an
+   identifier that you own, such as `io.example.slugtale`. Change the version
+   in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`
+   to the same valid semantic version.
+2. Create an updater key. Store the private key outside the repository and
+   keep a backup in a safe place.
+
+   ```sh
+   npm run tauri signer generate -- -w ~/.tauri/my-slugtale-updater.key
+   ```
+
+   Copy the generated public key into `plugins.updater.pubkey` in
+   `src-tauri/tauri.conf.json`. Do not commit the private key. If you lose it,
+   installed copies of the fork cannot verify updates signed by a new key.
+3. Change `plugins.updater.endpoints` to your fork's release file:
+
+   ```text
+   https://github.com/OWNER/REPOSITORY/releases/latest/download/latest.json
+   ```
+
+4. Build the release with the private updater key available. This repository's
+   build script makes updater files only when the key is available.
+
+   ```sh
+   TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.tauri/my-slugtale-updater.key" \
+     npm run build
+   ```
+
+   On macOS, the build creates an app bundle and an updater archive in
+   `src-tauri/target/release/bundle/macos/`. The updater archive ends in
+   `.app.tar.gz`. Its `.sig` file contains the updater signature.
+5. Create a GitHub Release for that version. Upload the updater archive, its
+   `.sig` file, and a `latest.json` file. For an Apple Silicon macOS release,
+   `latest.json` has this form. Replace every example value.
+
+   ```json
+   {
+     "version": "0.1.0",
+     "notes": "Describe the update.",
+     "pub_date": "2026-08-22T12:00:00Z",
+     "platforms": {
+       "darwin-aarch64": {
+         "url": "https://github.com/OWNER/REPOSITORY/releases/download/v0.1.0/Slugtale.app.tar.gz",
+         "signature": "CONTENTS OF Slugtale.app.tar.gz.sig"
+       }
+     }
+   }
+   ```
+
+   Use `darwin-x86_64` for an Intel Mac build. Add one complete platform entry
+   for each build that you publish. Put the signature text in `latest.json`.
+   Do not put a path or URL to the `.sig` file there.
+6. Mark the GitHub Release as the latest release. Test the installed app from
+   the previous version. Open Settings, select **Check now**, then select
+   **Update and restart**. The app must show the new version and restart into
+   it.
+
+For each later release, increase the version, build with the same private
+updater key, and replace `latest.json` with the new version and signatures.
+An installed app rejects an update that has a different public key.
 
 ## How The App Is Built
 
