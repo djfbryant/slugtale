@@ -4,7 +4,7 @@ Date: 2026-06-28
 
 ## FluidVoice Observations
 
-The local clone at `/Users/USER/just-vibes/FluidVoice-db` is a SwiftUI macOS app, not a database dump. Its core mechanics are useful precedent for Slugtale:
+The local clone at `~/just-vibes/FluidVoice-db` is a SwiftUI macOS app, not a database dump. Its core mechanics are useful precedent for Slugtale:
 
 - It requires microphone and Accessibility permissions.
 - It uses a global event tap for hotkeys.
@@ -25,7 +25,7 @@ Decision update: Slugtale v1 is Whisper-first. Parakeet remains a future spike b
 
 OpenAI's published Whisper table lists approximate VRAM requirements of about 1 GB for tiny/base, 2 GB for small, 5 GB for medium, 6 GB for turbo, and 10 GB for large. `whisper.cpp` also supports quantized model files that reduce memory and disk usage.
 
-For the current development machine, a MacBook Neo with Apple A18 Pro and 8 GB unified memory, Slugtale should default to a small local model rather than medium/large. `base.en` is the conservative English dictation default; `small.en` is a likely quality upgrade if latency is acceptable. Medium, turbo, and large should be treated as advanced options or later benchmarking targets.
+For an entry-level Apple Silicon machine with 8 GB unified memory, Slugtale should default to a small local model rather than medium/large. `base.en` is the conservative English dictation default; `small.en` is a likely quality upgrade if latency is acceptable. Medium, turbo, and large should be treated as advanced options or later benchmarking targets.
 
 ## Product Shape Implication
 
@@ -33,7 +33,7 @@ Slugtale should be treated as a resident desktop agent, not a pure CLI. A CLI ca
 
 ## Sources
 
-- FluidVoice local clone: `/Users/USER/just-vibes/FluidVoice-db`
+- FluidVoice local clone: `~/just-vibes/FluidVoice-db`
 - NVIDIA Parakeet realtime model card: https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1
 - OpenAI Whisper README: https://github.com/openai/whisper
 - whisper.cpp README: https://github.com/ggml-org/whisper.cpp
