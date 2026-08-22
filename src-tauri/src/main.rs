@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1304,6 +1306,62 @@ fn save_launch_at_login(
     Ok(settings)
 }
 
+/// What Settings renders for one app-update check (slugtale-9pr). `version` is
+/// the newer build's version when one is available, and is what the user sees
+/// before deciding to install.
+#[derive(Debug, Clone, serde::Serialize)]
+struct AppUpdateView {
+    available: bool,
+    version: Option<String>,
+}
+
+impl AppUpdateView {
+    fn none() -> Self {
+        Self {
+            available: false,
+            version: None,
+        }
+    }
+
+    fn available(version: String) -> Self {
+        Self {
+            available: true,
+            version: Some(version),
+        }
+    }
+}
+
+/// Ask GitHub Releases whether a newer signed build exists (ADR-0022). The
+/// endpoint and public key live in tauri.conf.json; signature verification is
+/// enforced by the plugin before anything is staged.
+#[tauri::command]
+async fn check_for_app_update(app: tauri::AppHandle) -> Result<AppUpdateView, String> {
+    let updater = app.updater().map_err(|error| error.to_string())?;
+    let update = updater.check().await.map_err(|error| error.to_string())?;
+    Ok(match update {
+        Some(update) => AppUpdateView::available(update.version),
+        None => AppUpdateView::none(),
+    })
+}
+
+/// Download, verify, stage, and relaunch into a checked app update. The restart
+/// never returns; the process replaces itself with the new build.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+async fn install_app_update(app: tauri::AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|error| error.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "no app update is available".to_string())?;
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|error| error.to_string())?;
+    app.restart();
+}
+
 /// What Settings needs to render one row of the Transcription Engines list
 /// (slugtale-vjs.4): whether it is the current primary, its licence and
 /// provenance from [`slugtale_lib::EngineMetadata`], whether it can run right
@@ -2137,6 +2195,7 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -2196,6 +2255,8 @@ fn main() {
             save_dictation_bar_settings,
             dictation_bar_pointer_over,
             save_launch_at_login,
+            check_for_app_update,
+            install_app_update,
             get_local_model_status,
             download_local_model,
             delete_local_model,

@@ -24,6 +24,11 @@ node_modules/
 github-ssh
 github-ssh.pub
 
+# Tauri updater private signing key (slugtale-9pr). Only the public key is
+# committed, inside tauri.conf.json. The private key lives outside the repo
+# (default: ~/.tauri/slugtale-updater.key).
+src-tauri/**/*.key
+
 # Logs
 *.log
 npm-debug.log*
