@@ -37,6 +37,10 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
+    "category": "Productivity",
+    "copyright": "Copyright © 2026 djfbryant",
+    "shortDescription": "Local voice dictation",
+    "longDescription": "Slugtale is a push-to-talk voice dictation tool. Speech is transcribed entirely on your device — audio never leaves the machine — and the transcribed text is typed into whatever app you are using.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
