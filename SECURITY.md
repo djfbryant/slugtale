@@ -2,8 +2,10 @@
 
 ## Supported Versions
 
-Slugtale is currently pre-release software. Security fixes are targeted at the
-current `main` branch only until versioned releases begin.
+Slugtale ships versioned releases starting at `v0.1.0`. Security fixes target
+the latest tagged release and the current `main` branch. Older releases do not
+receive separate security fixes; update to the newest release through the
+in-app updater or a fresh download.
 
 ## Reporting a Vulnerability
 
@@ -25,6 +27,13 @@ users.
 ## Current Data Handling
 
 Slugtale is designed as a local-first dictation app.
+
+### Update integrity
+
+In-app updates are fetched from the GitHub Releases `latest.json` manifest and
+are accepted only after the Tauri updater signature check against the public
+key embedded in `src-tauri/tauri.conf.json`. Updates signed with any other key
+are rejected and never installed.
 
 At the time of this policy:
 
