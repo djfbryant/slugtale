@@ -8,14 +8,9 @@ import test from "node:test";
 // vocabulary so drift fails here instead of at a user's desk.
 
 const rustDir = new URL("../src-tauri/src/", import.meta.url);
-const rustSources = ["main.rs", "lib.rs", "app_shell.rs"]
-  .map((name) => {
-    try {
-      return readFileSync(new URL(name, rustDir), "utf8");
-    } catch {
-      return "";
-    }
-  })
+const rustSources = readdirSync(rustDir, { recursive: true })
+  .filter((name) => String(name).endsWith(".rs"))
+  .map((name) => readFileSync(new URL(String(name), rustDir), "utf8"))
   .join("\n");
 
 const frontendSources = readdirSync(new URL("../src/", import.meta.url))
@@ -33,11 +28,12 @@ function emittedEventNames(source) {
 
 function listenedEventNames(source) {
   const names = new Set();
-  for (const match of source.matchAll(/(?:listen|\blisten)\(\s*"([^"]+)"/g)) {
+  // Matches direct calls and the frontends' `events.listen("name", ...)` wrapper.
+  // Word-boundary on the left so `unlisten("name")` teardown calls never count
+  // as a listener.
+  for (const match of source.matchAll(/\blisten\(\s*"([^"]+)"/g)) {
     names.add(match[1]);
   }
-  // The frontend's own tiny wrapper: listen("name", ...) is already covered
-  // above; events.listen("name", ...) matches the same pattern.
   return names;
 }
 

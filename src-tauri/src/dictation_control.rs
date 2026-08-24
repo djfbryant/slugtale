@@ -15,9 +15,6 @@ use crate::{ActivationMode, DictationEvent, DictationLifecycle};
 /// told the user why — these are for the host's own tracing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BeginSkip {
-    /// The Typing Challenge window is open and owns the keyboard; a hotkey
-    /// press there is prose, not a command.
-    ChallengeOpen,
     /// Dictation Readiness failed. The host builds the report and shows it.
     NotReady,
     /// A dictation is already active, so this input changes nothing.
@@ -50,18 +47,13 @@ impl DictationControl {
             .unwrap_or(false)
     }
 
-    /// Decide a begin request: the guards run cheapest-first (challenge,
-    /// readiness, idleness), and only a request that passes all three moves
-    /// the lifecycle. Returns the event the host must now carry out — arming
-    /// Escape, then starting the recording — or why nothing will happen.
-    pub fn begin(
-        &mut self,
-        challenge_open: bool,
-        dictation_available: bool,
-    ) -> Result<DictationEvent, BeginSkip> {
-        if challenge_open {
-            return Err(BeginSkip::ChallengeOpen);
-        }
+    /// Decide a begin request: the readiness and idleness guards run here, in
+    /// that order, and only a request that passes both moves the lifecycle.
+    /// The Typing Challenge guard is not one of them: it must run before any
+    /// readiness snapshot is paid for, so it stays the host's job. Returns the
+    /// event the host must now carry out — arming Escape, then starting the
+    /// recording — or why nothing will happen.
+    pub fn begin(&mut self, dictation_available: bool) -> Result<DictationEvent, BeginSkip> {
         if !dictation_available {
             return Err(BeginSkip::NotReady);
         }
@@ -107,22 +99,10 @@ mod tests {
     }
 
     #[test]
-    fn a_begin_while_the_typing_challenge_is_open_moves_nothing() {
-        let mut control = control(ActivationMode::Toggle);
-
-        assert_eq!(
-            control.begin(true, true),
-            Err(BeginSkip::ChallengeOpen),
-            "the challenge owns the keyboard"
-        );
-        assert!(!control.is_dictating());
-    }
-
-    #[test]
     fn a_begin_that_fails_readiness_moves_nothing() {
         let mut control = control(ActivationMode::Toggle);
 
-        assert_eq!(control.begin(false, false), Err(BeginSkip::NotReady));
+        assert_eq!(control.begin(false), Err(BeginSkip::NotReady));
         assert!(!control.is_dictating());
     }
 
@@ -130,43 +110,43 @@ mod tests {
     fn a_begin_starts_an_idle_dictation_and_a_second_one_is_already_dictating() {
         let mut control = control(ActivationMode::Toggle);
 
-        assert_eq!(control.begin(false, true), Ok(DictationEvent::Start));
+        assert_eq!(control.begin(true), Ok(DictationEvent::Start));
         assert!(control.is_dictating());
 
-        assert_eq!(control.begin(false, true), Err(BeginSkip::AlreadyDictating));
+        assert_eq!(control.begin(true), Err(BeginSkip::AlreadyDictating));
     }
 
     #[test]
     fn an_abandoned_begin_leaves_the_next_activation_free_to_start() {
         let mut control = control(ActivationMode::Toggle);
 
-        control.begin(false, true).unwrap();
+        control.begin(true).unwrap();
         control.abandon_begin();
 
         assert!(
             !control.is_dictating(),
             "a discarded dictation must not stay marked active"
         );
-        assert_eq!(control.begin(false, true), Ok(DictationEvent::Start));
+        assert_eq!(control.begin(true), Ok(DictationEvent::Start));
     }
 
     #[test]
     fn a_toggle_hotkey_stops_and_the_next_press_begins_again() {
         let mut control = control(ActivationMode::Toggle);
-        control.begin(false, true).unwrap();
+        control.begin(true).unwrap();
 
         assert_eq!(
             control.on_hotkey(HotkeyInput::Pressed),
             Some(DictationEvent::Stop)
         );
         assert!(!control.is_dictating());
-        assert_eq!(control.begin(false, true), Ok(DictationEvent::Start));
+        assert_eq!(control.begin(true), Ok(DictationEvent::Start));
     }
 
     #[test]
     fn a_hold_release_after_an_abandoned_begin_does_not_stop_anything_twice() {
         let mut control = control(ActivationMode::Hold);
-        control.begin(false, true).unwrap();
+        control.begin(true).unwrap();
         control.abandon_begin();
 
         assert_eq!(control.on_hotkey(HotkeyInput::Released), None);

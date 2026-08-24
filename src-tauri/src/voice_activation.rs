@@ -368,11 +368,15 @@ fn trigger_start(app: &tauri::AppHandle) {
     // Escape arming rides the global-key worker's queue rather than happening
     // synchronously here: registration must not run inside this worker thread,
     // which holds no shortcut-plugin locks but also cannot block dictation.
+    // Failures are reported, not swallowed — a begin whose Escape cannot be
+    // armed must roll back like any other failed activation step.
     let mut set_escape = |should_register: bool| {
-        if let Ok(registration) = app.state::<HotkeyRegistrationState>().0.lock() {
-            request_escape_registration(&registration, should_register);
-        }
-        Ok(())
+        let state = app.state::<HotkeyRegistrationState>();
+        let registration = state
+            .0
+            .lock()
+            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+        request_escape_registration(&registration, should_register)
     };
 
     if let Err(error) = begin_dictation(

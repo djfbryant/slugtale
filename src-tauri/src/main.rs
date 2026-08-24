@@ -233,7 +233,10 @@ fn end_active_dictation(
             .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
         let event = end(&mut registration.control);
         if event.is_some() {
-            request_escape_registration(&registration, false);
+            // Disarm failures only matter when the worker is gone entirely,
+            // which means the app is shutting down; dropping the request is
+            // then the honest outcome.
+            let _ = request_escape_registration(&registration, false);
         }
         event
     };
@@ -252,7 +255,8 @@ fn end_active_dictation(
 /// `set_escape(true)` arms bare Escape before recording starts, so there is no
 /// active but uncancellable dictation; `set_escape(false)` disarms it. The
 /// hotkey worker arms synchronously, Voice Activation asks the global-key
-/// worker — the caller owns that difference, everything else is shared.
+/// worker — the caller owns both that difference and the honest error report,
+/// because an arm failure must roll the begin back like any other failed step.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn begin_dictation(
     app: &tauri::AppHandle,
@@ -260,10 +264,11 @@ fn begin_dictation(
     set_escape: &mut dyn FnMut(bool) -> Result<(), String>,
 ) -> Result<(), String> {
     // The Typing Challenge measures how fast the user types, so their hotkey
-    // has to stay plain text for those thirty seconds. Swallowed here, before
-    // any lifecycle state moves, so releasing it later cannot resume anything.
-    let challenge_open = typing_challenge_is_open(app);
-    if challenge_open {
+    // has to stay plain text for those thirty seconds. Swallowed here — before
+    // any readiness snapshot is paid for or lifecycle state moves — so
+    // releasing it later cannot resume anything. The guard stays in the host:
+    // DictationControl only decides requests that reach it.
+    if typing_challenge_is_open(app) {
         return Ok(());
     }
 
@@ -282,12 +287,10 @@ fn begin_dictation(
             .0
             .lock()
             .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
-        registration
-            .control
-            .begin(challenge_open, dictation_available)
+        registration.control.begin(dictation_available)
     };
     let Ok(event) = event else {
-        // ChallengeOpen and NotReady have already had their user-facing
+        // NotReady has already had its user-facing report; AlreadyDictating
         // report; AlreadyDictating means a later input changes nothing.
         return Ok(());
     };
@@ -307,7 +310,7 @@ fn begin_dictation(
         // of finding a discarded dictation still marked active.
         if let Ok(mut registration) = app.state::<HotkeyRegistrationState>().0.lock() {
             registration.control.abandon_begin();
-            request_escape_registration(&registration, false);
+            let _ = request_escape_registration(&registration, false);
         }
         return Err(error);
     }
@@ -783,10 +786,17 @@ fn setup_configured_hotkey(app: &mut tauri::App) -> Result<(), Box<dyn std::erro
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn request_escape_registration(registration: &HotkeyRegistration, should_register: bool) {
-    if let Some(commands) = registration.key_commands.as_ref() {
-        let _ = commands.send(GlobalKeyCommand::SyncEscape(should_register));
-    }
+fn request_escape_registration(
+    registration: &HotkeyRegistration,
+    should_register: bool,
+) -> Result<(), String> {
+    let commands = registration
+        .key_commands
+        .as_ref()
+        .ok_or_else(|| "global key worker has not started".to_string())?;
+    commands
+        .send(GlobalKeyCommand::SyncEscape(should_register))
+        .map_err(|_| "global key worker is unavailable".to_string())
 }
 
 /// Bare Escape must only be global while recording; otherwise Slugtale would
