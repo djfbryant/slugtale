@@ -14,6 +14,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 pub enum DictationSegmentJob {
     PauseFlush {
         dictation: u64,
+        /// The ring sample position of the last voiced sample when this flush
+        /// was queued. The worker drains only through it (plus the capture
+        /// module's quiet-tail guard), so queue delay cannot append later
+        /// speech or extra silence to the segment (slugtale-g1o.4).
+        cut: u64,
     },
     Last {
         dictation: u64,
@@ -24,7 +29,7 @@ pub enum DictationSegmentJob {
 impl DictationSegmentJob {
     pub fn dictation(&self) -> u64 {
         match self {
-            Self::PauseFlush { dictation } | Self::Last { dictation, .. } => *dictation,
+            Self::PauseFlush { dictation, .. } | Self::Last { dictation, .. } => *dictation,
         }
     }
 
@@ -79,7 +84,10 @@ impl DictationSegmentControl {
 pub trait DictationSegmentExecution {
     type Error;
 
-    fn take_pause_segment(&mut self) -> Option<CapturedAudio>;
+    /// Take the pending Pause Flush audio, cutting at `cut` — the sample
+    /// watermark the flush was queued with. `None` when there is nothing to
+    /// take: no dictation is active, or nothing new was captured by then.
+    fn take_pause_segment(&mut self, cut: u64) -> Option<CapturedAudio>;
     fn complete(
         &mut self,
         audio: CapturedAudio,
@@ -125,11 +133,11 @@ impl DictationSegmentWorker {
         }
 
         let audio = match job {
-            DictationSegmentJob::PauseFlush { .. } => {
-                if control.pause_flushes_suspended() || !control.is_recording(number) {
+            DictationSegmentJob::PauseFlush { dictation, cut } => {
+                if control.pause_flushes_suspended() || !control.is_recording(dictation) {
                     None
                 } else {
-                    execution.take_pause_segment()
+                    execution.take_pause_segment(cut)
                 }
             }
             DictationSegmentJob::Last { audio, .. } => {
@@ -185,12 +193,14 @@ mod tests {
         outcomes: Vec<DictationSegmentOutcome>,
         positions: Vec<DictationSegmentPosition>,
         recorded: Vec<CountedSegment>,
+        cuts: Vec<u64>,
     }
 
     impl DictationSegmentExecution for FakeExecution {
         type Error = ();
 
-        fn take_pause_segment(&mut self) -> Option<CapturedAudio> {
+        fn take_pause_segment(&mut self, cut: u64) -> Option<CapturedAudio> {
+            self.cuts.push(cut);
             (!self.audio.is_empty()).then(|| self.audio.remove(0))
         }
 
@@ -242,7 +252,7 @@ mod tests {
 
         worker
             .process(
-                DictationSegmentJob::PauseFlush { dictation },
+                DictationSegmentJob::PauseFlush { dictation, cut: 0 },
                 &control,
                 &mut execution,
             )
@@ -285,7 +295,7 @@ mod tests {
 
         worker
             .process(
-                DictationSegmentJob::PauseFlush { dictation },
+                DictationSegmentJob::PauseFlush { dictation, cut: 0 },
                 &control,
                 &mut execution,
             )
@@ -313,8 +323,64 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_and_rescue_suppress_pause_flushes_but_not_the_last_segment() {
+    fn a_pause_flush_cuts_at_its_queued_watermark() {
+        // The worker must hand the queued cut to capture untouched: the whole
+        // point of the watermark is that queue delay cannot move the segment
+        // boundary (slugtale-g1o.4).
         let control = DictationSegmentControl::default();
+        let dictation = control.begin();
+        let mut worker = DictationSegmentWorker::default();
+        let mut execution = FakeExecution {
+            audio: vec![audio(1, 1)],
+            outcomes: vec![outcome("words", true, false)],
+            ..Default::default()
+        };
+
+        worker
+            .process(
+                DictationSegmentJob::PauseFlush {
+                    dictation,
+                    cut: 48_000,
+                },
+                &control,
+                &mut execution,
+            )
+            .unwrap();
+
+        assert_eq!(execution.cuts, [48_000]);
+    }
+
+    #[test]
+    fn a_stale_pause_flush_from_a_finished_dictation_takes_nothing() {
+        let control = DictationSegmentControl::default();
+        let first = control.begin();
+        let mut worker = DictationSegmentWorker::default();
+        let mut execution = FakeExecution {
+            outcomes: vec![outcome("never", true, false)],
+            ..Default::default()
+        };
+
+        // Stop ended the first dictation and Start began the next; a Pause
+        // Flush from the old session is stale and must not transcribe.
+        let _ = control.begin();
+        assert_eq!(
+            worker
+                .process(
+                    DictationSegmentJob::PauseFlush {
+                        dictation: first,
+                        cut: 1_000
+                    },
+                    &control,
+                    &mut execution
+                )
+                .unwrap(),
+            DictationSegmentJobResult::Skipped { last: false }
+        );
+        assert!(execution.cuts.is_empty());
+    }
+
+    #[test]
+    fn cancellation_and_rescue_suppress_pause_flushes_but_not_the_last_segment() {        let control = DictationSegmentControl::default();
         let dictation = control.begin();
         control.suspend_pause_flushes();
         let mut worker = DictationSegmentWorker::default();
@@ -327,7 +393,7 @@ mod tests {
         assert_eq!(
             worker
                 .process(
-                    DictationSegmentJob::PauseFlush { dictation },
+                    DictationSegmentJob::PauseFlush { dictation, cut: 0 },
                     &control,
                     &mut execution
                 )

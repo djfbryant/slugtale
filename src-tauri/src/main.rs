@@ -389,8 +389,9 @@ fn dictation_audio_level_callback(app: tauri::AppHandle) -> slugtale_lib::AudioL
 /// when one has elapsed.
 ///
 /// This runs on the recorder's level-emitter thread, so it must never block: it
-/// takes only its own detector lock and hands the queue a request rather than
-/// touching the audio session.
+/// takes only its own detector lock plus a brief capture-state lock to read the
+/// voiced-sample watermark, and hands the queue a request rather than touching
+/// the audio session.
 fn request_pause_flush_if_due(
     app: &tauri::AppHandle,
     detector: &Mutex<slugtale_lib::SegmentPauseDetector>,
@@ -409,8 +410,19 @@ fn request_pause_flush_if_due(
         return;
     }
 
+    // Cut at the last voiced sample the ring knows about, not at whatever has
+    // arrived by the time the worker gets here — queue delay must not turn
+    // into extra tail audio in the segment (slugtale-g1o.4).
+    let cut = app
+        .state::<AudioCaptureState>()
+        .0
+        .lock()
+        .map(|guard| slugtale_lib::AudioRecorder::voice_watermark(guard.recorder()))
+        .unwrap_or(0);
+
     segments.send(slugtale_lib::DictationSegmentJob::PauseFlush {
         dictation: segments.current(),
+        cut,
     });
 }
 
@@ -485,14 +497,20 @@ fn run_dictation_segment(
 }
 
 /// Take the speech captured so far as a Dictation Segment, leaving the
-/// microphone running. Called only from the worker thread.
-fn take_dictation_segment(app: &tauri::AppHandle) -> Option<slugtale_lib::CapturedAudio> {
+/// microphone running. Called only from the worker thread. `cut` is the sample
+/// watermark the Pause Flush was queued with: the segment ends there (plus a
+/// small acoustic guard), whatever else has arrived since.
+fn take_dictation_segment(app: &tauri::AppHandle, cut: u64) -> Option<slugtale_lib::CapturedAudio> {
     let capture = app.state::<AudioCaptureState>();
     let flushed = capture
         .0
         .lock()
         .map_err(|_| "audio capture mutex poisoned".to_string())
-        .and_then(|mut guard| guard.flush_segment().map_err(|error| error.to_string()));
+        .and_then(|mut guard| {
+            guard
+                .flush_segment_through(cut)
+                .map_err(|error| error.to_string())
+        });
 
     match flushed {
         Ok(audio) => audio,
@@ -510,8 +528,8 @@ struct AppSegmentExecution<'a> {
 impl slugtale_lib::DictationSegmentExecution for AppSegmentExecution<'_> {
     type Error = String;
 
-    fn take_pause_segment(&mut self) -> Option<slugtale_lib::CapturedAudio> {
-        take_dictation_segment(self.app)
+    fn take_pause_segment(&mut self, cut: u64) -> Option<slugtale_lib::CapturedAudio> {
+        take_dictation_segment(self.app, cut)
     }
 
     fn complete(

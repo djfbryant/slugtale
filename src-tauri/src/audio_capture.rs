@@ -204,6 +204,21 @@ pub trait AudioRecorder {
     /// must not drop a single sample: whatever arrives while the returned
     /// segment is decoding belongs to the next one.
     fn take_segment(&mut self) -> Result<CapturedAudio, AudioCaptureError>;
+
+    /// Like [`AudioRecorder::take_segment`], but drain only through a stable
+    /// sample watermark plus the module's documented quiet-tail guard
+    /// ([`QUIET_TAIL_GUARD`]), leaving anything later in the ring for the next
+    /// segment. A Pause Flush cuts at the last voiced sample it knows about,
+    /// so queue delay cannot append later speech or extra silence to this one
+    /// (slugtale-g1o.4).
+    fn take_segment_through(&mut self, cut: u64) -> Result<CapturedAudio, AudioCaptureError>;
+
+    /// The ring position of the most recent voiced sample — the watermark a
+    /// queued Pause Flush should carry as its cut. `0` when nothing voiced has
+    /// been captured since the ring was cleared.
+    fn voice_watermark(&self) -> u64 {
+        0
+    }
 }
 
 pub type AudioLevelCallback = std::sync::Arc<dyn Fn(f32) + Send + Sync + 'static>;
@@ -253,6 +268,18 @@ impl LevelEmitter {
 const MAX_RECORDING_SECONDS: usize = 5 * 60;
 const RECORDING_LIMIT_ERROR: &str = "recording exceeded the five-minute capture limit";
 
+/// How much quiet audio is kept *after* the last heard voice when a Segment
+/// Pause cuts its segment short.
+///
+/// This is an acoustic guard, not dead weight: word-final consonants decay
+/// below the perceptual voice threshold before they finish sounding, the level
+/// the watermark watches arrives one emitter tick late (~33 ms), and ASR
+/// benefits from a little trailing room. 250 ms covers all three with margin
+/// while staying far below the 500 ms ceiling slugtale-g1o.4 allows — against
+/// the five-second Segment Pause this removes roughly 95 percent of the quiet
+/// tail a segment used to carry to Transcription.
+pub const QUIET_TAIL_GUARD: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// A bounded single-producer/single-consumer ring for microphone samples.
 ///
 /// The CoreAudio callback is the sole producer while the stream is active. The
@@ -261,9 +288,17 @@ const RECORDING_LIMIT_ERROR: &str = "recording exceeded the five-minute capture 
 /// which also prevents first-touch page faults on the audio thread.
 struct RealtimeCaptureBuffer {
     slots: Box<[std::sync::atomic::AtomicU32]>,
+    /// Monotonic count of samples ever pushed; never reset while recording
+    /// lives. Read and write positions are counts, not indices, so a cut can
+    /// be named by position without worrying about ring wrap.
     write_position: std::sync::atomic::AtomicUsize,
     read_position: std::sync::atomic::AtomicUsize,
     overflowed: std::sync::atomic::AtomicBool,
+    /// Ring position of the most recent sample that arrived while the voice
+    /// level was above the Segment threshold. Written by the real-time audio
+    /// callback (one atomic store on voiced buffers only), read when a Pause
+    /// Flush names its cut (slugtale-g1o.4).
+    last_voice_position: std::sync::atomic::AtomicUsize,
 }
 
 impl RealtimeCaptureBuffer {
@@ -287,6 +322,7 @@ impl RealtimeCaptureBuffer {
             write_position: std::sync::atomic::AtomicUsize::new(0),
             read_position: std::sync::atomic::AtomicUsize::new(0),
             overflowed: std::sync::atomic::AtomicBool::new(false),
+            last_voice_position: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -308,21 +344,71 @@ impl RealtimeCaptureBuffer {
             .store(write_position.wrapping_add(1), Ordering::Release);
     }
 
-    /// Called after the input stream is paused, outside the audio callback.
-    fn drain(&self) -> Result<Vec<f32>, AudioCaptureError> {
+    /// Record, from the real-time callback, that the sample just written was
+    /// voiced. One relaxed atomic store on voiced buffers only: lock-free,
+    /// allocation-free, and skipped entirely on quiet buffers.
+    fn mark_voice(&self) {
         use std::sync::atomic::Ordering;
 
-        let read_position = self.read_position.load(Ordering::Relaxed);
-        let write_position = self.write_position.load(Ordering::Acquire);
-        let available = write_position
-            .wrapping_sub(read_position)
-            .min(self.slots.len());
+        self.last_voice_position
+            .store(self.write_position.load(Ordering::Relaxed), Ordering::Relaxed);
+    }
+
+    /// The ring position of the most recent voiced sample, as a stable
+    /// monotonic watermark a queued Pause Flush can cut at.
+    pub fn voice_watermark(&self) -> u64 {
+        self.last_voice_position
+            .load(std::sync::atomic::Ordering::Acquire) as u64
+    }
+
+    /// Called after the input stream is paused, outside the audio callback.
+    fn drain(&self) -> Result<Vec<f32>, AudioCaptureError> {
+        let read_position = self.read_position.load(std::sync::atomic::Ordering::Relaxed);
+        let write_position = self.write_position.load(std::sync::atomic::Ordering::Acquire);
+        self.read_range(read_position, write_position)
+    }
+
+    /// Drain only through `cut` plus a small acoustic guard, leaving anything
+    /// after it in the ring for the next segment (slugtale-g1o.4).
+    ///
+    /// `cut` is a stable watermark — the ring position of the last voiced
+    /// sample when a Pause Flush was queued — so worker queue delay cannot add
+    /// later speech or silence to this segment. Wrap and overrun behaviour is
+    /// defined here:
+    ///
+    /// - A cut already handed over (at or behind the read position) yields
+    ///   nothing; the guard never rewinds into drained audio.
+    /// - A cut ahead of production (only possible for a stale job) drains
+    ///   through whatever exists rather than blocking.
+    /// - The producer having lapped the consumer is an overflow, exactly as in
+    ///   [`Self::drain`].
+    fn drain_through(&self, cut: u64, guard: u64) -> Result<Vec<f32>, AudioCaptureError> {
+        let read_position = self.read_position.load(std::sync::atomic::Ordering::Relaxed);
+        let write_position = self.write_position.load(std::sync::atomic::Ordering::Acquire);
+
+        let cut = cut.min(usize::MAX as u64) as usize;
+        // Never read later samples than exist, and never rewind into audio a
+        // previous segment already took.
+        let end = write_position.min(cut.saturating_add(guard as usize));
+        if end <= read_position {
+            return Ok(Vec::new());
+        }
+        self.read_range(read_position, end)
+    }
+
+    /// Read `[from, to)` and advance the read position to `to`. Shared by
+    /// [`Self::drain`] and [`Self::drain_through`]; both callers have already
+    /// clamped their range.
+    fn read_range(&self, from: usize, to: usize) -> Result<Vec<f32>, AudioCaptureError> {
+        use std::sync::atomic::Ordering;
+
+        let available = to.wrapping_sub(from).min(self.slots.len());
         let mut samples = Vec::with_capacity(available);
         for offset in 0..available {
-            let slot = read_position.wrapping_add(offset) % self.slots.len();
+            let slot = from.wrapping_add(offset) % self.slots.len();
             samples.push(f32::from_bits(self.slots[slot].load(Ordering::Relaxed)));
         }
-        self.read_position.store(write_position, Ordering::Release);
+        self.read_position.store(to, Ordering::Release);
 
         if self.overflowed.swap(false, Ordering::Relaxed) {
             return Err(AudioCaptureError::new(RECORDING_LIMIT_ERROR));
@@ -336,6 +422,10 @@ impl RealtimeCaptureBuffer {
 
         let write_position = self.write_position.load(Ordering::Acquire);
         self.read_position.store(write_position, Ordering::Release);
+        // The watermark belongs to the previous dictation; park it at the same
+        // position so no stale cut can point into the next one.
+        self.last_voice_position
+            .store(write_position, Ordering::Release);
         self.overflowed.store(false, Ordering::Relaxed);
     }
 }
@@ -429,10 +519,15 @@ impl CpalAudioRecorder {
                     }
                     if !data.is_empty() {
                         let rms = (sum_of_squares / data.len() as f32).sqrt().clamp(0.0, 1.0);
-                        level_bits.store(
-                            voice_level_from_rms(rms).to_bits(),
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
+                        let level = voice_level_from_rms(rms);
+                        // Pair the perceptual level with the ring position it
+                        // belongs to: the watermark a Pause Flush cuts at.
+                        // One extra atomic store on voiced buffers only — the
+                        // callback stays lock-free and allocation-free.
+                        if level > crate::SEGMENT_VOICE_LEVEL {
+                            callback_buffer.mark_voice();
+                        }
+                        level_bits.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
                     }
                 },
                 move |error| {
@@ -693,6 +788,24 @@ impl AudioRecorder for CpalAudioRecorder {
 
         captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
     }
+
+    fn take_segment_through(&mut self, cut: u64) -> Result<CapturedAudio, AudioCaptureError> {
+        let buffer = self
+            .buffer
+            .as_ref()
+            .ok_or_else(|| AudioCaptureError::new("audio capture buffer is unavailable"))?;
+        let guard = (QUIET_TAIL_GUARD.as_secs_f64() * f64::from(self.sample_rate_hz)) as u64;
+        let samples = buffer.drain_through(cut, guard)?;
+
+        captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
+    }
+
+    fn voice_watermark(&self) -> u64 {
+        self.buffer
+            .as_ref()
+            .map(|buffer| buffer.voice_watermark())
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -732,6 +845,26 @@ where
         }
 
         let audio = self.recorder.take_segment()?;
+        if audio.samples.is_empty() {
+            return Ok(None);
+        }
+
+        self.flushed_a_segment = true;
+        Ok(Some(audio))
+    }
+
+    /// Like [`Self::flush_segment`], but cut at a stable sample watermark: only
+    /// audio through `cut` plus the quiet-tail guard joins this segment, so a
+    /// slow worker queue cannot append later speech to it (slugtale-g1o.4).
+    pub fn flush_segment_through(
+        &mut self,
+        cut: u64,
+    ) -> Result<Option<CapturedAudio>, AudioCaptureError> {
+        if !self.active {
+            return Ok(None);
+        }
+
+        let audio = self.recorder.take_segment_through(cut)?;
         if audio.samples.is_empty() {
             return Ok(None);
         }
@@ -1076,6 +1209,148 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_pause_cut_ends_at_the_watermark_even_when_the_worker_is_slow() {
+        // Queue delay must not change the segment: audio arriving after the
+        // cut stays in the ring for the next segment.
+        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        for sample in 0..100 {
+            ring.push_sample(sample as f32);
+        }
+        ring.mark_voice();
+        let watermark = ring.voice_watermark();
+        for sample in 100..300 {
+            // Speech continues while the flush sits in the queue.
+            ring.push_sample(sample as f32);
+            if sample < 120 {
+                ring.mark_voice();
+            }
+        }
+
+        let segment = ring.drain_through(watermark, 0).unwrap();
+
+        assert_eq!(segment.len(), 100);
+        assert_eq!(segment[99], 99.0);
+        // Nothing is lost: the rest drains afterwards.
+        let remainder = ring.drain().unwrap();
+        assert_eq!(remainder.len(), 200);
+    }
+
+    #[test]
+    fn the_quiet_tail_guard_keeps_a_documented_sliver_after_the_cut() {
+        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        for sample in 0..100 {
+            ring.push_sample(sample as f32);
+        }
+        ring.mark_voice();
+        for _ in 100..130 {
+            ring.push_sample(0.0);
+        }
+
+        let segment = ring.drain_through(100, 20).unwrap();
+
+        assert_eq!(segment.len(), 120);
+    }
+
+    #[test]
+    fn a_stale_cut_yields_nothing_and_never_rewinds() {
+        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        for sample in 0..50 {
+            ring.push_sample(sample as f32);
+        }
+        assert_eq!(ring.drain().unwrap().len(), 50);
+
+        // A duplicate or stale job pointing behind the read position takes
+        // nothing and leaves the ring consistent.
+        assert_eq!(ring.drain_through(10, 5).unwrap().len(), 0);
+
+        for sample in 50..60 {
+            ring.push_sample(sample as f32);
+        }
+        assert_eq!(ring.drain().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn a_cut_ahead_of_production_drains_what_exists_rather_than_blocking() {
+        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        ring.push_sample(1.0);
+
+        assert_eq!(ring.drain_through(1_000, 0).unwrap(), vec![1.0]);
+    }
+
+    #[test]
+    fn multiple_pauses_cut_in_order_and_the_rest_reaches_stop() {
+        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        for sample in 0..40 {
+            ring.push_sample(sample as f32);
+        }
+        ring.mark_voice();
+        let first_cut = ring.voice_watermark();
+        for sample in 40..80 {
+            ring.push_sample(sample as f32);
+        }
+        ring.mark_voice();
+        let second_cut = ring.voice_watermark();
+        for sample in 80..100 {
+            ring.push_sample(sample as f32);
+        }
+
+        let first = ring.drain_through(first_cut, 0).unwrap();
+        let second = ring.drain_through(second_cut, 0).unwrap();
+        let remainder = ring.drain().unwrap();
+
+        assert_eq!(first.len(), 40);
+        assert_eq!(second.len(), 40);
+        assert_eq!(remainder.len(), 20);
+    }
+
+    #[test]
+    fn cutting_at_the_watermark_keeps_speech_intact_while_dropping_most_of_the_quiet_tail() {
+        // The slugtale-g1o.4 win, measured on a synthetic phrase: half a second
+        // of speech followed by the full five-second Segment Pause of silence.
+        const RATE: usize = 16_000;
+        const SPEECH: usize = RATE / 2;
+        const TAIL: usize = RATE * 9 / 2;
+
+        let ring = RealtimeCaptureBuffer::with_capacity(SPEECH + TAIL);
+        for index in 0..SPEECH {
+            ring.push_sample(0.4);
+            if index % 160 == 0 {
+                ring.mark_voice();
+            }
+        }
+        let watermark = ring.voice_watermark();
+        for _ in 0..TAIL {
+            ring.push_sample(0.0);
+        }
+
+        let guard = (QUIET_TAIL_GUARD.as_secs_f64() * RATE as f64) as u64;
+        let segment = ring
+            .drain_through(watermark.min(SPEECH as u64), guard)
+            .unwrap();
+        let audio =
+            captured_audio_from_interleaved_input(RATE as u32, 1, &segment).unwrap();
+
+        // Correctness: every voiced sample survives into the segment handed to
+        // Transcription.
+        assert_eq!(
+            segment.iter().filter(|sample| **sample != 0.0).count(),
+            SPEECH
+        );
+        // And the transcript-critical signal shape is unchanged by the cut.
+        assert!(!audio.samples.is_empty());
+
+        // Efficiency: what used to be five seconds of audio is now speech plus
+        // the guard — at least an 80 percent reduction.
+        let total = (SPEECH + TAIL) as f64;
+        let reduction = 1.0 - segment.len() as f64 / total;
+        assert!(
+            reduction >= 0.80,
+            "expected at least 80 percent fewer samples, got {recession:.2}",
+            recession = reduction
+        );
+    }
+
     struct FakeAudioRecorder {
         audio: CapturedAudio,
         /// What each successive `take_segment` hands back, mimicking a ring that
@@ -1087,6 +1362,7 @@ mod tests {
         /// once prepared or while recording.
         prepared_or_recording: std::cell::Cell<bool>,
         fail_prepare: bool,
+        watermark: std::cell::Cell<u64>,
     }
 
     impl FakeAudioRecorder {
@@ -1098,6 +1374,7 @@ mod tests {
                 prepares: std::cell::Cell::new(0),
                 prepared_or_recording: std::cell::Cell::new(false),
                 fail_prepare: false,
+                watermark: std::cell::Cell::new(0),
             }
         }
 
@@ -1153,6 +1430,20 @@ mod tests {
                 .borrow_mut()
                 .pop_front()
                 .unwrap_or_else(|| CapturedAudio::mono_16khz(Vec::new())))
+        }
+
+        fn take_segment_through(&mut self, cut: u64) -> Result<CapturedAudio, AudioCaptureError> {
+            self.events.borrow_mut().push("take_segment_through");
+            let _ = cut;
+            Ok(self
+                .segments
+                .borrow_mut()
+                .pop_front()
+                .unwrap_or_else(|| CapturedAudio::mono_16khz(Vec::new())))
+        }
+
+        fn voice_watermark(&self) -> u64 {
+            self.watermark.get()
         }
     }
 }
