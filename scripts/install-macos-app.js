@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 const {
   createTauriEnvironment,
   resolveRuntimeFeatures,
+  withoutUnsignedUpdaterArtifacts,
 } = require("./run-tauri.js");
 
 const root = join(__dirname, "..");
@@ -120,13 +121,13 @@ requireMacosCodeSigningIdentity(macosSignIdentity);
 // the answer is visible before the build starts.
 console.log(`Building with Cargo features: ${runtimeFeatures}`);
 
-run(tauri, [
-  "build",
-  "--features",
-  runtimeFeatures,
-  "--bundles",
-  "app",
-]);
+// This command installs one local .app. It never publishes an updater archive,
+// so a release key inherited from the shell must not open a password prompt.
+const buildArgs = withoutUnsignedUpdaterArtifacts(
+  ["build", "--features", runtimeFeatures, "--bundles", "app"],
+  { environment: {} },
+);
+run(tauri, buildArgs);
 
 const builtAppPath = join(
   root,

@@ -4,9 +4,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_updater::UpdaterExt;
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+mod voice_activation;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const DICTATION_ESCAPE_KEY: &str = "Escape";
@@ -182,12 +184,40 @@ fn show_settings(app: tauri::AppHandle) {
 fn dictation_event(app: tauri::AppHandle, event: String) -> Result<(), String> {
     let event = match event.as_str() {
         "start" => slugtale_lib::DictationEvent::Start,
-        "stop" => slugtale_lib::DictationEvent::Stop,
+        "stop" => return stop_active_dictation(&app),
         "cancel" => return cancel_active_dictation(&app),
         other => return Err(format!("unknown dictation event: {other}")),
     };
 
     handle_dictation_event(&app, event)
+}
+
+/// Stop from the Dictation Bar and reset the shared lifecycle at the same time.
+/// Voice Activation can then trigger again without a stale active state.
+fn stop_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let event = {
+            let state = app.state::<HotkeyRegistrationState>();
+            let mut registration = state
+                .0
+                .lock()
+                .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+            let event = registration
+                .lifecycle
+                .as_mut()
+                .and_then(slugtale_lib::DictationLifecycle::stop);
+            if event.is_some() {
+                request_escape_registration(&registration, false);
+            }
+            event
+        };
+        if let Some(event) = event {
+            return handle_dictation_event(app, event);
+        }
+    }
+
+    handle_dictation_event(app, slugtale_lib::DictationEvent::Stop)
 }
 
 /// Cancel through the same lifecycle bridge used by the global Escape handler
@@ -869,10 +899,11 @@ fn set_hotkey_registration_state(
         .lock()
         .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
     registration.current_hotkey = settings.hotkey.clone();
-    registration.lifecycle = settings
-        .hotkey
-        .as_ref()
-        .map(|_| slugtale_lib::DictationLifecycle::new(settings.activation_mode));
+    // The lifecycle belongs to dictation, not to the optional hotkey. Voice
+    // Activation and Dictation Bar controls use it even with no hotkey set.
+    registration.lifecycle = Some(slugtale_lib::DictationLifecycle::new(
+        settings.activation_mode,
+    ));
     Ok(())
 }
 
@@ -936,7 +967,11 @@ impl DictationBarAppearance {
     }
 }
 
-fn show_dictation_bar(app: &tauri::AppHandle, phase: DictationPhase, settings: &slugtale_lib::Settings) {
+fn show_dictation_bar(
+    app: &tauri::AppHandle,
+    phase: DictationPhase,
+    settings: &slugtale_lib::Settings,
+) {
     if let Some(window) = app.get_webview_window("dictation-bar") {
         let appearance = DictationBarAppearance::from_settings(settings);
         let bar_display = settings.bar_display.clone();
@@ -1066,11 +1101,21 @@ fn current_settings_readiness(app: &tauri::AppHandle) -> slugtale_lib::SettingsR
     let settings = load_current_settings(app);
     let platform = CurrentPlatform::new();
     let local_model_ready = local_model_ready(app);
-    slugtale_lib::settings_readiness_report(
+    let microphone_granted = slugtale_lib::PlatformReadiness::microphone_granted(&platform);
+    let insertion_granted = slugtale_lib::PlatformReadiness::insertion_granted(&platform);
+    let engines = current_engine_availability(app, &settings);
+    let input = if voice_activation::supported() && settings.voice_activation_enabled {
+        slugtale_lib::DictationInput::VoiceActivation
+    } else {
+        slugtale_lib::DictationInput::Hotkey
+    };
+    slugtale_lib::settings_readiness_report_checked_for_input(
         &settings,
-        &platform,
+        microphone_granted,
+        insertion_granted,
         local_model_ready,
-        &current_engine_availability(app, &settings),
+        &engines,
+        input,
     )
 }
 
@@ -1090,14 +1135,25 @@ fn local_model_ready(app: &tauri::AppHandle) -> bool {
 /// Settings read, one probe per OS permission, one engine availability pass.
 /// The readiness gate and the Start path share it instead of each re-reading
 /// global state and possibly disagreeing.
-fn build_activation_snapshot(
+fn build_activation_snapshot(app: &tauri::AppHandle) -> slugtale_lib::DictationActivation {
+    build_activation_snapshot_for(app, slugtale_lib::DictationInput::Hotkey)
+}
+
+fn build_activation_snapshot_for(
     app: &tauri::AppHandle,
+    input: slugtale_lib::DictationInput,
 ) -> slugtale_lib::DictationActivation {
     let settings = load_current_settings(app);
     let platform = CurrentPlatform::new();
     let local_model_ready = local_model_ready(app);
     let engines = current_engine_availability(app, &settings);
-    slugtale_lib::DictationActivation::build(settings, &platform, local_model_ready, engines)
+    slugtale_lib::DictationActivation::build_for_input(
+        settings,
+        &platform,
+        local_model_ready,
+        engines,
+        input,
+    )
 }
 
 /// Engine availability for the readiness report, asked of the same providers the
@@ -1115,7 +1171,10 @@ fn current_engine_availability(
 
 /// Tell the user which required items are missing and open Settings, where
 /// they can act on each one.
-fn report_not_ready(app: &tauri::AppHandle, report: &slugtale_lib::SettingsReadinessReport) -> bool {
+fn report_not_ready(
+    app: &tauri::AppHandle,
+    report: &slugtale_lib::SettingsReadinessReport,
+) -> bool {
     let missing = report
         .items
         .iter()
@@ -1319,6 +1378,22 @@ fn save_transcript_cleanup_settings(
     slugtale_lib::apply_transcript_cleanup_settings(&mut settings, cleanup_mode);
     save_current_settings(&app, &settings)?;
     Ok(settings)
+}
+
+#[tauri::command]
+fn voice_activation_supported() -> bool {
+    voice_activation::supported()
+}
+
+/// Save the Voice Activation opt-in and bring the listener in line immediately.
+/// Change the worker first, then persist. A failed worker must not leave a saved
+/// "on" value while nothing is listening.
+#[tauri::command]
+fn save_voice_activation_settings(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<slugtale_lib::Settings, String> {
+    voice_activation::save_settings(&app, enabled)
 }
 
 #[tauri::command]
@@ -2279,6 +2354,7 @@ fn main() {
         .manage(HotkeyRegistrationState::default())
         .manage(UsageRecorder::default())
         .manage(TypingChallengeOpen::default())
+        .manage(voice_activation::VoiceActivationState::default())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -2313,6 +2389,14 @@ fn main() {
                 if let Ok(mut capture) = app.state::<AudioCaptureState>().0.lock() {
                     let _ = slugtale_lib::AudioRecorder::prepare(capture.recorder_mut());
                 }
+            }
+            // Voice Activation is opt-in: the always-on listener only starts
+            // when a previously saved preference asks for it (slugtale-e95).
+            if let Err(error) = voice_activation::sync_worker(
+                app.handle(),
+                load_current_settings(app.handle()).voice_activation_enabled,
+            ) {
+                eprintln!("voice activation worker did not start: {error}");
             }
             if reauthorize_permissions {
                 slugtale_lib::show_settings(app.handle().clone());
@@ -2350,6 +2434,8 @@ fn main() {
             save_hotkey_settings,
             save_transcription_settings,
             save_transcript_cleanup_settings,
+            voice_activation_supported,
+            save_voice_activation_settings,
             save_dictation_bar_settings,
             dictation_bar_pointer_over,
             save_launch_at_login,

@@ -43,6 +43,8 @@ function createTauriEnvironment({
 
 // Whisper is the baseline every developer-run build carries: it is the only
 // engine available on every platform, and Metal costs nothing extra on macOS.
+// macOS also ships the opt-in Voice Activation listener. Its Settings toggle
+// remains off until the user turns it on.
 // Every engine past it is opt-in at compile time (src-tauri/Cargo.toml) because
 // each drags in a native toolchain — ONNX Runtime for Parakeet, the Swift
 // compiler for Apple SpeechTranscriber — so they are compiled in only when a
@@ -55,7 +57,11 @@ function resolveRuntimeFeatures({
 } = {}) {
   const baseline =
     platform === "darwin"
-      ? ["local-whisper-runtime", "local-whisper-runtime-metal"]
+      ? [
+          "local-whisper-runtime",
+          "local-whisper-runtime-metal",
+          "voice-activation",
+        ]
       : ["local-whisper-runtime"];
   const requested = (environment.SLUGTALE_ENGINE_FEATURES || "")
     .split(",")

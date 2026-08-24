@@ -967,6 +967,15 @@
               <input id="launch-at-login-toggle" type="checkbox" aria-label="Launch at login" />
             </span>
           </div>
+          <div class="row" id="voice-activation-row" hidden>
+            <span class="row-label">
+              Voice activation
+              <span class="row-sub">Experimental: say "Hi Slugtale" to start dictating without the hotkey. While enabled, the microphone stays open and speech is checked locally for the wake phrase.</span>
+            </span>
+            <span class="row-control">
+              <input id="voice-activation-toggle" type="checkbox" aria-label="Voice activation" />
+            </span>
+          </div>
           <div class="row">
             <span class="row-label">
               Appearance
@@ -985,6 +994,7 @@
           </div>
           <p id="app-update-message" class="note" aria-live="polite"></p>
           <p id="launch-at-login-message" class="note" aria-live="polite"></p>
+          <p id="voice-activation-message" class="note" aria-live="polite"></p>
         </section>
       </div>
     </main>
@@ -1050,7 +1060,8 @@
       bar_display: "primary",
       primary_engine: "whisper",
       second_opinion: "off",
-      transcript_cleanup: "basic"
+      transcript_cleanup: "basic",
+      voice_activation_enabled: false
     };
 
     // Shown only outside the desktop app (no Tauri bridge), so the pane is never
@@ -1183,6 +1194,8 @@
     let savingCleanup = false;
     let savingDictationBar = false;
     let savingLaunchAtLogin = false;
+    let savingVoiceActivation = false;
+    let voiceActivationSupported = false;
     let openingReadinessAction = false;
     let capturingHotkey = false;
     let activePane = "status";
@@ -1593,6 +1606,18 @@
       const launchToggle = document.getElementById("launch-at-login-toggle");
       launchToggle.checked = Boolean(currentSettings.launch_at_login);
       launchToggle.disabled = savingLaunchAtLogin;
+
+      const voiceToggle = document.getElementById("voice-activation-toggle");
+      const voiceRow = document.getElementById("voice-activation-row");
+      const voiceMessage = document.getElementById("voice-activation-message");
+      voiceRow.hidden = !voiceActivationSupported;
+      voiceToggle.checked = Boolean(currentSettings.voice_activation_enabled);
+      voiceToggle.disabled = savingVoiceActivation || !voiceActivationSupported;
+      if (!savingVoiceActivation) {
+        voiceMessage.textContent = voiceActivationSupported && voiceToggle.checked
+          ? "Listening for \"Hi Slugtale\". Wait for the dictation bar, then talk."
+          : "";
+      }
     }
 
     function barDisplayKey(display) {
@@ -1653,6 +1678,44 @@
         savingLaunchAtLogin = false;
         currentSettings = { ...previousSettings };
         toggle.checked = Boolean(currentSettings.launch_at_login);
+        toggle.disabled = false;
+        messageEl.classList.add("error");
+        messageEl.textContent = String(error);
+      }
+    }
+
+    // Voice Activation (slugtale-e95). Unsupported builds hide the row. The
+    // backend starts or stops the listener before it saves the checkbox value.
+    async function saveVoiceActivation(enabled) {
+      const invoke = tauriInvoke();
+      const previousSettings = { ...currentSettings };
+      const toggle = document.getElementById("voice-activation-toggle");
+      const messageEl = document.getElementById("voice-activation-message");
+
+      if (!invoke) {
+        currentSettings = { ...currentSettings, voice_activation_enabled: enabled };
+        toggle.checked = enabled;
+        return;
+      }
+
+      savingVoiceActivation = true;
+      toggle.disabled = true;
+      messageEl.classList.remove("error");
+      messageEl.textContent = "Saving…";
+
+      try {
+        const saved = await invoke("save_voice_activation_settings", { enabled });
+        savingVoiceActivation = false;
+        currentSettings = { ...fallbackSettings, ...saved };
+        toggle.checked = Boolean(currentSettings.voice_activation_enabled);
+        toggle.disabled = false;
+        messageEl.textContent = currentSettings.voice_activation_enabled
+          ? "Listening for \"Hi Slugtale\". Wait for the dictation bar, then talk."
+          : "";
+      } catch (error) {
+        savingVoiceActivation = false;
+        currentSettings = { ...previousSettings };
+        toggle.checked = Boolean(currentSettings.voice_activation_enabled);
         toggle.disabled = false;
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
@@ -2163,7 +2226,12 @@
       }
 
       try {
-        renderSettings(await invoke("get_settings"));
+        const [settings, supported] = await Promise.all([
+          invoke("get_settings"),
+          invoke("voice_activation_supported").catch(() => false)
+        ]);
+        voiceActivationSupported = Boolean(supported);
+        renderSettings(settings);
       } catch (error) {
         console.error("Could not load settings", error);
         renderSettings(fallbackSettings, String(error), true);
@@ -2600,6 +2668,10 @@
 
       document.getElementById("launch-at-login-toggle").addEventListener("change", (event) => {
         saveLaunchAtLogin(event.target.checked);
+      });
+
+      document.getElementById("voice-activation-toggle").addEventListener("change", (event) => {
+        saveVoiceActivation(event.target.checked);
       });
 
       document.getElementById("app-update-check-button").addEventListener("click", () => {

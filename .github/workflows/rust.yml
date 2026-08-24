@@ -92,3 +92,5 @@ jobs:
       run: npm install
     - name: Run project checks
       run: npm test
+    - name: Compile and test Voice Activation
+      run: npm run test:voice-activation

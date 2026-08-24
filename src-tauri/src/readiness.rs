@@ -10,6 +10,20 @@ pub trait PlatformReadiness {
     fn insertion_granted(&self) -> bool;
 }
 
+/// The user input that starts one dictation. Voice Activation does not need a
+/// configured hotkey; every other readiness requirement is shared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictationInput {
+    Hotkey,
+    VoiceActivation,
+}
+
+impl DictationInput {
+    fn hotkey_required(self) -> bool {
+        self == Self::Hotkey
+    }
+}
+
 /// Dictation Readiness (ADR-0013): dictation is only available once microphone
 /// permission, text insertion permission, a configured hotkey, the assets for
 /// the engine that will run, and a Transcription Engine that can actually run
@@ -44,7 +58,25 @@ pub fn dictation_ready_checked(
     local_model_ready: bool,
     engines: &[(TranscriptionEngine, EngineAvailability)],
 ) -> bool {
-    settings.hotkey.is_some()
+    dictation_ready_checked_for_input(
+        settings,
+        microphone_granted,
+        insertion_granted,
+        local_model_ready,
+        engines,
+        DictationInput::Hotkey,
+    )
+}
+
+fn dictation_ready_checked_for_input(
+    settings: &Settings,
+    microphone_granted: bool,
+    insertion_granted: bool,
+    local_model_ready: bool,
+    engines: &[(TranscriptionEngine, EngineAvailability)],
+    input: DictationInput,
+) -> bool {
+    (!input.hotkey_required() || settings.hotkey.is_some())
         && microphone_granted
         && insertion_granted
         && (local_model_ready || !whisper_model_is_required(settings, engines))
@@ -146,16 +178,38 @@ pub fn settings_readiness_report_checked(
     local_model_ready: bool,
     engines: &[(TranscriptionEngine, EngineAvailability)],
 ) -> SettingsReadinessReport {
+    settings_readiness_report_checked_for_input(
+        settings,
+        microphone_granted,
+        insertion_granted,
+        local_model_ready,
+        engines,
+        DictationInput::Hotkey,
+    )
+}
+
+/// Build a readiness report for the activation inputs available in this app
+/// build. Voice Activation can make a hotkey optional, while every other
+/// readiness check stays the same.
+pub fn settings_readiness_report_checked_for_input(
+    settings: &Settings,
+    microphone_granted: bool,
+    insertion_granted: bool,
+    local_model_ready: bool,
+    engines: &[(TranscriptionEngine, EngineAvailability)],
+    input: DictationInput,
+) -> SettingsReadinessReport {
     let engine_blocker = engine_blocked_reason(settings.primary_engine, engines);
     let whisper_model_required = whisper_model_is_required(settings, engines);
 
     SettingsReadinessReport {
-        dictation_available: dictation_ready_checked(
+        dictation_available: dictation_ready_checked_for_input(
             settings,
             microphone_granted,
             insertion_granted,
             local_model_ready,
             engines,
+            input,
         ),
         items: vec![
             readiness_item(
@@ -170,7 +224,12 @@ pub fn settings_readiness_report_checked(
                 true,
                 insertion_granted,
             ),
-            readiness_item("hotkey", "Hotkey", true, settings.hotkey.is_some()),
+            readiness_item(
+                "hotkey",
+                "Hotkey",
+                input.hotkey_required(),
+                !input.hotkey_required() || settings.hotkey.is_some(),
+            ),
             readiness_item(
                 "local_model",
                 "Local model",
@@ -239,14 +298,31 @@ impl DictationActivation {
         local_model_ready: bool,
         engines: Vec<(TranscriptionEngine, EngineAvailability)>,
     ) -> Self {
+        Self::build_for_input(
+            settings,
+            platform,
+            local_model_ready,
+            engines,
+            DictationInput::Hotkey,
+        )
+    }
+
+    pub fn build_for_input(
+        settings: Settings,
+        platform: &dyn PlatformReadiness,
+        local_model_ready: bool,
+        engines: Vec<(TranscriptionEngine, EngineAvailability)>,
+        input: DictationInput,
+    ) -> Self {
         let microphone_granted = platform.microphone_granted();
         let insertion_granted = platform.insertion_granted();
-        let report = settings_readiness_report_checked(
+        let report = settings_readiness_report_checked_for_input(
             &settings,
             microphone_granted,
             insertion_granted,
             local_model_ready,
             &engines,
+            input,
         );
         let engine_in_play = engine_that_can_run(settings.primary_engine, &engines);
 
@@ -722,12 +798,8 @@ mod tests {
     fn one_activation_probes_each_os_permission_exactly_once() {
         let platform = CountingPlatform::all_ready();
 
-        let activation = DictationActivation::build(
-            configured_settings(),
-            &platform,
-            true,
-            whisper_available(),
-        );
+        let activation =
+            DictationActivation::build(configured_settings(), &platform, true, whisper_available());
 
         assert!(activation.dictation_available());
         assert_eq!(platform.microphone_calls.get(), 1);
@@ -779,6 +851,30 @@ mod tests {
         assert_eq!(activation.settings.hotkey, settings.hotkey);
         assert_ne!(activation.settings.hotkey, changed.hotkey);
         assert!(activation.dictation_available());
+    }
+
+    #[test]
+    fn voice_activation_is_an_input_when_no_hotkey_is_configured() {
+        let platform = CountingPlatform::all_ready();
+        let settings = Settings::default();
+
+        let activation = DictationActivation::build_for_input(
+            settings,
+            &platform,
+            true,
+            whisper_available(),
+            DictationInput::VoiceActivation,
+        );
+
+        assert!(activation.dictation_available());
+        let hotkey = activation
+            .report
+            .items
+            .iter()
+            .find(|item| item.id == "hotkey")
+            .unwrap();
+        assert!(!hotkey.required);
+        assert!(hotkey.ready);
     }
 
     #[test]

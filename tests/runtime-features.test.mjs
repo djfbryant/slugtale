@@ -6,10 +6,10 @@ import test from "node:test";
 const require = createRequire(import.meta.url);
 const { resolveRuntimeFeatures } = require("../scripts/run-tauri.js");
 
-test("macOS builds get Whisper with Metal by default", () => {
+test("macOS builds get Whisper, Metal, and Voice Activation by default", () => {
   assert.equal(
     resolveRuntimeFeatures({ platform: "darwin", environment: {} }),
-    "local-whisper-runtime,local-whisper-runtime-metal",
+    "local-whisper-runtime,local-whisper-runtime-metal,voice-activation",
   );
 });
 
@@ -29,7 +29,7 @@ test("requested engine features are added on top of the Whisper baseline", () =>
           "apple-speech-runtime,local-parakeet-runtime-coreml",
       },
     }),
-    "local-whisper-runtime,local-whisper-runtime-metal,apple-speech-runtime,local-parakeet-runtime-coreml",
+    "local-whisper-runtime,local-whisper-runtime-metal,voice-activation,apple-speech-runtime,local-parakeet-runtime-coreml",
   );
 });
 
@@ -53,7 +53,7 @@ test("a request that repeats the baseline does not duplicate it", () => {
         SLUGTALE_ENGINE_FEATURES: "local-whisper-runtime,apple-speech-runtime",
       },
     }),
-    "local-whisper-runtime,local-whisper-runtime-metal,apple-speech-runtime",
+    "local-whisper-runtime,local-whisper-runtime-metal,voice-activation,apple-speech-runtime",
   );
 });
 
@@ -75,4 +75,15 @@ test("the dev and install launchers both resolve features through the shared hel
       `${script} must not hardcode a Cargo feature list of its own`,
     );
   }
+});
+
+test("the local macOS installer skips updater signing when no release key is present", () => {
+  const source = readFileSync(
+    new URL("../scripts/install-macos-app.js", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /withoutUnsignedUpdaterArtifacts/);
+  assert.match(source, /environment: \{\}/);
+  assert.match(source, /run\(tauri, buildArgs\)/);
 });

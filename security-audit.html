@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Slugtale — Pre-Publication Security Audit</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --border: #2a2f3d;
+    --text: #e4e7ee; --muted: #8b93a7;
+    --high: #e5484d; --medium: #f5a623; --low: #4cc38a; --info: #6ea8fe;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 48px 24px; }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.9rem; margin-bottom: 4px; }
+  .sub { color: var(--muted); margin-bottom: 32px; }
+  h2 { font-size: 1.25rem; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .verdict { background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--medium); border-radius: 10px; padding: 20px 24px; margin-bottom: 32px; }
+  .verdict strong { font-size: 1.05rem; }
+  .stats { display: flex; gap: 16px; margin-bottom: 32px; flex-wrap: wrap; }
+  .stat { flex: 1; min-width: 140px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; text-align: center; }
+  .stat .num { font-size: 1.8rem; font-weight: 700; }
+  .stat .lbl { color: var(--muted); font-size: 0.85rem; }
+  .finding { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
+  .finding header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; }
+  .badge { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 10px; border-radius: 999px; color: #fff; flex-shrink: 0; }
+  .b-high { background: var(--high); } .b-medium { background: var(--medium); color: #1a1a1a; }
+  .b-low { background: var(--low); color: #10231a; } .b-info { background: var(--info); color: #0d1a33; }
+  .finding h3 { font-size: 1rem; font-weight: 600; }
+  .finding .body { padding: 0 20px 18px; color: var(--muted); font-size: 0.95rem; }
+  .finding .body p { margin-bottom: 10px; }
+  code, .loc { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85em; }
+  .loc { color: var(--text); background: #232838; padding: 2px 8px; border-radius: 6px; display: inline-block; margin-bottom: 8px; }
+  .fix { border-left: 3px solid var(--low); padding: 8px 14px; background: rgba(76,195,138,0.07); border-radius: 0 8px 8px 0; color: var(--text); }
+  .fix::before { content: "Fix: "; font-weight: 700; color: var(--low); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th { text-align: left; color: var(--muted); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  td:first-child { white-space: nowrap; }
+  .ok { color: var(--low); font-weight: 600; }
+  footer { margin-top: 48px; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--border); padding-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Pre-Publication Security Audit</h1>
+<p class="sub">slugtale · 133 tracked files · 117 commits scanned (including full git history) · 22 Aug 2026</p>
+
+<div class="verdict">
+  <strong>Verdict: safe to publish after one decision.</strong><br>
+  No secrets, keys, or credentials are in the code or its history. The one real issue is
+  personal data in <strong>git history</strong>: your Gmail address and username were committed
+  inside <code>.beads/issues.jsonl</code> across ~25 past commits. Publishing the repo publishes
+  history, so that data becomes public unless you clean it first.
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="num" style="color:var(--high)">0</div><div class="lbl">High risk</div></div>
+  <div class="stat"><div class="num" style="color:var(--medium)">2</div><div class="lbl">Medium risk</div></div>
+  <div class="stat"><div class="num" style="color:var(--low)">3</div><div class="lbl">Low risk</div></div>
+  <div class="stat"><div class="num" style="color:var(--info)">7</div><div class="lbl">Checks passed</div></div>
+</div>
+
+<h2>Medium Risk</h2>
+
+<div class="finding">
+  <header><span class="badge b-medium">M1</span><h3>Your email and username live in git history</h3></header>
+  <div class="body">
+    <span class="loc">.beads/issues.jsonl (in ~25 past commits)</span>
+    <p>The beads issue export was tracked earlier in the project's life. It contains
+    a personal email address and issue content with a personal name. The file is untracked today,
+    but anyone who clones the public repo can run <code>git log --all</code> and read it.</p>
+    <div class="fix">Pick one:
+      <strong>(a)</strong> Publish from a fresh orphan branch / new repo — simplest, loses commit history.
+      <strong>(b)</strong> Rewrite history with <code>git filter-repo --path .beads/issues.jsonl --invert-paths</code>, keep history.
+      Recommended: (a), since the history is mostly noisy checkpoint commits.
+    </div>
+  </div>
+</div>
+
+<div class="finding">
+  <header><span class="badge b-medium">M2</span><h3>Home directory paths in a tracked doc</h3></header>
+  <div class="body">
+    <span class="loc">docs/research/2026-06-28-fluidvoice-and-asr-notes.md:7,36</span>
+    <p>Two absolute paths leak a macOS username (<code>/Users/&lt;username&gt;/…</code>) and reveal a
+    local clone of another project.</p>
+    <div class="fix">Replace both with <code>~/just-vibes/&lt;project&gt;</code>.</div>
+  </div>
+</div>
+
+<h2>Low Risk</h2>
+
+<div class="finding">
+  <header><span class="badge b-low">L1</span><h3>Personal hardware details in research notes</h3></header>
+  <div class="body">
+    <span class="loc">docs/research/2026-06-28-fluidvoice-and-asr-notes.md:28</span>
+    <p>Describes your machine ("MacBook Neo, A18 Pro, 8 GB"). Harmless alone; part of the same PII picture as M2.</p>
+    <div class="fix">Reword to a generic device description, or leave as-is.</div>
+  </div>
+</div>
+
+<div class="finding">
+  <header><span class="badge b-low">L2</span><h3>Personal setup notes in beads config</h3></header>
+  <div class="body">
+    <span class="loc">.beads/config.yaml:68–77</span>
+    <p>Comments mention your local Dolt mode, local port 3308, and the repo URL. Mostly noise — the repo URL is public anyway once published.</p>
+    <div class="fix">Trim lines 68–77 before publishing, or ignore.</div>
+  </div>
+</div>
+
+<div class="finding">
+  <header><span class="badge b-low">L3</span><h3>Real name in LICENSE and app metadata</h3></header>
+  <div class="body">
+    <span class="loc">LICENSE:3 · src-tauri/tauri.conf.json:41</span>
+    <p>"Copyright © 2026 Darren Bryant". Normal for open source — listed only so it is a conscious choice.</p>
+    <div class="fix">Keep, or use a handle/pseudonym if you prefer.</div>
+  </div>
+</div>
+
+<h2>Checks That Passed</h2>
+<table>
+  <tr><th>Check</th><th>Result</th></tr>
+  <tr><td>No secrets in tracked files</td><td class="ok">Pass — all secret-pattern matches were test fixtures, CSS tokens, or docs stating "no API keys"</td></tr>
+  <tr><td>No secrets anywhere in git history</td><td class="ok">Pass — scanned all commits for key/token patterns; zero hits</td></tr>
+  <tr><td>No private key files tracked</td><td class="ok">Pass — updater private key lives at <code>~/.tauri/slugtale-updater.key</code>, outside the repo</td></tr>
+  <tr><td>Updater key in config is public-only</td><td class="ok">Pass — decodes to a minisign <em>public</em> key, exactly what Tauri updaters require</td></tr>
+  <tr><td>.gitignore covers sensitive material</td><td class="ok">Pass — blocks <code>.env</code>, <code>*.key</code>, logs, build output, beads exports</td></tr>
+  <tr><td>No internal IPs or endpoints</td><td class="ok">Pass — only public URLs (GitHub, crates.io, Hugging Face)</td></tr>
+  <tr><td>No large/sensitive binaries tracked</td><td class="ok">Pass — no file over 500 KB; no DMGs or logs</td></tr>
+</table>
+
+<footer>
+  Generated by opencode audit · Method: pattern scan of all tracked files, full-history scan for
+  secret patterns and sensitive file types, manual review of docs, configs, and beads data.
+</footer>
+
+</div>
+</body>
+</html>
