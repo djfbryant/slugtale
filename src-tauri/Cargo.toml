@@ -41,6 +41,15 @@ required-features = ["local-whisper-runtime"]
 name = "asr_eval"
 required-features = ["local-whisper-runtime"]
 
+# Proves, against real macOS, that a built-but-stopped CoreAudio input stream
+# does not run the microphone (slugtale-g1o.3): the device's
+# kAudioDevicePropertyDeviceIsRunningSomewhere property stays false until the
+# stream plays. This is the evidence that lets idle-time preparation build the
+# stream without lighting the microphone indicator.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-audio = "0.3.2"
+objc2-core-audio-types = "0.3.2"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

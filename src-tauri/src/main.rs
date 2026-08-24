@@ -2217,6 +2217,16 @@ fn main() {
                     .set_model_dir(model_dir);
             }
             warm_effective_primary_engine(app.handle());
+            // Prepare Audio Capture while idle so the first Hotkey does not pay
+            // for device discovery and ring allocation (slugtale-g1o.3). Only
+            // when the microphone permission is already granted: preparation
+            // must never prompt, and a denied microphone stays on the normal
+            // permission path.
+            if slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new()) {
+                if let Ok(mut capture) = app.state::<AudioCaptureState>().0.lock() {
+                    let _ = slugtale_lib::AudioRecorder::prepare(capture.recorder_mut());
+                }
+            }
             if reauthorize_permissions {
                 slugtale_lib::show_settings(app.handle().clone());
                 #[cfg(target_os = "macos")]

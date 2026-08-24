@@ -177,6 +177,21 @@ impl std::fmt::Display for AudioCaptureError {
 impl std::error::Error for AudioCaptureError {}
 
 pub trait AudioRecorder {
+    /// Do the safe part of starting capture ahead of the first Hotkey.
+    ///
+    /// Safe means: discover and validate the default input device and format,
+    /// allocate the capture ring, and build the input stream in a stopped
+    /// state. A stopped stream does not activate the microphone — proved on
+    /// real macOS by `examples/mic_indicator_probe.rs`: the device's
+    /// `kAudioDevicePropertyDeviceIsRunningSomewhere` property stays false
+    /// until the stream plays, and the microphone indicator follows that same
+    /// running state. Preparation never requests the microphone permission;
+    /// callers must only prepare when permission is already granted, so a
+    /// denied user is never prompted from idle time. Idempotent: preparing
+    /// twice prepares once, and preparing while recording changes nothing. A
+    /// failed prepare may be retried; Start never requires it.
+    fn prepare(&mut self) -> Result<(), AudioCaptureError>;
+
     fn start(&mut self) -> Result<(), AudioCaptureError>;
     fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError>;
     fn cancel(&mut self) -> Result<(), AudioCaptureError>;
@@ -333,12 +348,29 @@ struct InputStreamIdentity {
     channels: u16,
 }
 
+/// Where the recorder stands relative to the first Hotkey. `Recording` is not
+/// a variant here because it is already tracked by `stream_active`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum PrepareState {
+    #[default]
+    Unprepared,
+    /// Device and format validated and the stream built in a stopped state;
+    /// Start only has to play it. See [`AudioRecorder::prepare`] for why a
+    /// stopped stream is safe to hold.
+    Prepared { identity: InputStreamIdentity },
+    /// The last prepare attempt failed with this message. A later prepare may
+    /// retry — a missing device can come back.
+    Failed(String),
+}
+
 #[derive(Default)]
 pub struct CpalAudioRecorder {
     stream: Option<cpal::Stream>,
     stream_identity: Option<InputStreamIdentity>,
     stream_active: bool,
     buffer: Option<std::sync::Arc<RealtimeCaptureBuffer>>,
+    /// How far idle-time preparation has got; see [`PrepareState`].
+    prepare_state: PrepareState,
     level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
     level_emitter: Option<LevelEmitter>,
     sample_rate_hz: u32,
@@ -463,6 +495,69 @@ impl CpalAudioRecorder {
 }
 
 impl AudioRecorder for CpalAudioRecorder {
+    /// Validate the default input device, allocate the capture ring, and build
+    /// the input stream stopped while the app is idle, so the first Hotkey only
+    /// pays for `play`. Never plays the stream (that is what activates the
+    /// microphone) and never requests permission — see [`AudioRecorder::prepare`].
+    fn prepare(&mut self) -> Result<(), AudioCaptureError> {
+        use cpal::traits::{DeviceTrait, HostTrait};
+
+        // Already prepared, or further along than preparation goes.
+        if matches!(self.prepare_state, PrepareState::Prepared { .. }) || self.stream.is_some() {
+            return Ok(());
+        }
+
+        let prepared = (|| -> Result<InputStreamIdentity, AudioCaptureError> {
+            let host = cpal::default_host();
+            let device = host
+                .default_input_device()
+                .ok_or_else(|| AudioCaptureError::new("no default input device is available"))?;
+            let supported_config = device
+                .default_input_config()
+                .map_err(|error| AudioCaptureError::new(error.to_string()))?;
+            let sample_format = supported_config.sample_format();
+            let config: cpal::StreamConfig = supported_config.into();
+            let identity = InputStreamIdentity {
+                device_id: device.id().ok(),
+                sample_format,
+                sample_rate_hz: config.sample_rate,
+                channels: config.channels,
+            };
+
+            self.sample_rate_hz = config.sample_rate;
+            // The callback downmixes each input frame before placing it in the
+            // ring, exactly as Start configures it.
+            self.channels = 1;
+
+            // Build the stream but never play it: the microphone stays off
+            // until `play` on the Hotkey path (proved by
+            // `examples/mic_indicator_probe.rs`). Building allocates the ring
+            // zero-initialised too, so first-touch page faults land here.
+            let (stream, buffer) = Self::build_stream_for_format(
+                &device,
+                &config,
+                sample_format,
+                self.level_bits.clone(),
+            )?;
+            self.stream = Some(stream);
+            self.buffer = Some(buffer);
+            self.stream_identity = Some(identity.clone());
+
+            Ok(identity)
+        })();
+
+        match prepared {
+            Ok(identity) => {
+                self.prepare_state = PrepareState::Prepared { identity };
+                Ok(())
+            }
+            Err(error) => {
+                self.prepare_state = PrepareState::Failed(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
     fn start(&mut self) -> Result<(), AudioCaptureError> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -534,7 +629,7 @@ impl AudioRecorder for CpalAudioRecorder {
             )?;
             self.stream = Some(stream);
             self.buffer = Some(buffer);
-            self.stream_identity = Some(identity);
+            self.stream_identity = Some(identity.clone());
             self.stream
                 .as_ref()
                 .expect("rebuilt audio stream exists")
@@ -542,6 +637,10 @@ impl AudioRecorder for CpalAudioRecorder {
                 .map_err(|error| AudioCaptureError::new(error.to_string()))?;
         }
         self.stream_active = true;
+        // Start has validated the device and format right now, which is the
+        // freshest preparation there is: record it so a later `prepare` call
+        // knows the work is already done.
+        self.prepare_state = PrepareState::Prepared { identity };
 
         if let Some(callback) = self.level_callback.clone() {
             match LevelEmitter::spawn(self.level_bits.clone(), callback) {
@@ -863,6 +962,64 @@ mod tests {
     }
 
     #[test]
+    fn preparing_twice_prepares_once_and_start_does_not_reprepare() {
+        // Idle-time preparation is idempotent, and Start consumes the prepared
+        // state rather than repeating the work on the Hotkey path.
+        let mut recorder = FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.2]));
+        recorder.prepare().unwrap();
+        recorder.prepare().unwrap();
+        assert_eq!(recorder.prepare_count(), 1);
+
+        let mut session = AudioCaptureSession::new(recorder);
+        session.on_event(DictationEvent::Start).unwrap();
+
+        assert_eq!(session.recorder().prepare_count(), 1);
+    }
+
+    #[test]
+    fn a_failed_prepare_does_not_block_the_next_dictation_start() {
+        // Preparation is opportunistic: if the device cannot be validated while
+        // idle — or comes back with an error — the Hotkey path must still work.
+        let recorder =
+            FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.2])).failing_prepare();
+        let mut session = AudioCaptureSession::new(recorder);
+
+        assert!(session.recorder_mut().prepare().is_err());
+
+        assert_eq!(session.on_event(DictationEvent::Start).unwrap(), None);
+        let completed = session.on_event(DictationEvent::Stop).unwrap();
+        assert!(matches!(completed, Some(AudioCaptureOutcome::Completed(_))));
+    }
+
+    #[test]
+    fn preparing_a_recording_recorder_changes_nothing() {
+        // A prepare racing an active dictation (the caller holds the same mutex
+        // the Hotkey uses) must not disturb the recording in progress.
+        let recorder = FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.2]));
+        let mut session = AudioCaptureSession::new(recorder);
+        session.on_event(DictationEvent::Start).unwrap();
+
+        session.recorder_mut().prepare().unwrap();
+
+        let completed = session.on_event(DictationEvent::Stop).unwrap();
+        assert!(matches!(completed, Some(AudioCaptureOutcome::Completed(_))));
+        assert_eq!(
+            session.recorder().events.borrow().as_slice(),
+            &["start", "stop"]
+        );
+    }
+
+    #[test]
+    fn a_prepared_ring_holds_no_samples_before_dictation_starts() {
+        // Preparation allocates the ring zero-initialised and never lets it
+        // fill: nothing captured before Dictation starts may leak into the
+        // first dictation.
+        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+
+        assert_eq!(ring.drain().unwrap().len(), 0);
+    }
+
+    #[test]
     fn a_dictation_that_already_flushed_speech_may_end_on_silence() {
         // The user paused, the pause was flushed and inserted, and then they
         // pressed Stop without speaking again. The remainder is genuinely silent
@@ -925,6 +1082,11 @@ mod tests {
         /// is drained mid-recording and refills from the microphone.
         segments: std::cell::RefCell<std::collections::VecDeque<CapturedAudio>>,
         events: std::cell::RefCell<Vec<&'static str>>,
+        prepares: std::cell::Cell<usize>,
+        /// Mimics the real recorder's idempotence rule: preparation is skipped
+        /// once prepared or while recording.
+        prepared_or_recording: std::cell::Cell<bool>,
+        fail_prepare: bool,
     }
 
     impl FakeAudioRecorder {
@@ -933,6 +1095,9 @@ mod tests {
                 audio,
                 segments: std::cell::RefCell::new(std::collections::VecDeque::new()),
                 events: std::cell::RefCell::new(Vec::new()),
+                prepares: std::cell::Cell::new(0),
+                prepared_or_recording: std::cell::Cell::new(false),
+                fail_prepare: false,
             }
         }
 
@@ -941,24 +1106,46 @@ mod tests {
             *recorder.segments.borrow_mut() = segments.into();
             recorder
         }
+
+        fn failing_prepare(mut self) -> Self {
+            self.fail_prepare = true;
+            self
+        }
+
+        fn prepare_count(&self) -> usize {
+            self.prepares.get()
+        }
     }
 
     impl AudioRecorder for FakeAudioRecorder {
+        fn prepare(&mut self) -> Result<(), AudioCaptureError> {
+            if self.fail_prepare {
+                return Err(AudioCaptureError::new("fake prepare failure"));
+            }
+            if !self.prepared_or_recording.replace(true) {
+                self.prepares.set(self.prepares.get() + 1);
+                self.events.borrow_mut().push("prepare");
+            }
+            Ok(())
+        }
+
         fn start(&mut self) -> Result<(), AudioCaptureError> {
             self.events.borrow_mut().push("start");
+            self.prepared_or_recording.set(true);
             Ok(())
         }
 
         fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
             self.events.borrow_mut().push("stop");
+            self.prepared_or_recording.set(false);
             Ok(self.audio.clone())
         }
 
         fn cancel(&mut self) -> Result<(), AudioCaptureError> {
             self.events.borrow_mut().push("cancel");
+            self.prepared_or_recording.set(false);
             Ok(())
         }
-
         fn take_segment(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
             self.events.borrow_mut().push("take_segment");
             Ok(self

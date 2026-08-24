@@ -1,5 +1,11 @@
 //! Measures repeated microphone startup through the same `CpalAudioRecorder`
-//! used by the app (slugtale-op3). No captured audio is persisted.
+//! used by the app (slugtale-op3, slugtale-g1o.3). No captured audio is
+//! persisted.
+//!
+//! Reports three paths so idle-time preparation can be judged on its own:
+//!   cold     — first start on a fresh recorder, nothing prepared
+//!   prepared — prepare() ran first; start() validates and consumes it
+//!   reused   — start/stop cycles that retain the paused stream
 //!
 //! Usage:
 //!   cargo run --example startup_probe -- [starts] [max-warm-start-ms]
@@ -20,7 +26,35 @@ fn main() {
 
     assert!(starts >= 2, "at least two starts are required");
 
+    // Cold path: a fresh recorder with no preparation at all. This is what the
+    // very first Hotkey paid before slugtale-g1o.3.
+    let cold_start = {
+        let mut recorder = CpalAudioRecorder::new();
+        time_start(&mut recorder)
+    };
+    println!("cold start: {:.1} ms", millis(cold_start));
+
+    // Prepared path: the work Audio Capture does while the app is idle, then
+    // the start the first Hotkey would pay afterwards.
+    let (prepare_time, prepared_start) = {
+        let mut recorder = CpalAudioRecorder::new();
+        let started = Instant::now();
+        recorder
+            .prepare()
+            .expect("prepare capture before the first Hotkey");
+        let preparation = started.elapsed();
+        let start = time_start(&mut recorder);
+        (preparation, start)
+    };
+    println!(
+        "prepare (idle): {:.1} ms -> prepared start: {:.1} ms",
+        millis(prepare_time),
+        millis(prepared_start)
+    );
+
+    // Reused path: every later dictation, which resumes the paused stream.
     let mut recorder = CpalAudioRecorder::new();
+    recorder.prepare().expect("prepare capture");
     let mut startup_times = Vec::with_capacity(starts);
     for index in 0..starts {
         let started = Instant::now();
@@ -49,6 +83,15 @@ fn main() {
         eprintln!("warm microphone startup exceeded the responsiveness limit");
         std::process::exit(1);
     }
+}
+
+fn time_start(recorder: &mut CpalAudioRecorder) -> Duration {
+    let started = Instant::now();
+    recorder.start().expect("start capture");
+    let elapsed = started.elapsed();
+    std::thread::sleep(Duration::from_millis(20));
+    let _ = recorder.stop().expect("stop capture");
+    elapsed
 }
 
 fn millis(duration: Duration) -> f64 {
