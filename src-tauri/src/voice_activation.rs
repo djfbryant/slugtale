@@ -359,54 +359,27 @@ fn target_is_dictating(app: &tauri::AppHandle) -> bool {
     app.state::<HotkeyRegistrationState>()
         .0
         .lock()
-        .ok()
-        .and_then(|registration| {
-            registration
-                .lifecycle
-                .as_ref()
-                .map(slugtale_lib::DictationLifecycle::is_dictating)
-        })
+        .map(|registration| registration.control.is_dictating())
         .unwrap_or(false)
 }
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 fn trigger_start(app: &tauri::AppHandle) {
-    if typing_challenge_is_open(app) {
-        return;
-    }
-    let activation =
-        build_activation_snapshot_for(app, slugtale_lib::DictationInput::VoiceActivation);
-    if !activation.dictation_available() {
-        report_not_ready(app, &activation.report);
-        return;
-    }
-
-    let event = {
-        let state = app.state::<HotkeyRegistrationState>();
-        let mut registration = match state.0.lock() {
-            Ok(registration) => registration,
-            Err(_) => return,
-        };
-        registration
-            .lifecycle
-            .as_mut()
-            .and_then(slugtale_lib::DictationLifecycle::start)
-    };
-    let Some(event) = event else {
-        return;
-    };
-
-    if let Ok(registration) = app.state::<HotkeyRegistrationState>().0.lock() {
-        request_escape_registration(&registration, true);
-    }
-
-    if let Err(error) = handle_dictation_event_with(app, event, Some(activation)) {
-        if let Ok(mut registration) = app.state::<HotkeyRegistrationState>().0.lock() {
-            if let Some(lifecycle) = registration.lifecycle.as_mut() {
-                lifecycle.stop();
-            }
-            request_escape_registration(&registration, false);
+    // Escape arming rides the global-key worker's queue rather than happening
+    // synchronously here: registration must not run inside this worker thread,
+    // which holds no shortcut-plugin locks but also cannot block dictation.
+    let mut set_escape = |should_register: bool| {
+        if let Ok(registration) = app.state::<HotkeyRegistrationState>().0.lock() {
+            request_escape_registration(&registration, should_register);
         }
+        Ok(())
+    };
+
+    if let Err(error) = begin_dictation(
+        app,
+        slugtale_lib::DictationInput::VoiceActivation,
+        &mut set_escape,
+    ) {
         eprintln!("voice activation could not start dictation: {error}");
     }
 }

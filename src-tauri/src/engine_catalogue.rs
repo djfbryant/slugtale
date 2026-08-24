@@ -5,10 +5,11 @@
 //! same module, so they cannot disagree about what can run.
 
 use crate::{
-    default_model_path, engine_that_can_run, AppleSpeechProvider, AsrError, EngineAvailability,
-    LocalWhisperRuntime, ParakeetProvider, SecondOpinionCoordinator, SecondOpinionMode,
-    SecondOpinionRouter, Settings, TranscriptionEngine, TranscriptionProvider,
-    WhisperRuntimeCache, WhisperTranscriptionProvider,
+    default_model_path, engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticAsrRuntime,
+    DiagnosticEvent, DiagnosticSink, EngineAvailability, LocalWhisperRuntime, ParakeetProvider,
+    SecondOpinionCoordinator, SecondOpinionMode, SecondOpinionRouter, Settings,
+    SharedDiagnosticLog, TranscriptionEngine, TranscriptionProvider, WhisperRuntimeCache,
+    WhisperTranscriptionProvider,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -94,9 +95,10 @@ impl TranscriptionEngineCatalogue {
     pub fn prepare_primary_warm_up(&self, settings: &Settings) -> Option<EngineWarmUp> {
         let engine = self.effective_primary_engine(settings)?;
         let provider = self.provider(settings, engine)?;
-        let expected_generation =
-            self.warm_generation
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let expected_generation = self
+            .warm_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
         Some(EngineWarmUp {
             generation: Arc::clone(&self.warm_generation),
             expected_generation,
@@ -212,6 +214,22 @@ impl TranscriptionEngineCatalogue {
         })
     }
 
+    /// The transcription stack one dictation runs on: the routed engines plus
+    /// the routing diagnostics and transcription-outcome logging, assembled
+    /// here so every dictation entry point gets the identical recipe. The two
+    /// paths that build this used to hand-copy it and could only disagree by
+    /// being noticed.
+    pub fn dictation_stack<S>(
+        &self,
+        settings: &Settings,
+        log: SharedDiagnosticLog<S>,
+    ) -> Result<DictationStack<S>, AsrError>
+    where
+        S: DiagnosticSink + Send + Sync + 'static,
+    {
+        Ok(DictationStack::new(self.router(settings)?, log))
+    }
+
     pub fn shutdown(&self) {
         self.whisper.shutdown();
         if let Some(parakeet) = self.parakeet_provider() {
@@ -250,8 +268,7 @@ impl EngineWarmUp {
     /// changes must not publish a stale engine as the current warm engine, so a
     /// superseded warm-up stands down instead of loading.
     pub fn is_stale(&self) -> bool {
-        self.generation.load(std::sync::atomic::Ordering::SeqCst)
-            != self.expected_generation
+        self.generation.load(std::sync::atomic::Ordering::SeqCst) != self.expected_generation
     }
 
     /// Warm the engine unless a newer request superseded this one. Safe to run
@@ -266,6 +283,39 @@ impl EngineWarmUp {
     }
 }
 
+/// The assembled transcription stack for one dictation: a [`SecondOpinionRouter`]
+/// reporting its routing decisions to the Local Diagnostic Log, ready to be
+/// borrowed as an [`crate::AsrRuntime`] that also logs transcription outcomes.
+///
+/// Owns the router so callers never hold the pieces apart; borrow it through
+/// [`DictationStack::asr_runtime`] at the point of transcription.
+pub struct DictationStack<S> {
+    router: SecondOpinionRouter,
+    log: SharedDiagnosticLog<S>,
+}
+
+impl<S> DictationStack<S>
+where
+    S: DiagnosticSink + Send + Sync + 'static,
+{
+    /// Assemble the stack: routing decisions are reported to the same log the
+    /// transcription outcomes go to. There is no way to hold a router that
+    /// skips this, which is what keeps both dictation entry points identical.
+    fn new(router: SecondOpinionRouter, log: SharedDiagnosticLog<S>) -> Self {
+        let routing_log = log.clone();
+        let router = router.observing(move |routing| {
+            routing_log.record(DiagnosticEvent::routing_decision(routing))
+        });
+        Self { router, log }
+    }
+
+    /// The stack as an [`crate::AsrRuntime`]. The borrow ends with the
+    /// transcription, which is exactly the router's lifetime requirement.
+    pub fn asr_runtime(&self) -> DiagnosticAsrRuntime<'_, S> {
+        DiagnosticAsrRuntime::new(&self.router, self.log.clone())
+    }
+}
+
 impl Default for TranscriptionEngineCatalogue {
     fn default() -> Self {
         Self::new(None)
@@ -275,7 +325,9 @@ impl Default for TranscriptionEngineCatalogue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EngineConfidence, EngineMetadata, EngineTranscription, FinalTranscription};
+    use crate::{
+        AsrRuntime, EngineConfidence, EngineMetadata, EngineTranscription, FinalTranscription,
+    };
     use std::time::Duration;
 
     struct FakeProvider(TranscriptionEngine);
@@ -391,7 +443,9 @@ mod tests {
             &self,
             _audio: &crate::CapturedAudio,
         ) -> Result<EngineTranscription, AsrError> {
-            Err(AsrError::Runtime("warm-up test never transcribes".to_string()))
+            Err(AsrError::Runtime(
+                "warm-up test never transcribes".to_string(),
+            ))
         }
 
         fn warm_up(&self) -> Result<(), AsrError> {
@@ -464,5 +518,54 @@ mod tests {
             &after_first_release,
             &after_second_release
         ));
+    }
+
+    #[test]
+    fn a_dictation_stack_without_a_runnable_engine_is_an_error_not_a_silent_path() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = SharedDiagnosticLog::new(true, collecting_sink(&lines));
+
+        let error = TranscriptionEngineCatalogue::default()
+            .dictation_stack(&Settings::default(), log)
+            .err()
+            .expect("a catalogue with no runnable engine must not hand out a stack");
+
+        assert!(error.to_string().contains("could not resolve"));
+    }
+
+    #[test]
+    fn a_dictation_stack_reports_routing_and_outcomes_to_one_log() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = SharedDiagnosticLog::new(true, collecting_sink(&lines));
+        let stack = DictationStack::new(
+            SecondOpinionRouter::single(Arc::new(FakeProvider(TranscriptionEngine::Whisper))
+                as Arc<dyn TranscriptionProvider>),
+            log,
+        );
+
+        let transcription = stack
+            .asr_runtime()
+            .transcribe(crate::CapturedAudio::mono_16khz(vec![0.0]))
+            .unwrap();
+        assert_eq!(transcription.text, "");
+
+        let recorded = lines.lock().unwrap();
+        assert!(
+            recorded.iter().any(|line| line.contains("routed via")),
+            "routing decision missing from {recorded:?}"
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|line| line.contains("final transcription completed")),
+            "transcription outcome missing from {recorded:?}"
+        );
+    }
+
+    fn collecting_sink(
+        lines: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> impl FnMut(&str) + Send + Sync + 'static {
+        let lines = std::sync::Arc::clone(lines);
+        move |line: &str| lines.lock().unwrap().push(line.to_string())
     }
 }

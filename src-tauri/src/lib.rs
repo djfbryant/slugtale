@@ -9,6 +9,11 @@ pub use app_shell::*;
 mod diagnostics;
 pub use diagnostics::*;
 
+/// File locations (ADR-0018): the one module that knows where the Settings
+/// File, Usage File, Local Diagnostic Log, and model directory live.
+mod app_files;
+pub use app_files::*;
+
 mod recording_feedback;
 pub use recording_feedback::*;
 
@@ -109,6 +114,13 @@ pub use readiness::*;
 
 mod hotkey;
 pub use hotkey::*;
+
+/// Dictation Control (CONTEXT.md): the begin/rollback activation policy shared
+/// by the Hotkey, Voice Activation, and Dictation Bar inputs. The lifecycle's
+/// transitions live in `hotkey`; this module decides when a begin request may
+/// run one and how to undo it.
+mod dictation_control;
+pub use dictation_control::*;
 
 /// Voice Activation spike (slugtale-e95): scoring transcripts against the wake
 /// phrase and the detection state machine. Pure logic, compiled everywhere;

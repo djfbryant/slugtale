@@ -10,6 +10,8 @@ use tauri_plugin_updater::UpdaterExt;
 
 mod voice_activation;
 
+use slugtale_lib::AppFiles;
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const DICTATION_ESCAPE_KEY: &str = "Escape";
 
@@ -147,8 +149,8 @@ impl UsageRecorder {
 }
 
 use slugtale_lib::{
-    DiagnosticAsrRuntime, DiagnosticInsertionRescue, DiagnosticTextInsertion, FileDiagnosticSink,
-    SharedDiagnosticLog, TranscriptionProvider,
+    DiagnosticInsertionRescue, DiagnosticTextInsertion, FileDiagnosticSink, SharedDiagnosticLog,
+    TranscriptionProvider,
 };
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -159,7 +161,7 @@ struct HotkeyRegistrationState(Mutex<HotkeyRegistration>);
 #[derive(Default)]
 struct HotkeyRegistration {
     current_hotkey: Option<String>,
-    lifecycle: Option<slugtale_lib::DictationLifecycle>,
+    control: slugtale_lib::DictationControl,
     key_commands: Option<std::sync::mpsc::Sender<GlobalKeyCommand>>,
 }
 
@@ -192,61 +194,125 @@ fn dictation_event(app: tauri::AppHandle, event: String) -> Result<(), String> {
     handle_dictation_event(&app, event)
 }
 
-/// Stop from the Dictation Bar and reset the shared lifecycle at the same time.
+/// Stop from the Dictation Bar and reset the shared control at the same time.
 /// Voice Activation can then trigger again without a stale active state.
 fn stop_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        let event = {
-            let state = app.state::<HotkeyRegistrationState>();
-            let mut registration = state
-                .0
-                .lock()
-                .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
-            let event = registration
-                .lifecycle
-                .as_mut()
-                .and_then(slugtale_lib::DictationLifecycle::stop);
-            if event.is_some() {
-                request_escape_registration(&registration, false);
-            }
-            event
-        };
-        if let Some(event) = event {
-            return handle_dictation_event(app, event);
-        }
-    }
-
-    handle_dictation_event(app, slugtale_lib::DictationEvent::Stop)
+    end_active_dictation(
+        app,
+        |control| control.stop(),
+        slugtale_lib::DictationEvent::Stop,
+    )
 }
 
 /// Cancel through the same lifecycle bridge used by the global Escape handler
 /// so a click on the Dictation Bar cannot leave toggle/hold state believing a
 /// discarded dictation is still active.
 fn cancel_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        let event = {
-            let state = app.state::<HotkeyRegistrationState>();
-            let mut registration = state
-                .0
-                .lock()
-                .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
-            let event = registration
-                .lifecycle
-                .as_mut()
-                .and_then(slugtale_lib::DictationLifecycle::cancel);
-            if event.is_some() {
-                request_escape_registration(&registration, false);
-            }
-            event
-        };
-        if let Some(event) = event {
-            return handle_dictation_event(app, event);
+    end_active_dictation(
+        app,
+        |control| control.cancel(),
+        slugtale_lib::DictationEvent::Cancel,
+    )
+}
+
+/// End the active dictation through the shared lifecycle bridge, disarming bare
+/// Escape while the registration lock is held. When no lifecycle answered — no
+/// registration yet, or nothing active — the fallback event still runs so a
+/// leftover Dictation Bar never outlives its dictation.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn end_active_dictation(
+    app: &tauri::AppHandle,
+    end: impl FnOnce(&mut slugtale_lib::DictationControl) -> Option<slugtale_lib::DictationEvent>,
+    fallback: slugtale_lib::DictationEvent,
+) -> Result<(), String> {
+    let event = {
+        let state = app.state::<HotkeyRegistrationState>();
+        let mut registration = state
+            .0
+            .lock()
+            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+        let event = end(&mut registration.control);
+        if event.is_some() {
+            request_escape_registration(&registration, false);
         }
+        event
+    };
+
+    match event {
+        Some(event) => handle_dictation_event(app, event),
+        None => handle_dictation_event(app, fallback),
+    }
+}
+
+/// Begin a dictation from any activation input — a Hotkey press or a Voice
+/// Activation wake phrase — through one readiness-gated sequence. The hotkey
+/// worker and Voice Activation used to run two private copies of this dance
+/// and had already drifted on the typing-challenge guard and the rollback.
+///
+/// `set_escape(true)` arms bare Escape before recording starts, so there is no
+/// active but uncancellable dictation; `set_escape(false)` disarms it. The
+/// hotkey worker arms synchronously, Voice Activation asks the global-key
+/// worker — the caller owns that difference, everything else is shared.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn begin_dictation(
+    app: &tauri::AppHandle,
+    input: slugtale_lib::DictationInput,
+    set_escape: &mut dyn FnMut(bool) -> Result<(), String>,
+) -> Result<(), String> {
+    // The Typing Challenge measures how fast the user types, so their hotkey
+    // has to stay plain text for those thirty seconds. Swallowed here, before
+    // any lifecycle state moves, so releasing it later cannot resume anything.
+    let challenge_open = typing_challenge_is_open(app);
+    if challenge_open {
+        return Ok(());
     }
 
-    handle_dictation_event(app, slugtale_lib::DictationEvent::Cancel)
+    let (activation, dictation_available) = {
+        let activation = build_activation_snapshot_for(app, input);
+        let available = activation.dictation_available();
+        if !available {
+            report_not_ready(app, &activation.report);
+        }
+        (Some(activation), available)
+    };
+
+    let event = {
+        let state = app.state::<HotkeyRegistrationState>();
+        let mut registration = state
+            .0
+            .lock()
+            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+        registration
+            .control
+            .begin(challenge_open, dictation_available)
+    };
+    let Ok(event) = event else {
+        // ChallengeOpen and NotReady have already had their user-facing
+        // report; AlreadyDictating means a later input changes nothing.
+        return Ok(());
+    };
+
+    // Recording has not started yet; arming Escape here keeps the window where
+    // the lifecycle says dictating but Escape is not global down to nothing.
+    if let Err(error) = set_escape(true) {
+        if let Ok(mut registration) = app.state::<HotkeyRegistrationState>().0.lock() {
+            registration.control.abandon_begin();
+        }
+        eprintln!("dictation did not start because global Escape could not be registered");
+        return Err(error);
+    }
+
+    if let Err(error) = handle_dictation_event_with(app, event, activation) {
+        // Roll the lifecycle back so the next activation can try again instead
+        // of finding a discarded dictation still marked active.
+        if let Ok(mut registration) = app.state::<HotkeyRegistrationState>().0.lock() {
+            registration.control.abandon_begin();
+            request_escape_registration(&registration, false);
+        }
+        return Err(error);
+    }
+
+    Ok(())
 }
 
 fn handle_dictation_event(
@@ -544,16 +610,10 @@ fn run_dictation_segment(
 ) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
     let settings = load_current_settings(app);
     let diagnostic_log = current_diagnostic_log(app, &settings);
-    let routing_log = diagnostic_log.clone();
-    let runtime = app
+    let stack = app
         .state::<slugtale_lib::TranscriptionEngineCatalogue>()
-        .router(&settings)
-        .map_err(|error| error.to_string())
-        .map(|router| {
-            router.observing(move |routing| {
-                routing_log.record(slugtale_lib::DiagnosticEvent::routing_decision(routing))
-            })
-        })?;
+        .dictation_stack(&settings, diagnostic_log.clone())
+        .map_err(|error| error.to_string())?;
     let target_pid = app
         .state::<FocusTargetState>()
         .0
@@ -562,7 +622,7 @@ fn run_dictation_segment(
         .and_then(|guard| *guard);
 
     let prepared = slugtale_lib::prepare_text_insertion(target_pid)?;
-    let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
+    let runtime = stack.asr_runtime();
     let insertion = DiagnosticTextInsertion::new(&prepared.insertion, diagnostic_log.clone());
     let rescue = DiagnosticInsertionRescue::new(prepared.rescue.as_ref(), diagnostic_log);
     slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue, settings.transcript_cleanup)
@@ -754,62 +814,56 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
             for event in events {
                 match event {
                     GlobalKeyCommand::SyncEscape(should_register) => {
-                        if let Err(error) = sync_escape_registration(
-                            &app,
-                            &mut escape_registered,
-                            should_register,
-                        ) {
+                        if let Err(error) =
+                            sync_escape_registration(&app, &mut escape_registered, should_register)
+                        {
                             eprintln!("could not update global Escape key: {error}");
                         }
                     }
                     GlobalKeyCommand::Input(key, input) => {
-                        // The Typing Challenge measures how fast the user types,
-                        // so their hotkey has to be plain text for those thirty
-                        // seconds. Swallow it here, before any lifecycle state
-                        // moves, so releasing it later cannot resume anything.
+                        // The Typing Challenge guard also lives inside
+                        // begin_dictation; this early check keeps the release of
+                        // a swallowed key from reaching the lifecycle at all.
                         if typing_challenge_is_open(&app) {
                             continue;
                         }
 
-                        let starts_dictation = matches!(
+                        let is_dictating = app
+                            .state::<HotkeyRegistrationState>()
+                            .0
+                            .lock()
+                            .ok()
+                            .map(|registration| registration.control.is_dictating())
+                            .unwrap_or(false);
+
+                        let pressed_start = matches!(
                             (key, input),
                             (
                                 slugtale_lib::DictationKey::Hotkey,
                                 slugtale_lib::HotkeyInput::Pressed
                             )
-                        ) && app
-                            .state::<HotkeyRegistrationState>()
-                            .0
-                            .lock()
-                            .ok()
-                            .and_then(|registration| {
-                                registration
-                                    .lifecycle
-                                    .as_ref()
-                                    .map(|lifecycle| !lifecycle.is_dictating())
-                            })
-                            .unwrap_or(false);
+                        );
 
-                        // One snapshot for this Hotkey press: the readiness gate
-                        // and the Start path share the same Settings value and
+                        // A start goes through the shared readiness-gated begin
+                        // sequence, identical to the Voice Activation path.
+                        // One snapshot for this press: the readiness gate and
+                        // the Start path share the same Settings value and
                         // permission probes (slugtale-g1o.6).
-                        let mut activation = None;
-                        if starts_dictation {
-                            let snapshot = build_activation_snapshot(&app);
-                            if !snapshot.dictation_available() {
-                                report_not_ready(&app, &snapshot.report);
-                                continue;
+                        if pressed_start && !is_dictating {
+                            let mut set_escape = |should_register: bool| {
+                                sync_escape_registration(
+                                    &app,
+                                    &mut escape_registered,
+                                    should_register,
+                                )
+                            };
+                            if let Err(error) = begin_dictation(
+                                &app,
+                                slugtale_lib::DictationInput::Hotkey,
+                                &mut set_escape,
+                            ) {
+                                eprintln!("dictation did not start: {error}");
                             }
-                            activation = Some(snapshot);
-                        }
-
-                        if starts_dictation
-                            && sync_escape_registration(&app, &mut escape_registered, true)
-                                .is_err()
-                        {
-                            eprintln!(
-                                "dictation did not start because global Escape could not be registered"
-                            );
                             continue;
                         }
 
@@ -819,22 +873,20 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             .lock()
                             .ok()
                             .and_then(|mut registration| {
-                                registration.lifecycle.as_mut().map(|lifecycle| {
-                                    let event = match (key, input) {
-                                        (slugtale_lib::DictationKey::Hotkey, input) => {
-                                            lifecycle.on_hotkey(input)
-                                        }
-                                        (
-                                            slugtale_lib::DictationKey::Escape,
-                                            slugtale_lib::HotkeyInput::Pressed,
-                                        ) => lifecycle.cancel(),
-                                        (
-                                            slugtale_lib::DictationKey::Escape,
-                                            slugtale_lib::HotkeyInput::Released,
-                                        ) => None,
-                                    };
-                                    (event, lifecycle.is_dictating())
-                                })
+                                let event = match (key, input) {
+                                    (slugtale_lib::DictationKey::Hotkey, input) => {
+                                        registration.control.on_hotkey(input)
+                                    }
+                                    (
+                                        slugtale_lib::DictationKey::Escape,
+                                        slugtale_lib::HotkeyInput::Pressed,
+                                    ) => registration.control.cancel(),
+                                    (
+                                        slugtale_lib::DictationKey::Escape,
+                                        slugtale_lib::HotkeyInput::Released,
+                                    ) => None,
+                                };
+                                Some((event, registration.control.is_dictating()))
                             });
                         if let Some((event, should_register)) = transition {
                             // The shared registration mutex is no longer held:
@@ -842,9 +894,7 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             // without preventing the main-thread shortcut handler
                             // from forwarding the next key transition (slugtale-pil).
                             if let Some(event) = event {
-                                if let Err(error) =
-                                    handle_dictation_event_with(&app, event, activation.take())
-                                {
+                                if let Err(error) = handle_dictation_event_with(&app, event, None) {
                                     eprintln!("dictation event failed: {error}");
                                 }
                             }
@@ -901,9 +951,7 @@ fn set_hotkey_registration_state(
     registration.current_hotkey = settings.hotkey.clone();
     // The lifecycle belongs to dictation, not to the optional hotkey. Voice
     // Activation and Dictation Bar controls use it even with no hotkey set.
-    registration.lifecycle = Some(slugtale_lib::DictationLifecycle::new(
-        settings.activation_mode,
-    ));
+    registration.control = slugtale_lib::DictationControl::new(settings.activation_mode);
     Ok(())
 }
 
@@ -1129,14 +1177,6 @@ fn local_model_ready(app: &tauri::AppHandle) -> bool {
                 .as_ref()
                 .is_some_and(|path| PathBuf::from(path).exists())
         })
-}
-
-/// One Hotkey activation's consistent view of the world (slugtale-g1o.6): one
-/// Settings read, one probe per OS permission, one engine availability pass.
-/// The readiness gate and the Start path share it instead of each re-reading
-/// global state and possibly disagreeing.
-fn build_activation_snapshot(app: &tauri::AppHandle) -> slugtale_lib::DictationActivation {
-    build_activation_snapshot_for(app, slugtale_lib::DictationInput::Hotkey)
 }
 
 fn build_activation_snapshot_for(
@@ -2096,27 +2136,22 @@ async fn transcribe_captured_audio(
 ) -> Result<slugtale_lib::FinalTranscription, String> {
     let settings = load_current_settings(&app);
     let diagnostic_log = current_diagnostic_log(&app, &settings);
-    let routing_log = diagnostic_log.clone();
-    // Routed like the hotkey path, so a dictation driven from the frontend gets
-    // the same engine stack and the same second opinion as one driven from the
-    // hotkey. Two transcription paths that disagreed would be a bug the user
-    // could only find by noticing that one of them was worse.
-    let runtime = app
+    // Routed like the hotkey path through the same assembled stack, so a
+    // dictation driven from the frontend gets the same engine stack and the
+    // same second opinion as one driven from the hotkey. Two transcription
+    // paths that disagreed would be a bug the user could only find by noticing
+    // that one of them was worse.
+    let stack = app
         .state::<slugtale_lib::TranscriptionEngineCatalogue>()
-        .router(&settings)
-        .map_err(|error| error.to_string())
-        .map(|router| {
-            router.observing(move |routing| {
-                routing_log.record(slugtale_lib::DiagnosticEvent::routing_decision(routing))
-            })
-        })?;
+        .dictation_stack(&settings, diagnostic_log.clone())
+        .map_err(|error| error.to_string())?;
     let audio = slugtale_lib::CapturedAudio {
         sample_rate_hz,
         samples,
     };
 
     tauri::async_runtime::spawn_blocking(move || {
-        let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log);
+        let runtime = stack.asr_runtime();
         slugtale_lib::transcribe_captured_audio(&runtime, audio).map_err(|error| error.to_string())
     })
     .await
@@ -2147,18 +2182,16 @@ impl CurrentPlatform {
     }
 }
 
+fn app_files(app: &tauri::AppHandle) -> AppFiles {
+    app.state::<AppFiles>().inner().clone()
+}
+
 fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .map(|dir| dir.join("settings.json"))
+    app_files(app).settings_path()
 }
 
 fn model_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|dir| dir.join("models"))
-        .map_err(|error| error.to_string())
+    app_files(app).model_dir()
 }
 
 fn model_manager(app: &tauri::AppHandle) -> Result<slugtale_lib::LocalModelManager, String> {
@@ -2173,16 +2206,11 @@ fn model_manager(app: &tauri::AppHandle) -> Result<slugtale_lib::LocalModelManag
 /// The Usage File (CONTEXT.md): a sibling of the Settings File, so opting out
 /// deletes one obvious file and nothing else.
 fn usage_path(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .map(|dir| dir.join("usage.json"))
+    app_files(app).usage_path()
 }
 
 fn load_current_usage(app: &tauri::AppHandle) -> slugtale_lib::UsageFile {
-    usage_path(app)
-        .map(|path| slugtale_lib::load_usage(&path))
-        .unwrap_or_default()
+    app_files(app).usage()
 }
 
 /// Which week the Usage pane means by "this week", asked of the OS rather than
@@ -2256,27 +2284,15 @@ fn start_usage_worker(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn diagnostic_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .map(|dir| dir.join("diagnostics.log"))
-}
-
 fn load_current_settings(app: &tauri::AppHandle) -> slugtale_lib::Settings {
-    settings_path(app)
-        .map(|path| slugtale_lib::load_settings(&path))
-        .unwrap_or_default()
+    app_files(app).settings()
 }
 
 fn current_diagnostic_log(
     app: &tauri::AppHandle,
     settings: &slugtale_lib::Settings,
 ) -> SharedDiagnosticLog<FileDiagnosticSink> {
-    let sink = diagnostic_log_path(app)
-        .map(FileDiagnosticSink::new)
-        .unwrap_or_else(FileDiagnosticSink::unavailable);
-    SharedDiagnosticLog::new(settings.diagnostic_logging, sink)
+    app_files(app).diagnostic_log(settings.diagnostic_logging)
 }
 
 fn record_diagnostic_event(app: &tauri::AppHandle, event: slugtale_lib::DiagnosticEvent) {
@@ -2288,12 +2304,7 @@ fn save_current_settings(
     app: &tauri::AppHandle,
     settings: &slugtale_lib::Settings,
 ) -> Result<(), String> {
-    let path = settings_path(app).ok_or_else(|| "could not resolve settings path".to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
-    slugtale_lib::save_settings(&path, settings).map_err(|error| error.to_string())
+    app_files(app).save_settings(settings)
 }
 
 impl slugtale_lib::PlatformReadiness for CurrentPlatform {
@@ -2363,6 +2374,9 @@ fn main() {
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            // Every local file path resolves through this one store, so it has
+            // to exist before anything that reads or writes a file.
+            app.manage(AppFiles::from_app(app.handle()));
             slugtale_lib::setup_tray(app)?;
             setup_configured_hotkey(app)?;
             // The Dictation Segment worker outlives every dictation: it is what
