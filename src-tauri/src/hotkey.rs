@@ -51,6 +51,28 @@ impl DictationLifecycle {
         self.dictating
     }
 
+    /// Start a dictation from a source that has no press/release edges, such as
+    /// Voice Activation. The next real hotkey press remains usable because this
+    /// does not leave the hotkey marked as down.
+    pub fn start(&mut self) -> Option<DictationEvent> {
+        if self.dictating {
+            return None;
+        }
+        self.hotkey_down = false;
+        self.dictating = true;
+        Some(DictationEvent::Start)
+    }
+
+    /// Stop a dictation from a control such as the Dictation Bar.
+    pub fn stop(&mut self) -> Option<DictationEvent> {
+        if !self.dictating {
+            return None;
+        }
+        self.hotkey_down = false;
+        self.dictating = false;
+        Some(DictationEvent::Stop)
+    }
+
     pub fn on_hotkey(&mut self, input: HotkeyInput) -> Option<DictationEvent> {
         match input {
             HotkeyInput::Pressed if self.hotkey_down => None,
@@ -58,6 +80,12 @@ impl DictationLifecycle {
                 self.hotkey_down = true;
                 self.dictating = false;
                 Some(DictationEvent::Stop)
+            }
+            HotkeyInput::Pressed if self.dictating => {
+                // A non-key source started a Hold-mode dictation. Claim this
+                // physical press so its release can stop the active dictation.
+                self.hotkey_down = true;
+                None
             }
             HotkeyInput::Pressed => {
                 self.hotkey_down = true;
@@ -224,6 +252,37 @@ mod tests {
         let mut lifecycle = DictationLifecycle::new(ActivationMode::Hold);
         assert_eq!(lifecycle.cancel(), None);
         assert!(!lifecycle.is_dictating());
+    }
+
+    #[test]
+    fn non_key_start_does_not_leave_toggle_hotkey_down() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Toggle);
+        assert_eq!(lifecycle.start(), Some(DictationEvent::Start));
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Pressed),
+            Some(DictationEvent::Stop)
+        );
+        assert!(!lifecycle.is_dictating());
+    }
+
+    #[test]
+    fn hold_hotkey_can_stop_a_non_key_dictation() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Hold);
+        assert_eq!(lifecycle.start(), Some(DictationEvent::Start));
+        assert_eq!(lifecycle.on_hotkey(HotkeyInput::Pressed), None);
+        assert_eq!(
+            lifecycle.on_hotkey(HotkeyInput::Released),
+            Some(DictationEvent::Stop)
+        );
+        assert!(!lifecycle.is_dictating());
+    }
+
+    #[test]
+    fn bar_stop_resets_a_non_key_dictation() {
+        let mut lifecycle = DictationLifecycle::new(ActivationMode::Toggle);
+        lifecycle.start();
+        assert_eq!(lifecycle.stop(), Some(DictationEvent::Stop));
+        assert_eq!(lifecycle.start(), Some(DictationEvent::Start));
     }
     #[test]
     fn hotkey_adapter_forwards_hold_mode_events_to_dictation_sink() {

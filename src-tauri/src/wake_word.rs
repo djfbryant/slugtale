@@ -22,7 +22,12 @@ const WAKE_PHRASE_VARIANTS: [&str; 4] = [
 ];
 
 /// Greeting tokens that raise the score when they sit before the app name.
-const GREETING_TOKENS: [&str; 6] = ["hi", "hey", "hay", "high", "eyes", "i"];
+const GREETING_TOKENS: [&str; 7] = ["hi", "hey", "hay", "high", "i", "eye", "eyes"];
+
+/// App-name forms observed from local Whisper. Keep this list explicit. A
+/// prefix rule such as `slug*` also accepts ordinary words like "slugged" and
+/// "slugging", which causes false starts.
+const WAKE_NAME_TOKENS: [&str; 3] = ["slugtale", "slugtail", "slugtailed"];
 
 /// Lowercase, strip punctuation, and collapse whitespace so "Hey, SlugTale!"
 /// and "hey slugtale" land on the same string.
@@ -53,7 +58,11 @@ fn levenshtein_at_most_one(a: &str, b: &str) -> bool {
     if a.len().abs_diff(b.len()) > 1 {
         return false;
     }
-    let (longer, shorter) = if a.len() >= b.len() { (&a, &b) } else { (&b, &a) };
+    let (longer, shorter) = if a.len() >= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
     for position in 0..shorter.len() {
         if longer[position] != shorter[position] {
             return longer[position + 1..] == shorter[position..]
@@ -90,7 +99,7 @@ fn tokens_fuzzy_eq_sequence(tokens: &[&str], expected: &[&str]) -> bool {
 /// is two), but almost always keep the "slug" onset and roughly the same
 /// length. Anything else keeps the strict rules above.
 fn is_wake_name_token(token: &str) -> bool {
-    token == "slugtale" || (token.len() >= 7 && token.starts_with("slug"))
+    WAKE_NAME_TOKENS.contains(&token)
 }
 
 /// Score how much a transcript sounds like the wake phrase, from 0.0 to 1.0.
@@ -128,7 +137,8 @@ pub fn wake_phrase_score(transcript: &str) -> f32 {
             || (index + 1 < tokens.len()
                 && tokens[index] == "slug"
                 && (token_fuzzy_eq(tokens[index + 1], "tale")
-                    || token_fuzzy_eq(tokens[index + 1], "tail")));
+                    || token_fuzzy_eq(tokens[index + 1], "tail")
+                    || tokens[index + 1] == "tailed"));
         if !name_matched {
             continue;
         }
@@ -218,6 +228,15 @@ pub struct SpeechWindowBuffer {
     evaluated_up_to: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewAudioState {
+    /// CoreAudio supplies exact digital silence when macOS blocks microphone
+    /// access. This is not a quiet room and needs a permission warning.
+    DigitalSilence,
+    Quiet,
+    Speech,
+}
+
 impl SpeechWindowBuffer {
     pub fn new() -> Self {
         Self::default()
@@ -231,10 +250,60 @@ impl SpeechWindowBuffer {
         self.evaluated_up_to = self.evaluated_up_to.saturating_sub(overflow);
     }
 
-    /// Root mean square of everything buffered — the cheap energy gate that
-    /// keeps Whisper off while the room is silent.
-    pub fn rms(&self) -> f32 {
-        crate::audio_capture::audio_level_from_samples(&self.samples)
+    /// Whether the audio added since the last transcription contains speech.
+    ///
+    /// Compare short frames with the quietest part of the same window. This
+    /// lets a quiet phrase rise above its room noise without averaging it with
+    /// several seconds of silence. The 90th percentile also ignores a single
+    /// click that would make a peak-only gate run Whisper.
+    pub fn new_audio_has_speech(
+        &self,
+        frame_samples: usize,
+        minimum_rms: f32,
+        contrast_ratio: f32,
+    ) -> bool {
+        self.new_audio_state(frame_samples, minimum_rms, contrast_ratio) == NewAudioState::Speech
+    }
+
+    pub fn new_audio_state(
+        &self,
+        frame_samples: usize,
+        minimum_rms: f32,
+        contrast_ratio: f32,
+    ) -> NewAudioState {
+        if frame_samples == 0 || self.evaluated_up_to >= self.samples.len() {
+            return NewAudioState::Quiet;
+        }
+
+        let new_audio = &self.samples[self.evaluated_up_to..];
+        let rms = crate::audio_capture::audio_level_from_samples(new_audio);
+        let peak = new_audio
+            .iter()
+            .fold(0.0f32, |highest, sample| highest.max(sample.abs()));
+        if rms <= crate::audio_capture::DIGITAL_SILENCE_EPSILON
+            && peak <= crate::audio_capture::DIGITAL_SILENCE_EPSILON
+        {
+            return NewAudioState::DigitalSilence;
+        }
+
+        let mut levels = new_audio
+            .chunks(frame_samples)
+            .filter(|frame| frame.len() == frame_samples)
+            .map(crate::audio_capture::audio_level_from_samples)
+            .collect::<Vec<_>>();
+        if levels.is_empty() {
+            return NewAudioState::Quiet;
+        }
+
+        levels.sort_by(f32::total_cmp);
+        let last = levels.len() - 1;
+        let noise = levels[last / 5];
+        let speech = levels[(last * 9) / 10];
+        if speech >= minimum_rms.max(noise * contrast_ratio) {
+            NewAudioState::Speech
+        } else {
+            NewAudioState::Quiet
+        }
     }
 
     /// Whether at least `min_new_samples` of un-evaluated audio have arrived
@@ -258,16 +327,16 @@ impl SpeechWindowBuffer {
         self.evaluated_up_to = 0;
     }
 
-    /// Keep only the most recent `samples_to_keep` samples and mark them
-    /// unevaluated. The listener calls this after each transcription so a wake
-    /// phrase split across two windows is still scored whole, while audio that
-    /// has already been transcribed is never scored twice.
+    /// Keep only the most recent `samples_to_keep` samples. The listener calls
+    /// this after each transcription so a wake phrase split across two windows
+    /// is still scored whole. The retained overlap stays marked as evaluated,
+    /// so it does not shorten the next inference interval.
     pub fn retain_recent(&mut self, samples_to_keep: usize) {
         let drop_count = self.samples.len().saturating_sub(samples_to_keep);
         if drop_count > 0 {
             self.samples.drain(..drop_count);
         }
-        self.evaluated_up_to = 0;
+        self.evaluated_up_to = self.samples.len();
     }
 }
 
@@ -298,6 +367,13 @@ mod tests {
     }
 
     #[test]
+    fn observed_slugtailed_mishearing_still_triggers() {
+        assert!(wake_phrase_score("high slugtailed") >= 0.8);
+        assert!(wake_phrase_score("hi slug tailed") >= 0.8);
+        assert!(wake_phrase_score("I slug tail") >= 0.8);
+    }
+
+    #[test]
     fn a_greeted_name_mention_clears_the_default_threshold() {
         assert_eq!(wake_phrase_score("so hi slugtale then"), 0.8);
     }
@@ -317,6 +393,12 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_slug_words_do_not_trigger() {
+        assert!(wake_phrase_score("I slugged it") < 0.8);
+        assert!(wake_phrase_score("high slugging percentage") < 0.8);
+    }
+
+    #[test]
     fn short_tokens_are_not_fuzzy_matched() {
         // "I" misheard as "a" must not turn "a slugtale" into a greeting.
         assert_eq!(wake_phrase_score("a slugtale"), 0.4);
@@ -324,8 +406,7 @@ mod tests {
 
     #[test]
     fn detector_triggers_once_then_respects_the_cooldown() {
-        let mut detector =
-            WakeWordDetector::new(WakeWordConfig::default());
+        let mut detector = WakeWordDetector::new(WakeWordConfig::default());
 
         let first = detector.on_transcript("hi slugtale", 1_000);
         assert!(first.is_some());
@@ -369,14 +450,67 @@ mod tests {
         window.push(&[0.4, -0.4]);
         window.clear();
         assert!(!window.ready_for_evaluation(1));
-        assert_eq!(window.rms(), 0.0);
+        assert!(window.samples.is_empty());
     }
 
     #[test]
-    fn window_rms_reports_energy_for_the_energy_gate() {
+    fn quiet_speech_is_not_averaged_away_by_silence() {
         let mut window = SpeechWindowBuffer::new();
-        assert_eq!(window.rms(), 0.0);
-        window.push(&[1.0, -1.0, 1.0, -1.0]);
-        assert!((window.rms() - 1.0).abs() < 1e-6);
+        window.push(&vec![0.0; SAMPLES_PER_SECOND]);
+        window.push(&vec![0.01; SAMPLES_PER_SECOND / 2]);
+        window.push(&vec![0.0; SAMPLES_PER_SECOND / 2]);
+
+        assert!(window.new_audio_has_speech(320, 0.006, 1.7));
+    }
+
+    #[test]
+    fn steady_room_noise_does_not_count_as_speech() {
+        let mut window = SpeechWindowBuffer::new();
+        window.push(&vec![0.01; SAMPLES_PER_SECOND * 2]);
+
+        assert!(!window.new_audio_has_speech(320, 0.006, 1.7));
+    }
+
+    #[test]
+    fn digital_silence_is_distinct_from_a_quiet_room() {
+        let mut denied_microphone = SpeechWindowBuffer::new();
+        denied_microphone.push(&vec![0.0; SAMPLES_PER_SECOND * 2]);
+        assert_eq!(
+            denied_microphone.new_audio_state(320, 0.006, 1.7),
+            NewAudioState::DigitalSilence
+        );
+
+        let mut quiet_room = SpeechWindowBuffer::new();
+        quiet_room.push(&vec![0.0001; SAMPLES_PER_SECOND * 2]);
+        assert_eq!(
+            quiet_room.new_audio_state(320, 0.006, 1.7),
+            NewAudioState::Quiet
+        );
+    }
+
+    #[test]
+    fn quiet_speech_can_rise_only_a_little_above_room_noise() {
+        let mut samples = Vec::new();
+        for frame in 0..100 {
+            let level = if frame < 20 { 0.016 } else { 0.01 };
+            samples.extend(std::iter::repeat(level).take(320));
+        }
+        let mut window = SpeechWindowBuffer::new();
+        window.push(&samples);
+
+        assert!(window.new_audio_has_speech(320, 0.006, 1.5));
+    }
+
+    #[test]
+    fn retained_overlap_does_not_shorten_the_next_inference_interval() {
+        let mut window = SpeechWindowBuffer::new();
+        window.push(&vec![0.1; SAMPLES_PER_SECOND * 2]);
+        window.take_for_evaluation();
+        window.retain_recent(SAMPLES_PER_SECOND);
+
+        window.push(&vec![0.1; SAMPLES_PER_SECOND]);
+        assert!(!window.ready_for_evaluation(SAMPLES_PER_SECOND * 2));
+        window.push(&vec![0.1; SAMPLES_PER_SECOND]);
+        assert!(window.ready_for_evaluation(SAMPLES_PER_SECOND * 2));
     }
 }

@@ -24,7 +24,12 @@ test("the release build resolves Cargo features through the shared helper", () =
       platform: "darwin",
       environment: {},
     }),
-    ["build", "--features", "local-whisper-runtime,local-whisper-runtime-metal", "--ci"],
+    [
+      "build",
+      "--features",
+      "local-whisper-runtime,local-whisper-runtime-metal,voice-activation",
+      "--ci",
+    ],
   );
 });
 
