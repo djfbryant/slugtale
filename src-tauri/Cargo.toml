@@ -26,11 +26,7 @@ local-parakeet-runtime-coreml = ["local-parakeet-runtime", "parakeet-rs/coreml"]
 apple-speech-runtime = []
 
 [lib]
-name = "slugtale_lib": the desktop binary, examples, and tests all link
-# the rlib, and no mobile or external FFI consumer exists (slugtale-g1o.10).
-# Building cdylib/staticlib cost ~450 MB of debug target-disk per clean build
-# for nothing.
-
+name = "slugtale_lib"
 
 [[example]]
 name = "decode_benchmark"
