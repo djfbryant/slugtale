@@ -603,6 +603,10 @@ impl ParakeetProvider {
     /// the shutdown path does not need a `cfg`.
     pub fn shutdown(&self) {}
 
+    /// Drop the loaded session without ending the provider, so a later
+    /// selection of Parakeet can load it again. Nothing to drop on this build.
+    pub fn unload(&self) {}
+
     fn transcribe_validated(
         &self,
         _audio: &CapturedAudio,
@@ -640,6 +644,14 @@ impl ParakeetProvider {
         use std::sync::atomic::Ordering;
 
         self.shutting_down.store(true, Ordering::Release);
+        lock(&self.session).take();
+    }
+
+    /// Drop the loaded session without ending the provider, so a later
+    /// selection of Parakeet can load it again. The same lock discipline as
+    /// [`Self::shutdown`] makes this safe next to an in-flight decode: the
+    /// session is only taken under the lock that serialises decoding.
+    pub fn unload(&self) {
         lock(&self.session).take();
     }
 

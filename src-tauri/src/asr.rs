@@ -233,7 +233,6 @@ pub struct WhisperRuntimeCache(Mutex<WhisperRuntimeCacheState>);
 #[derive(Default)]
 struct WhisperRuntimeCacheState {
     runtime: Option<Arc<LocalWhisperRuntime>>,
-    warming_model_path: Option<std::path::PathBuf>,
     shutting_down: bool,
 }
 
@@ -250,25 +249,20 @@ impl WhisperRuntimeCache {
         runtime
     }
 
-    pub fn begin_warming_existing_model(
-        &self,
-        model_path: &std::path::Path,
-    ) -> Option<Arc<LocalWhisperRuntime>> {
-        if !model_path.exists() {
-            return None;
-        }
-
-        let mut state = self.0.lock().expect("whisper runtime cache mutex poisoned");
+    /// Drop the cache's reference to the runtime without ending the cache
+    /// itself, so the loaded context is released once in-flight transcriptions
+    /// finish and a later warm-up can start again. Unlike [`Self::shutdown`]
+    /// this is reversible: the next [`Self::runtime_for`] builds a fresh
+    /// runtime. A no-op after shutdown, which stays final.
+    pub fn release(&self) {
+        let mut state = match self.0.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         if state.shutting_down {
-            return None;
+            return;
         }
-        if state.warming_model_path.as_deref() == Some(model_path) {
-            return None;
-        }
-
-        let runtime = Self::runtime_for_locked(&mut state, model_path);
-        state.warming_model_path = Some(model_path.to_path_buf());
-        Some(runtime)
+        state.runtime = None;
     }
 
     /// Stop accepting model warm-up work and synchronously release the cached
@@ -281,7 +275,6 @@ impl WhisperRuntimeCache {
             Err(poisoned) => poisoned.into_inner(),
         };
         state.shutting_down = true;
-        state.warming_model_path = None;
         if let Some(runtime) = state.runtime.as_ref() {
             runtime.shutdown();
         }
@@ -527,6 +520,10 @@ impl crate::TranscriptionProvider for WhisperTranscriptionProvider {
         crate::EngineAvailability::Available
     }
 
+    fn warm_up(&self) -> Result<(), AsrError> {
+        self.runtime.warm_up()
+    }
+
     fn transcribe(&self, audio: &CapturedAudio) -> Result<crate::EngineTranscription, AsrError> {
         let started = std::time::Instant::now();
         // The runtime still owns its audio, so this clone is the cost of giving
@@ -684,42 +681,38 @@ mod tests {
     }
 
     #[test]
-    fn whisper_runtime_cache_does_not_warm_missing_model() {
+    fn whisper_runtime_cache_release_drops_the_runtime_but_stays_reusable() {
         let cache = WhisperRuntimeCache::default();
-        let model_path = unique_test_dir("whisper-cache-missing").join(DEFAULT_MODEL_FILENAME);
-
-        assert!(cache.begin_warming_existing_model(&model_path).is_none());
-    }
-
-    #[test]
-    fn whisper_runtime_cache_warms_ready_model_once() {
-        let cache = WhisperRuntimeCache::default();
-        let model_dir = unique_test_dir("whisper-cache-ready");
+        let model_dir = unique_test_dir("whisper-cache-release");
         std::fs::create_dir_all(&model_dir).unwrap();
         let model_path = model_dir.join(DEFAULT_MODEL_FILENAME);
         std::fs::write(&model_path, b"model").unwrap();
 
-        let warmed = cache.begin_warming_existing_model(&model_path).unwrap();
-        let duplicate = cache.begin_warming_existing_model(&model_path);
-        let transcription_runtime = cache.runtime_for(&model_path);
+        let warmed = cache.runtime_for(&model_path);
+        cache.release();
 
-        assert!(duplicate.is_none());
-        assert!(std::sync::Arc::ptr_eq(&warmed, &transcription_runtime));
+        let after_release = cache.runtime_for(&model_path);
+
+        assert!(!std::sync::Arc::ptr_eq(&warmed, &after_release));
 
         std::fs::remove_dir_all(&model_dir).ok();
     }
 
     #[test]
-    fn whisper_runtime_cache_rejects_warmup_after_shutdown() {
+    fn whisper_runtime_cache_release_after_shutdown_does_not_resurrect_the_cache() {
         let cache = WhisperRuntimeCache::default();
-        let model_dir = unique_test_dir("whisper-cache-shutdown");
+        let model_dir = unique_test_dir("whisper-cache-release-shutdown");
         std::fs::create_dir_all(&model_dir).unwrap();
         let model_path = model_dir.join(DEFAULT_MODEL_FILENAME);
         std::fs::write(&model_path, b"model").unwrap();
 
         cache.shutdown();
+        cache.release();
+        let runtime = cache.runtime_for(&model_path);
 
-        assert!(cache.begin_warming_existing_model(&model_path).is_none());
+        // A released runtime must behave like a shut-down one: the next warm-up
+        // or transcription fails instead of creating a new context.
+        assert!(runtime.warm_up().is_err());
         std::fs::remove_dir_all(&model_dir).ok();
     }
 

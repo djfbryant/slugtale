@@ -427,24 +427,22 @@ fn emit_dictation_audio_level(app: &tauri::AppHandle, level: f32) {
     }
 }
 
-fn warm_ready_local_whisper_runtime(app: &tauri::AppHandle) -> Result<(), String> {
-    let settings = load_current_settings(app);
-    let model_path = model_manager(app)?.active_model_path(&settings);
-    warm_local_whisper_runtime(app, &model_path);
-    Ok(())
-}
-
-fn warm_local_whisper_runtime(app: &tauri::AppHandle, model_path: &std::path::Path) {
+/// Warm whichever Transcription Engine the current Settings resolve to,
+/// including fallback rules, and release large models it does not need. The
+/// model load itself runs off this thread, so startup and Settings saves never
+/// wait on a multi-second read.
+fn warm_effective_primary_engine(app: &tauri::AppHandle) {
     let settings = load_current_settings(app);
     let catalogue = app.state::<slugtale_lib::TranscriptionEngineCatalogue>();
-    if catalogue.model_path(&settings).as_deref() != Some(model_path) {
+    let Some(warm_up) = catalogue.prepare_primary_warm_up(&settings) else {
         return;
-    }
-    if let Some(runtime) = catalogue.warm_ready_whisper(&settings) {
-        tauri::async_runtime::spawn_blocking(move || {
-            let _ = runtime.warm_up();
-        });
-    }
+    };
+    // Release before loading so switching engines never leaves two large
+    // models resident on a memory-constrained Mac.
+    catalogue.release_models_except(warm_up.engine());
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = warm_up.run();
+    });
 }
 
 /// Transcribe and insert one Dictation Segment, start to finish.
@@ -1065,7 +1063,7 @@ fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadin
         .find(|item| item.id == "local_model")
         .is_some_and(|item| item.ready);
     if local_model_ready {
-        let _ = warm_ready_local_whisper_runtime(&app);
+        warm_effective_primary_engine(&app);
     }
     if !report.dictation_available {
         let missing = report
@@ -1517,6 +1515,9 @@ fn set_transcription_engines(
     let mut settings = load_current_settings(&app);
     slugtale_lib::apply_engine_settings(&mut settings, primary_engine, second_opinion);
     save_current_settings(&app, &settings)?;
+    // Start warming the newly effective engine now so the first dictation
+    // after the change does not pay for a cold model load.
+    warm_effective_primary_engine(&app);
     Ok(settings)
 }
 
@@ -1551,7 +1552,7 @@ async fn install_engine_assets(
             .await
             .map_err(|error| error.to_string())??;
             if status.present {
-                warm_local_whisper_runtime(&app, &status.path);
+                warm_effective_primary_engine(&app);
             }
         }
         slugtale_lib::TranscriptionEngine::Parakeet => {
@@ -1906,7 +1907,7 @@ async fn download_local_model(
     .await
     .map_err(|error| error.to_string())??;
     if status.present {
-        warm_local_whisper_runtime(&app, &status.path);
+        warm_effective_primary_engine(&app);
     }
     Ok(status)
 }
@@ -2215,7 +2216,7 @@ fn main() {
                 app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
                     .set_model_dir(model_dir);
             }
-            let _ = warm_ready_local_whisper_runtime(app.handle());
+            warm_effective_primary_engine(app.handle());
             if reauthorize_permissions {
                 slugtale_lib::show_settings(app.handle().clone());
                 #[cfg(target_os = "macos")]

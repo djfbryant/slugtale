@@ -288,6 +288,13 @@ pub trait TranscriptionProvider: Send + Sync {
     fn availability(&self) -> EngineAvailability;
 
     fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError>;
+
+    /// Load whatever this engine needs before the first transcription so the
+    /// first dictation does not pay for it. Engines with nothing to load —
+    /// Apple Speech, test fakes — inherit this no-op.
+    fn warm_up(&self) -> Result<(), AsrError> {
+        Ok(())
+    }
 }
 
 /// Which Transcription Engine will actually transcribe the next dictation, given

@@ -17,6 +17,14 @@ pub struct TranscriptionEngineCatalogue {
     whisper: WhisperRuntimeCache,
     parakeet: Mutex<Option<Arc<ParakeetProvider>>>,
     apple: Arc<AppleSpeechProvider>,
+    /// Bumped every time a warm-up is requested, so a slow warm-up started by
+    /// an older Settings state can recognise that it was superseded and stand
+    /// down instead of loading a model nobody selected any more.
+    warm_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// The engine the current resident models were kept for. Repeated
+    /// warm-ups of the same engine must not keep releasing the other models:
+    /// a Second Opinion or an unrelated caller may have reloaded them.
+    released_for: Mutex<Option<TranscriptionEngine>>,
 }
 
 impl TranscriptionEngineCatalogue {
@@ -26,6 +34,8 @@ impl TranscriptionEngineCatalogue {
             whisper: WhisperRuntimeCache::default(),
             parakeet: Mutex::new(None),
             apple: Arc::new(AppleSpeechProvider::new()),
+            warm_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            released_for: Mutex::new(None),
         };
         if let Some(model_dir) = model_dir {
             catalogue.set_model_dir(model_dir);
@@ -64,9 +74,55 @@ impl TranscriptionEngineCatalogue {
         Some(runtime)
     }
 
-    pub fn warm_ready_whisper(&self, settings: &Settings) -> Option<Arc<LocalWhisperRuntime>> {
-        self.whisper
-            .begin_warming_existing_model(&self.model_path(settings)?)
+    /// Which engine the next dictation would actually use, applying the same
+    /// fallback rule as the Second Opinion router and Dictation Readiness
+    /// ([`engine_that_can_run`]). Warm-up asks through here so it loads exactly
+    /// what dictation will use, never a hard-coded engine.
+    pub fn effective_primary_engine(&self, settings: &Settings) -> Option<TranscriptionEngine> {
+        engine_that_can_run(settings.primary_engine, &self.availability(settings))
+    }
+
+    /// Prepare a warm-up of the effective primary engine, ready to run off the
+    /// caller's thread. `None` when no engine can run, in which case there is
+    /// nothing worth warming.
+    pub fn prepare_primary_warm_up(&self, settings: &Settings) -> Option<EngineWarmUp> {
+        let engine = self.effective_primary_engine(settings)?;
+        let provider = self.provider(settings, engine)?;
+        let expected_generation =
+            self.warm_generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Some(EngineWarmUp {
+            generation: Arc::clone(&self.warm_generation),
+            expected_generation,
+            provider,
+        })
+    }
+
+    /// Release every large loaded model except `keep`, so switching engines on
+    /// a memory-constrained machine does not leave two large models resident.
+    /// In-flight transcriptions keep their own references and finish safely;
+    /// released engines simply reload on their next use. Idempotent per
+    /// engine: repeated calls for the same `keep` do nothing, so a polled
+    /// caller cannot unload a model another engine legitimately reloaded.
+    pub fn release_models_except(&self, keep: TranscriptionEngine) {
+        let mut released_for = self
+            .released_for
+            .lock()
+            .expect("engine catalogue release mutex poisoned");
+        if *released_for == Some(keep) {
+            return;
+        }
+        *released_for = Some(keep);
+        drop(released_for);
+
+        if keep != TranscriptionEngine::Whisper {
+            self.whisper.release();
+        }
+        if keep != TranscriptionEngine::Parakeet {
+            if let Some(parakeet) = self.parakeet_provider() {
+                parakeet.unload();
+            }
+        }
     }
 
     pub fn whisper_provider(&self, settings: &Settings) -> Option<Arc<dyn TranscriptionProvider>> {
@@ -165,6 +221,41 @@ fn selected_primary(
     engine_that_can_run(settings.primary_engine, availability)
         .and_then(resolve)
         .or(whisper_fallback)
+}
+
+/// One pending warm-up of the effective primary engine, resolved against the
+/// Settings it was prepared from. Run it off the caller's thread: loading a
+/// large model takes seconds and must never block Settings saves or UI events.
+pub struct EngineWarmUp {
+    generation: Arc<std::sync::atomic::AtomicU64>,
+    expected_generation: u64,
+    provider: Arc<dyn TranscriptionProvider>,
+}
+
+impl EngineWarmUp {
+    /// The engine this warm-up will load.
+    pub fn engine(&self) -> TranscriptionEngine {
+        self.provider.engine()
+    }
+
+    /// True when a newer warm-up request superseded this one. Rapid Settings
+    /// changes must not publish a stale engine as the current warm engine, so a
+    /// superseded warm-up stands down instead of loading.
+    pub fn is_stale(&self) -> bool {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+            != self.expected_generation
+    }
+
+    /// Warm the engine unless a newer request superseded this one. Safe to run
+    /// next to shutdown: providers check their own shutdown flags under the
+    /// same locks that teardown uses, so a late warm-up cannot resurrect a
+    /// released model.
+    pub fn run(self) -> Result<(), AsrError> {
+        if self.is_stale() {
+            return Ok(());
+        }
+        self.provider.warm_up()
+    }
 }
 
 impl Default for TranscriptionEngineCatalogue {
@@ -267,5 +358,103 @@ mod tests {
         );
 
         assert_eq!(selected.unwrap().engine(), TranscriptionEngine::Parakeet);
+    }
+
+    /// A provider whose warm-up is observable, so tests can prove whether a
+    /// warm-up actually loaded anything.
+    struct WarmCountingProvider {
+        warm_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl TranscriptionProvider for WarmCountingProvider {
+        fn engine(&self) -> TranscriptionEngine {
+            TranscriptionEngine::Whisper
+        }
+
+        fn metadata(&self) -> EngineMetadata {
+            FakeProvider(TranscriptionEngine::Whisper).metadata()
+        }
+
+        fn availability(&self) -> EngineAvailability {
+            EngineAvailability::Available
+        }
+
+        fn transcribe(
+            &self,
+            _audio: &crate::CapturedAudio,
+        ) -> Result<EngineTranscription, AsrError> {
+            Err(AsrError::Runtime("warm-up test never transcribes".to_string()))
+        }
+
+        fn warm_up(&self) -> Result<(), AsrError> {
+            self.warm_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_warm_up_whose_generation_was_superseded_stands_down_without_loading() {
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let warm_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let warm_up = EngineWarmUp {
+            generation: Arc::clone(&generation),
+            expected_generation: 1,
+            provider: Arc::new(WarmCountingProvider {
+                warm_calls: Arc::clone(&warm_calls),
+            }),
+        };
+
+        // A newer Settings state requested a warm-up before this one started.
+        generation.store(2, std::sync::atomic::Ordering::SeqCst);
+
+        assert!(warm_up.is_stale());
+        warm_up.run().unwrap();
+
+        assert_eq!(warm_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_current_warm_up_loads_its_engine_once() {
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let warm_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let warm_up = EngineWarmUp {
+            generation: Arc::clone(&generation),
+            expected_generation: 1,
+            provider: Arc::new(WarmCountingProvider {
+                warm_calls: Arc::clone(&warm_calls),
+            }),
+        };
+
+        generation.store(1, std::sync::atomic::Ordering::SeqCst);
+
+        assert!(!warm_up.is_stale());
+        assert_eq!(warm_up.engine(), TranscriptionEngine::Whisper);
+        warm_up.run().unwrap();
+
+        assert_eq!(warm_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn releasing_models_repeatedly_for_the_same_engine_only_releases_once() {
+        let catalogue = TranscriptionEngineCatalogue::new(Some(PathBuf::from("models")));
+        let settings = Settings::default();
+
+        // A polled caller repeats the same request; the second release must
+        // not clear a runtime another engine legitimately reloaded.
+        let before_release = catalogue.whisper_runtime(&settings).unwrap();
+        catalogue.release_models_except(TranscriptionEngine::Parakeet);
+        let after_first_release = catalogue.whisper_runtime(&settings).unwrap();
+        catalogue.release_models_except(TranscriptionEngine::Parakeet);
+        let after_second_release = catalogue.whisper_runtime(&settings).unwrap();
+
+        assert!(!std::sync::Arc::ptr_eq(
+            &before_release,
+            &after_first_release
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &after_first_release,
+            &after_second_release
+        ));
     }
 }
