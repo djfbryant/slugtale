@@ -133,6 +133,46 @@ const MINIMUM_SPEECH_RMS: f32 = 0.006;
 const SPEECH_CONTRAST_RATIO: f32 = 1.5;
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListenWait {
+    Continue,
+    Stop,
+}
+
+/// Wait up to `timeout` for a command so turning Voice Activation off closes
+/// the microphone without sitting out a poll or retry sleep.
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+fn wait_or_stop(
+    receiver: &std::sync::mpsc::Receiver<VoiceActivationCommand>,
+    timeout: std::time::Duration,
+) -> ListenWait {
+    match receiver.recv_timeout(timeout) {
+        Ok(VoiceActivationCommand::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            ListenWait::Stop
+        }
+        Ok(VoiceActivationCommand::Listen) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            ListenWait::Continue
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+fn stop_requested(receiver: &std::sync::mpsc::Receiver<VoiceActivationCommand>) -> bool {
+    matches!(
+        receiver.try_recv(),
+        Ok(VoiceActivationCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected)
+    )
+}
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+fn whisper_ready(app: &tauri::AppHandle) -> bool {
+    let settings = load_current_settings(app);
+    app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+        .whisper_provider(&settings)
+        .is_some()
+}
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
 fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceActivationCommand>) {
     use slugtale_lib::{
         CpalAudioRecorder, NewAudioState, SpeechWindowBuffer, VoiceActivationCapture,
@@ -151,10 +191,8 @@ fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceAc
         let mut detector = WakeWordDetector::new(WakeWordConfig::default());
 
         loop {
-            use std::sync::mpsc::TryRecvError;
-            match receiver.try_recv() {
-                Ok(VoiceActivationCommand::Stop) | Err(TryRecvError::Disconnected) => break,
-                Ok(VoiceActivationCommand::Listen) | Err(TryRecvError::Empty) => {}
+            if stop_requested(&receiver) {
+                break;
             }
 
             if target_is_dictating(&app) {
@@ -162,7 +200,20 @@ fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceAc
                     capture.rebuild(CpalAudioRecorder::new());
                 }
                 window.clear();
-                std::thread::sleep(POLL);
+                if wait_or_stop(&receiver, POLL) == ListenWait::Stop {
+                    break;
+                }
+                continue;
+            }
+
+            if !whisper_ready(&app) {
+                if capture.is_open() {
+                    capture.rebuild(CpalAudioRecorder::new());
+                    window.clear();
+                }
+                if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
+                    break;
+                }
                 continue;
             }
 
@@ -172,7 +223,9 @@ fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceAc
                         report_voice_activation_microphone_problem(&app);
                         microphone_problem_reported = true;
                     }
-                    std::thread::sleep(CAPTURE_RETRY);
+                    if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
+                        break;
+                    }
                     continue;
                 }
                 if let Err(error) = capture.start() {
@@ -181,7 +234,9 @@ fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceAc
                         capture_error_reported = true;
                     }
                     capture.rebuild(CpalAudioRecorder::new());
-                    std::thread::sleep(CAPTURE_RETRY);
+                    if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
+                        break;
+                    }
                     continue;
                 }
                 capture_error_reported = false;
@@ -189,7 +244,9 @@ fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceAc
                 eprintln!("voice activation: listening");
             }
 
-            std::thread::sleep(POLL);
+            if wait_or_stop(&receiver, POLL) == ListenWait::Stop {
+                break;
+            }
             let chunk = match capture.take_segment() {
                 Ok(chunk) => chunk,
                 Err(error) => {
@@ -197,7 +254,9 @@ fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceAc
                     capture.rebuild(CpalAudioRecorder::new());
                     capture_error_reported = true;
                     window.clear();
-                    std::thread::sleep(CAPTURE_RETRY);
+                    if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
+                        break;
+                    }
                     continue;
                 }
             };
@@ -220,7 +279,9 @@ fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceAc
                     }
                     capture.rebuild(CpalAudioRecorder::new());
                     window.clear();
-                    std::thread::sleep(CAPTURE_RETRY);
+                    if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
+                        break;
+                    }
                     continue;
                 }
                 NewAudioState::Quiet => {
@@ -242,6 +303,11 @@ fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceAc
                 .state::<slugtale_lib::TranscriptionEngineCatalogue>()
                 .whisper_provider(&settings);
             let Some(provider) = provider else {
+                capture.rebuild(CpalAudioRecorder::new());
+                window.clear();
+                if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
+                    break;
+                }
                 continue;
             };
 
@@ -255,6 +321,9 @@ fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceAc
                     // Scores are safe to log. Transcript text and audio are not.
                     eprintln!("voice activation: score {score:.2}");
                     if detector.on_transcript(text, now_unix_ms()).is_some() {
+                        if stop_requested(&receiver) {
+                            break;
+                        }
                         window.clear();
                         eprintln!("voice activation: wake phrase detected");
                         trigger_start(&app);
@@ -358,5 +427,39 @@ mod tests {
     fn a_new_worker_channel_starts_with_listen() {
         let (_sender, receiver) = listening_channel().unwrap();
         assert_eq!(receiver.recv().unwrap(), VoiceActivationCommand::Listen);
+    }
+
+    #[test]
+    fn wait_or_stop_wakes_immediately_on_stop() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(VoiceActivationCommand::Stop).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            wait_or_stop(&receiver, std::time::Duration::from_secs(2)),
+            ListenWait::Stop
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+    }
+
+    #[test]
+    fn wait_or_stop_continues_after_a_timeout() {
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        assert_eq!(
+            wait_or_stop(&receiver, std::time::Duration::from_millis(10)),
+            ListenWait::Continue
+        );
+    }
+
+    #[test]
+    fn stop_requested_is_false_when_the_channel_is_empty() {
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        assert!(!stop_requested(&receiver));
+    }
+
+    #[test]
+    fn stop_requested_is_true_after_stop() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(VoiceActivationCommand::Stop).unwrap();
+        assert!(stop_requested(&receiver));
     }
 }

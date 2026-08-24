@@ -28,10 +28,11 @@ test("voice activation reports a blocked or silent microphone", () => {
 test("the listener rebuilds capture after dictation or digital silence", () => {
   assert.match(workerSource, /VoiceActivationCapture::new/);
   assert.match(workerSource, /target_is_dictating/);
+  assert.match(workerSource, /whisper_ready/);
+  assert.match(workerSource, /wait_or_stop/);
   const rebuilds = workerSource.match(/capture\.rebuild\(CpalAudioRecorder::new\(\)\)/g) ?? [];
-  assert.equal(
-    rebuilds.length,
-    4,
+  assert.ok(
+    rebuilds.length >= 4,
     "dictation, start failure, capture failure, and digital silence must each rebuild",
   );
 });
