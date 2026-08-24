@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "notes": "First release.",
+  "pub_date": "2026-08-22T12:00:00Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "url": "https://github.com/djfbryant/slugtale/releases/download/v0.1.0/Slugtale.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVULzcyQUFKRDRxNy9VVDNPa205RDR3VURTSTBYS1c0M1ZINlVCaVdPMlBHdlpWMThtRVZna0ZzanVNVTkzcmZiVk5FVlFJZTJnU3d6Zm9KMFZycGdFdWwwbEpFZU4xYVFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3Mzg2NTAzCWZpbGU6U2x1Z3RhbGUuYXBwLnRhci5negpiSzR4K3NtM1grUnNUM0tsbzFvNXRSR3hlVmtNZlN5NzZZL3BjWk9abWZiRTNaamRTNk5rSjRzL2xwQlE2RjZzS1JBVWNRWkY2QTMxT0dla0tZWmxCZz09Cg=="
+    }
+  }
+}

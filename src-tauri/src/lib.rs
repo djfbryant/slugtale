@@ -110,6 +110,12 @@ pub use readiness::*;
 mod hotkey;
 pub use hotkey::*;
 
+/// Voice Activation spike (slugtale-e95): scoring transcripts against the wake
+/// phrase and the detection state machine. Pure logic, compiled everywhere;
+/// the always-on listener that feeds it is feature-gated in the Tauri tier.
+mod wake_word;
+pub use wake_word::*;
+
 /// macOS implementation of platform adapters (ADR-0021). Resolves OS-specific
 /// dictation gates, text insertion, insertion rescue, permission setup, and
 /// focused-app activation from live system state.
