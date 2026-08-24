@@ -26,8 +26,11 @@ local-parakeet-runtime-coreml = ["local-parakeet-runtime", "parakeet-rs/coreml"]
 apple-speech-runtime = []
 
 [lib]
-name = "slugtale_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
+name = "slugtale_lib": the desktop binary, examples, and tests all link
+# the rlib, and no mobile or external FFI consumer exists (slugtale-g1o.10).
+# Building cdylib/staticlib cost ~450 MB of debug target-disk per clean build
+# for nothing.
+
 
 [[example]]
 name = "decode_benchmark"
@@ -85,11 +88,36 @@ tauri-plugin-updater = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
 objc2 = "0.6.4"
-objc2-av-foundation = "0.3.2"
-objc2-app-kit = "0.3.2"
-# NSCalendar, for the locale's first day of the week (ADR-0025). Already pulled
-# in by objc2-app-kit; named here because the Platform Adapter uses it directly.
-objc2-foundation = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = [
+    # Platform Adapter microphone authorization (src/macos.rs AVCaptureDevice).
+    "AVCaptureDevice",
+    # objc2 0.3.2: AVMediaTypeAudio lives in AVMediaFormat.
+    "AVMediaFormat",
+    # AVCaptureDevice::requestAccessForMediaType_completionHandler takes an
+    # ObjC block, which the generator only emits with block2 enabled.
+    "block2",
+] }
+# The macOS Platform Adapter uses only NSWorkspace (frontmost app), and
+# NSRunningApplication with its activation options (target activation). Tauri's
+# own windowing crates already enable their AppKit features additively, so the
+# union stays correct while Slugtale stops pulling in the rest of AppKit
+# (slugtale-g1o.7).
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    # NSRunningApplication::activateWithOptions takes these options
+    # (src/macos.rs target activation).
+    "NSApplication",
+    "NSRunningApplication",
+    "NSWorkspace",
+    # processIdentifier/runningApplicationWithProcessIdentifier are emitted
+    # only with libc enabled (pid_t in the generated signatures).
+    "libc",
+] }
+# NSCalendar only: locale week start for Daily Usage Records (ADR-0025,
+# src/macos.rs week_start). objc2 0.3.2 generates NSCalendar behind this
+# feature; NSDate/NSString prerequisites come through the feature graph.
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "NSCalendar",
+] }
 
 # Windows Platform Adapter (ADR-0021, PRD slugtale-5pc). Mirrors the macOS
 # native-dependency block so neither platform pulls the other's crates. The
