@@ -275,6 +275,20 @@ impl EscalationPolicy {
     }
 }
 
+/// The in-flight gate shared by every [`SecondOpinionRouter`] built for one
+/// Engine Catalogue lifetime.
+///
+/// Dictation builds a fresh router per segment, but the gate must not be
+/// per-segment: a timed-out escalation whose detached worker is still decoding
+/// has to block the *next* segment's escalation too, or slow second engines
+/// pile up on the CPU behind the primary transcription the user is waiting
+/// on. Clone this coordinator into every router; they then contend for one
+/// Boolean. `Default` starts unowned.
+#[derive(Clone, Default)]
+pub struct SecondOpinionCoordinator {
+    gate: Arc<std::sync::atomic::AtomicBool>,
+}
+
 /// Runs the primary engine and, when its result trips a rule, one second
 /// opinion. Owns the escalation budget and the guarantee that exactly one
 /// transcript comes out.
@@ -283,11 +297,12 @@ pub struct SecondOpinionRouter {
     second: Option<Arc<dyn TranscriptionProvider>>,
     mode: SecondOpinionMode,
     policy: EscalationPolicy,
-    /// Set while a second opinion is running. A dictation that starts while an
-    /// earlier escalation is still decoding skips its own escalation rather
-    /// than putting two model runtimes on the CPU at once — on the 8 GB
-    /// reference machine that would slow the dictation the user is waiting on.
-    escalation_in_flight: Arc<std::sync::atomic::AtomicBool>,
+    /// Shared in-flight state; see [`SecondOpinionCoordinator`]. Set while a
+    /// second opinion is running. A dictation that starts while an earlier
+    /// escalation is still decoding skips its own escalation rather than
+    /// putting two model runtimes on the CPU at once — on the 8 GB reference
+    /// machine that would slow the dictation the user is waiting on.
+    coordinator: SecondOpinionCoordinator,
     observer: Option<Arc<dyn Fn(RoutingDiagnostics) + Send + Sync>>,
 }
 
@@ -300,7 +315,7 @@ impl SecondOpinionRouter {
             second: None,
             mode: SecondOpinionMode::Off,
             policy: EscalationPolicy::default(),
-            escalation_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            coordinator: SecondOpinionCoordinator::default(),
             observer: None,
         }
     }
@@ -315,9 +330,17 @@ impl SecondOpinionRouter {
             second: Some(second),
             mode,
             policy: EscalationPolicy::default(),
-            escalation_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            coordinator: SecondOpinionCoordinator::default(),
             observer: None,
         }
+    }
+
+    /// Contend for `coordinator`'s shared gate instead of a private one. Every
+    /// router built for one Engine Catalogue lifetime must share it, so an
+    /// escalation that outlives its caller's timeout blocks later segments.
+    pub fn with_coordinator(mut self, coordinator: SecondOpinionCoordinator) -> Self {
+        self.coordinator = coordinator;
+        self
     }
 
     pub fn with_policy(mut self, policy: EscalationPolicy) -> Self {
@@ -435,8 +458,10 @@ impl SecondOpinionRouter {
     ///
     /// The work runs on its own thread so the router can stop waiting; a wedged
     /// engine keeps its thread until it returns, but it can no longer hold up
-    /// the user's dictation, and `escalation_in_flight` stops a second one from
-    /// piling on behind it. The recording is cloned because the thread outlives
+    /// the user's dictation, and the shared in-flight gate stops a second one
+    /// from piling on behind it — including from a *later segment's* router,
+    /// which is why the gate is shared for the catalogue lifetime rather than
+    /// owned per router. The recording is cloned because the thread outlives
     /// this call — that allocation is the price of a bounded wait, and it only
     /// happens on the escalation path, which is rare by design.
     fn second_opinion_within_budget(
@@ -447,18 +472,30 @@ impl SecondOpinionRouter {
         use std::sync::atomic::Ordering;
 
         if self
-            .escalation_in_flight
+            .coordinator
+            .gate
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             return None;
         }
 
-        let in_flight = self.escalation_in_flight.clone();
+        let in_flight = self.coordinator.gate.clone();
         let audio = audio.clone();
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || {
-            let result = provider.transcribe(&audio);
+            // A panicking engine must not hold the shared gate forever: catch
+            // the panic at this module edge, release, and report it as an
+            // unavailable second opinion like any other failure.
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    provider.transcribe(&audio)
+                }))
+                .unwrap_or_else(|_| {
+                    Err(AsrError::Runtime(
+                        "second opinion engine panicked".to_string(),
+                    ))
+                });
             in_flight.store(false, Ordering::Release);
             // A full channel means the router already gave up and moved on;
             // dropping the late result is exactly what should happen.
@@ -734,6 +771,152 @@ mod tests {
             waited < Duration::from_millis(300),
             "router waited {waited:?}, which is past its budget"
         );
+    }
+
+    #[test]
+    fn a_timed_out_escalation_blocks_a_later_segments_router_too() {
+        // Each dictation segment builds its own router. The gate must still be
+        // shared: otherwise a slow second engine that outlived its caller's
+        // timeout starts over behind every following segment.
+        let coordinator = SecondOpinionCoordinator::default();
+        let slow = FakeProvider::new(TranscriptionEngine::Parakeet, "too late")
+            .slow(Duration::from_millis(600));
+        let slow_calls = slow.calls.clone();
+        let first_segment = SecondOpinionRouter::new(
+            Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
+            Arc::new(slow),
+            SecondOpinionMode::Automatic,
+        )
+        .with_coordinator(coordinator.clone())
+        .with_policy(EscalationPolicy {
+            second_opinion_budget: Duration::from_millis(50),
+            ..EscalationPolicy::default()
+        });
+
+        let routed_first = first_segment.route(&speech_of_seconds(3.0)).unwrap();
+        assert_eq!(
+            routed_first.selection,
+            SelectionReason::PrimaryKeptSecondOpinionUnavailable
+        );
+
+        // While the timed-out worker is still decoding, the next segment's
+        // router must skip its escalation without starting another worker.
+        let next_second = FakeProvider::new(TranscriptionEngine::AppleSpeech, "never starts");
+        let next_calls = next_second.calls.clone();
+        let next_segment = SecondOpinionRouter::new(
+            Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
+            Arc::new(next_second),
+            SecondOpinionMode::Automatic,
+        )
+        .with_coordinator(coordinator);
+
+        let routed_next = next_segment.route(&speech_of_seconds(3.0)).unwrap();
+
+        assert_eq!(
+            routed_next.selection,
+            SelectionReason::PrimaryKeptSecondOpinionUnavailable
+        );
+        assert_eq!(next_calls.load(std::sync::atomic::Ordering::Acquire), 0);
+        // Exactly one worker exists: the one from the first segment.
+        assert_eq!(slow_calls.load(std::sync::atomic::Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn the_shared_gate_opens_again_once_the_real_worker_ends() {
+        let coordinator = SecondOpinionCoordinator::default();
+        let slow = FakeProvider::new(TranscriptionEngine::Parakeet, "slow answer")
+            .slow(Duration::from_millis(200));
+        let second_calls = slow.calls.clone();
+
+        let first_segment = SecondOpinionRouter::new(
+            Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
+            Arc::new(slow),
+            SecondOpinionMode::Automatic,
+        )
+        .with_coordinator(coordinator.clone())
+        .with_policy(EscalationPolicy {
+            second_opinion_budget: Duration::from_millis(30),
+            ..EscalationPolicy::default()
+        });
+        assert_eq!(
+            first_segment
+                .route(&speech_of_seconds(3.0))
+                .unwrap()
+                .selection,
+            SelectionReason::PrimaryKeptSecondOpinionUnavailable
+        );
+
+        // Wait past the worker's own runtime: the gate must be released by the
+        // worker itself, not by the caller that timed out.
+        std::thread::sleep(Duration::from_millis(400));
+
+        let later_segment = SecondOpinionRouter::new(
+            Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
+            Arc::new(FakeProvider::new(TranscriptionEngine::AppleSpeech, "rescued")),
+            SecondOpinionMode::Automatic,
+        )
+        .with_coordinator(coordinator);
+
+        let routed = later_segment.route(&speech_of_seconds(3.0)).unwrap();
+
+        assert_eq!(routed.selection, SelectionReason::SecondOpinionSelected);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn a_panicking_second_engine_releases_the_gate_and_keeps_the_primary() {
+        let coordinator = SecondOpinionCoordinator::default();
+        let router = SecondOpinionRouter::new(
+            Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "kept")),
+            Arc::new(PanickingProvider {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }),
+            SecondOpinionMode::Automatic,
+        )
+        .with_coordinator(coordinator.clone());
+
+        let routed = router.route(&speech_of_seconds(3.0)).unwrap();
+        assert_eq!(
+            routed.selection,
+            SelectionReason::PrimaryKeptSecondOpinionUnavailable
+        );
+        assert_eq!(routed.selected.text(), "kept");
+
+        // The gate must have been recovered from the panic: the very next
+        // escalation attempt is not locked out.
+        let after = SecondOpinionRouter::new(
+            Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
+            Arc::new(FakeProvider::new(TranscriptionEngine::AppleSpeech, "rescued")),
+            SecondOpinionMode::Automatic,
+        )
+        .with_coordinator(coordinator);
+        assert_eq!(
+            after.route(&speech_of_seconds(3.0)).unwrap().selection,
+            SelectionReason::SecondOpinionSelected
+        );
+    }
+
+    struct PanickingProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl TranscriptionProvider for PanickingProvider {
+        fn engine(&self) -> TranscriptionEngine {
+            TranscriptionEngine::Parakeet
+        }
+
+        fn metadata(&self) -> EngineMetadata {
+            FakeProvider::new(TranscriptionEngine::Parakeet, "").metadata()
+        }
+
+        fn availability(&self) -> EngineAvailability {
+            EngineAvailability::Available
+        }
+
+        fn transcribe(&self, _audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            panic!("fake engine panic");
+        }
     }
 
     #[test]

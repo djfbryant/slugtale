@@ -6,8 +6,9 @@
 
 use crate::{
     default_model_path, engine_that_can_run, AppleSpeechProvider, AsrError, EngineAvailability,
-    LocalWhisperRuntime, ParakeetProvider, SecondOpinionMode, SecondOpinionRouter, Settings,
-    TranscriptionEngine, TranscriptionProvider, WhisperRuntimeCache, WhisperTranscriptionProvider,
+    LocalWhisperRuntime, ParakeetProvider, SecondOpinionCoordinator, SecondOpinionMode,
+    SecondOpinionRouter, Settings, TranscriptionEngine, TranscriptionProvider,
+    WhisperRuntimeCache, WhisperTranscriptionProvider,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -25,6 +26,10 @@ pub struct TranscriptionEngineCatalogue {
     /// warm-ups of the same engine must not keep releasing the other models:
     /// a Second Opinion or an unrelated caller may have reloaded them.
     released_for: Mutex<Option<TranscriptionEngine>>,
+    /// One in-flight gate for this catalogue's whole lifetime, shared by every
+    /// router it hands out, so a timed-out escalation still blocks the next
+    /// segment's escalation instead of piling up slow second engines.
+    coordinator: SecondOpinionCoordinator,
 }
 
 impl TranscriptionEngineCatalogue {
@@ -36,6 +41,7 @@ impl TranscriptionEngineCatalogue {
             apple: Arc::new(AppleSpeechProvider::new()),
             warm_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             released_for: Mutex::new(None),
+            coordinator: SecondOpinionCoordinator::default(),
         };
         if let Some(model_dir) = model_dir {
             catalogue.set_model_dir(model_dir);
@@ -191,6 +197,7 @@ impl TranscriptionEngineCatalogue {
                     .filter(|engine| *engine != primary.engine())
                     .filter_map(|engine| self.provider(settings, engine))
                     .find(|provider| provider.availability().is_available());
+                let coordinator = self.coordinator.clone();
                 second
                     .map(|second| {
                         SecondOpinionRouter::new(
@@ -198,6 +205,7 @@ impl TranscriptionEngineCatalogue {
                             second,
                             SecondOpinionMode::Automatic,
                         )
+                        .with_coordinator(coordinator)
                     })
                     .unwrap_or_else(|| SecondOpinionRouter::single(primary))
             }
