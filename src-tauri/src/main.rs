@@ -1010,11 +1010,13 @@ fn run_voice_activation_worker(
     app: tauri::AppHandle,
     receiver: std::sync::mpsc::Receiver<VoiceActivationCommand>,
 ) {
-    use slugtale_lib::{CpalAudioRecorder, SpeechWindowBuffer, WakeWordConfig, WakeWordDetector};
+    use slugtale_lib::{
+        AudioRecorder, CpalAudioRecorder, SpeechWindowBuffer, WakeWordConfig, WakeWordDetector,
+    };
 
     // One recorder per listen session, rebuilt each time so a microphone change
     // or permission revoke between sessions cannot strand a stale stream.
-    'sessions: while let Ok(command) = receiver.recv() {
+    while let Ok(command) = receiver.recv() {
         if matches!(command, VoiceActivationCommand::Stop) {
             continue;
         }
@@ -1165,7 +1167,8 @@ fn trigger_voice_activation_start(app: &tauri::AppHandle) {
     // bookkeeping stays authoritative for hold/toggle stop events too.
     if should_register_escape {
         let state = app.state::<HotkeyRegistrationState>();
-        if let Ok(registration) = state.0.lock() {
+        let registration = state.0.lock();
+        if let Ok(registration) = registration {
             request_escape_registration(&registration, true);
         }
     }
