@@ -25,9 +25,28 @@ pub fn dictation_ready(
     local_model_ready: bool,
     engines: &[(TranscriptionEngine, EngineAvailability)],
 ) -> bool {
+    dictation_ready_checked(
+        settings,
+        platform.microphone_granted(),
+        platform.insertion_granted(),
+        local_model_ready,
+        engines,
+    )
+}
+
+/// [`dictation_ready`] with the external permission answers already collected,
+/// so one activation can probe each OS permission exactly once and share the
+/// results (slugtale-g1o.6).
+pub fn dictation_ready_checked(
+    settings: &Settings,
+    microphone_granted: bool,
+    insertion_granted: bool,
+    local_model_ready: bool,
+    engines: &[(TranscriptionEngine, EngineAvailability)],
+) -> bool {
     settings.hotkey.is_some()
-        && platform.microphone_granted()
-        && platform.insertion_granted()
+        && microphone_granted
+        && insertion_granted
         && (local_model_ready || !whisper_model_is_required(settings, engines))
         && engine_that_can_run(settings.primary_engine, engines).is_some()
 }
@@ -109,23 +128,47 @@ pub fn settings_readiness_report(
     local_model_ready: bool,
     engines: &[(TranscriptionEngine, EngineAvailability)],
 ) -> SettingsReadinessReport {
+    settings_readiness_report_checked(
+        settings,
+        platform.microphone_granted(),
+        platform.insertion_granted(),
+        local_model_ready,
+        engines,
+    )
+}
+
+/// [`settings_readiness_report`] with the external permission answers already
+/// collected (slugtale-g1o.6).
+pub fn settings_readiness_report_checked(
+    settings: &Settings,
+    microphone_granted: bool,
+    insertion_granted: bool,
+    local_model_ready: bool,
+    engines: &[(TranscriptionEngine, EngineAvailability)],
+) -> SettingsReadinessReport {
     let engine_blocker = engine_blocked_reason(settings.primary_engine, engines);
     let whisper_model_required = whisper_model_is_required(settings, engines);
 
     SettingsReadinessReport {
-        dictation_available: dictation_ready(settings, platform, local_model_ready, engines),
+        dictation_available: dictation_ready_checked(
+            settings,
+            microphone_granted,
+            insertion_granted,
+            local_model_ready,
+            engines,
+        ),
         items: vec![
             readiness_item(
                 "microphone",
                 "Microphone permission",
                 true,
-                platform.microphone_granted(),
+                microphone_granted,
             ),
             readiness_item(
                 "text_insertion",
                 "Text insertion permission",
                 true,
-                platform.insertion_granted(),
+                insertion_granted,
             ),
             readiness_item("hotkey", "Hotkey", true, settings.hotkey.is_some()),
             readiness_item(
@@ -159,6 +202,67 @@ fn readiness_item(id: &str, label: &str, required: bool, ready: bool) -> Readine
         ReadinessItem::ready(id, label, required)
     } else {
         ReadinessItem::missing(id, label, required)
+    }
+}
+
+/// One Hotkey activation's immutable view of everything outside the audio and
+/// transcription engines themselves (slugtale-g1o.6).
+///
+/// Built once at the activation entry point: one Settings value, one external
+/// probe per OS permission, one local-model answer, and the derived readiness
+/// report and engine decision. Every consumer in the activation reads this
+/// snapshot instead of re-reading global state, so they cannot disagree with
+/// each other or with the start decision — even if the Settings File changes
+/// mid-activation. It is request-scoped by construction: a later Hotkey builds
+/// a fresh one and therefore sees current OS permission state, honouring
+/// ADR-0013's live-readiness rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictationActivation {
+    pub settings: Settings,
+    pub microphone_granted: bool,
+    pub insertion_granted: bool,
+    pub local_model_ready: bool,
+    /// The engines' availability as seen when the activation started.
+    pub engines: Vec<(TranscriptionEngine, EngineAvailability)>,
+    /// Which engine this activation's dictations would be transcribed by.
+    pub engine_in_play: Option<TranscriptionEngine>,
+    pub report: SettingsReadinessReport,
+}
+
+impl DictationActivation {
+    /// Probe every external fact exactly once and derive the rest. `engines`
+    /// is asked of the Engine Catalogue once by the caller and shared between
+    /// the readiness report and the engine decision.
+    pub fn build(
+        settings: Settings,
+        platform: &dyn PlatformReadiness,
+        local_model_ready: bool,
+        engines: Vec<(TranscriptionEngine, EngineAvailability)>,
+    ) -> Self {
+        let microphone_granted = platform.microphone_granted();
+        let insertion_granted = platform.insertion_granted();
+        let report = settings_readiness_report_checked(
+            &settings,
+            microphone_granted,
+            insertion_granted,
+            local_model_ready,
+            &engines,
+        );
+        let engine_in_play = engine_that_can_run(settings.primary_engine, &engines);
+
+        Self {
+            settings,
+            microphone_granted,
+            insertion_granted,
+            local_model_ready,
+            engine_in_play,
+            engines,
+            report,
+        }
+    }
+
+    pub fn dictation_available(&self) -> bool {
+        self.report.dictation_available
     }
 }
 
@@ -583,6 +687,122 @@ mod tests {
         fn insertion_granted(&self) -> bool {
             self.insertion
         }
+    }
+
+    /// A platform fake that counts its external probes, so tests can prove
+    /// one activation queries each permission exactly once.
+    struct CountingPlatform {
+        inner: FakePlatform,
+        microphone_calls: std::cell::Cell<usize>,
+        insertion_calls: std::cell::Cell<usize>,
+    }
+
+    impl CountingPlatform {
+        fn all_ready() -> Self {
+            Self {
+                inner: FakePlatform::all_ready(),
+                microphone_calls: std::cell::Cell::new(0),
+                insertion_calls: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl PlatformReadiness for CountingPlatform {
+        fn microphone_granted(&self) -> bool {
+            self.microphone_calls.set(self.microphone_calls.get() + 1);
+            self.inner.microphone
+        }
+        fn insertion_granted(&self) -> bool {
+            self.insertion_calls.set(self.insertion_calls.get() + 1);
+            self.inner.insertion
+        }
+    }
+
+    #[test]
+    fn one_activation_probes_each_os_permission_exactly_once() {
+        let platform = CountingPlatform::all_ready();
+
+        let activation = DictationActivation::build(
+            configured_settings(),
+            &platform,
+            true,
+            whisper_available(),
+        );
+
+        assert!(activation.dictation_available());
+        assert_eq!(platform.microphone_calls.get(), 1);
+        assert_eq!(platform.insertion_calls.get(), 1);
+    }
+
+    #[test]
+    fn a_permission_denial_fails_the_activation_and_names_the_missing_item() {
+        // This is the fact the Settings-window fallback is driven from: the
+        // report must list the denied permission as a missing required item.
+        let platform = CountingPlatform {
+            inner: FakePlatform {
+                microphone: false,
+                insertion: true,
+            },
+            microphone_calls: std::cell::Cell::new(0),
+            insertion_calls: std::cell::Cell::new(0),
+        };
+
+        let activation =
+            DictationActivation::build(configured_settings(), &platform, true, whisper_available());
+
+        assert!(!activation.dictation_available());
+        assert_eq!(
+            activation.report.dictation_available,
+            activation.dictation_available()
+        );
+        assert!(activation
+            .report
+            .items
+            .iter()
+            .any(|item| item.id == "microphone" && item.required && !item.ready));
+        assert_eq!(platform.microphone_calls.get(), 1);
+    }
+
+    #[test]
+    fn every_consumer_sees_one_consistent_snapshot_even_if_settings_change_midway() {
+        let platform = CountingPlatform::all_ready();
+        let settings = configured_settings();
+        let engines = whisper_available();
+
+        let activation = DictationActivation::build(settings.clone(), &platform, true, engines);
+
+        // A later Settings save lands in storage; the in-flight activation was
+        // built from the value it captured and must not shift under it.
+        let mut changed = settings.clone();
+        changed.hotkey = None;
+
+        assert_eq!(activation.settings.hotkey, settings.hotkey);
+        assert_ne!(activation.settings.hotkey, changed.hotkey);
+        assert!(activation.dictation_available());
+    }
+
+    #[test]
+    fn the_engine_decision_is_resolved_once_from_the_shared_availability() {
+        let platform = CountingPlatform::all_ready();
+        let mut settings = configured_settings();
+        settings.primary_engine = crate::TranscriptionEngine::Parakeet;
+        // Parakeet cannot run in this build; the decision must fall back.
+
+        let activation =
+            DictationActivation::build(settings.clone(), &platform, true, whisper_available());
+
+        assert_eq!(
+            activation.engine_in_play,
+            Some(crate::TranscriptionEngine::Whisper)
+        );
+        // The report's engine item agrees with the snapshot's own decision.
+        let engine_item = activation
+            .report
+            .items
+            .iter()
+            .find(|item| item.id == "transcription_engine")
+            .unwrap();
+        assert!(engine_item.ready);
     }
 
     fn configured_settings() -> Settings {

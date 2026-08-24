@@ -223,6 +223,18 @@ fn handle_dictation_event(
     app: &tauri::AppHandle,
     event: slugtale_lib::DictationEvent,
 ) -> Result<(), String> {
+    handle_dictation_event_with(app, event, None)
+}
+
+/// `activation` is the snapshot a Hotkey press built for its readiness gate;
+/// Start consumes it so the rest of the activation reuses the same Settings
+/// value instead of reloading (slugtale-g1o.6). Callers without one — Cancel
+/// from the tray, tests — pass `None`.
+fn handle_dictation_event_with(
+    app: &tauri::AppHandle,
+    event: slugtale_lib::DictationEvent,
+    mut activation: Option<slugtale_lib::DictationActivation>,
+) -> Result<(), String> {
     record_diagnostic_event(app, slugtale_lib::DiagnosticEvent::hotkey_transition(event));
 
     match event {
@@ -235,22 +247,28 @@ fn handle_dictation_event(
             app.state::<DictationSegments>().begin();
             // If the microphone cannot start, do not show a recording state.
             handle_audio_capture_event(app, event)?;
-            apply_recording_feedback(app, event)?;
+            let settings = match activation.take() {
+                Some(activation) => activation.settings,
+                None => load_current_settings(app),
+            };
+            apply_recording_feedback(app, event, Some(&settings))?;
         }
         // Stop plays its cue but leaves the bar on screen: the audio-capture step
         // switches it to a transcribing state and hides it once the workflow
-        // finishes, so the user sees the model working (slugtale-0t4).
+        // finishes, so the user sees the model working (slugtale-0t4). Its bar
+        // update is this Stop press's own activation, so read Settings once here.
         slugtale_lib::DictationEvent::Stop => {
             advance_recording_feedback(app, event)?;
-            handle_audio_capture_event(app, event)?;
+            let settings = load_current_settings(app);
+            handle_audio_capture_event_with_settings(app, event, Some(&settings))?;
         }
         // Cancel clears the bar immediately and discards the audio. It also
         // drops any Dictation Segment still queued, so nothing further is typed
         // after the user asks Slugtale to stop. Text inserted by an earlier
-        // Segment Pause is not undone (ADR-0014).
+        // Segment Pause is not undone (ADR-0014). It reads no Settings at all.
         slugtale_lib::DictationEvent::Cancel => {
             app.state::<DictationSegments>().abandon();
-            apply_recording_feedback(app, event)?;
+            apply_recording_feedback(app, event, None)?;
             handle_audio_capture_event(app, event)?;
         }
     }
@@ -284,11 +302,22 @@ fn advance_recording_feedback(
 fn apply_recording_feedback(
     app: &tauri::AppHandle,
     event: slugtale_lib::DictationEvent,
+    settings: Option<&slugtale_lib::Settings>,
 ) -> Result<(), String> {
     let effect = advance_recording_feedback(app, event)?;
 
     if effect.bar_visible {
-        show_dictation_bar(app, DictationPhase::Recording);
+        // Only the visible branch needs Settings; Cancel passes `None` and
+        // never pays for a read.
+        let owned;
+        let settings = match settings {
+            Some(settings) => settings,
+            None => {
+                owned = load_current_settings(app);
+                &owned
+            }
+        };
+        show_dictation_bar(app, DictationPhase::Recording, settings);
     } else {
         hide_dictation_bar(app);
     }
@@ -305,6 +334,17 @@ fn capture_focus_target(app: &tauri::AppHandle) {
 fn handle_audio_capture_event(
     app: &tauri::AppHandle,
     event: slugtale_lib::DictationEvent,
+) -> Result<(), String> {
+    handle_audio_capture_event_with_settings(app, event, None)
+}
+
+/// `bar_settings` is needed only when a Stop completes and the bar switches to
+/// its transcribing state; passing it in spares that path a Settings reload
+/// (slugtale-g1o.6).
+fn handle_audio_capture_event_with_settings(
+    app: &tauri::AppHandle,
+    event: slugtale_lib::DictationEvent,
+    bar_settings: Option<&slugtale_lib::Settings>,
 ) -> Result<(), String> {
     let capture = app.state::<AudioCaptureState>();
     let outcome = {
@@ -346,7 +386,11 @@ fn handle_audio_capture_event(
             // then hide it once insertion completes (slugtale-0t4). The worker
             // hides it, so it stays up until every earlier Segment Pause has
             // landed too, not just this last one.
-            show_dictation_bar(app, DictationPhase::Transcribing);
+            show_dictation_bar(
+                app,
+                DictationPhase::Transcribing,
+                bar_settings.unwrap_or(&load_current_settings(app)),
+            );
             let segments = app.state::<DictationSegments>();
             let queued = segments.send(slugtale_lib::DictationSegmentJob::Last {
                 dictation: segments.current(),
@@ -716,8 +760,17 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             })
                             .unwrap_or(false);
 
-                        if starts_dictation && !hotkey_dictation_is_ready(&app) {
-                            continue;
+                        // One snapshot for this Hotkey press: the readiness gate
+                        // and the Start path share the same Settings value and
+                        // permission probes (slugtale-g1o.6).
+                        let mut activation = None;
+                        if starts_dictation {
+                            let snapshot = build_activation_snapshot(&app);
+                            if !snapshot.dictation_available() {
+                                report_not_ready(&app, &snapshot.report);
+                                continue;
+                            }
+                            activation = Some(snapshot);
                         }
 
                         if starts_dictation
@@ -759,7 +812,9 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             // without preventing the main-thread shortcut handler
                             // from forwarding the next key transition (slugtale-pil).
                             if let Some(event) = event {
-                                if let Err(error) = handle_dictation_event(&app, event) {
+                                if let Err(error) =
+                                    handle_dictation_event_with(&app, event, activation.take())
+                                {
                                     eprintln!("dictation event failed: {error}");
                                 }
                             }
@@ -881,11 +936,10 @@ impl DictationBarAppearance {
     }
 }
 
-fn show_dictation_bar(app: &tauri::AppHandle, phase: DictationPhase) {
+fn show_dictation_bar(app: &tauri::AppHandle, phase: DictationPhase, settings: &slugtale_lib::Settings) {
     if let Some(window) = app.get_webview_window("dictation-bar") {
-        let settings = load_current_settings(app);
-        let appearance = DictationBarAppearance::from_settings(&settings);
-        let bar_display = settings.bar_display;
+        let appearance = DictationBarAppearance::from_settings(settings);
+        let bar_display = settings.bar_display.clone();
         // Tell the frontend which state to render before showing, so the bar never
         // flashes a stale "recording" pill when it reappears for transcription.
         let _ = window.emit("dictation-phase", phase.as_str());
@@ -1011,20 +1065,39 @@ fn dictation_bar_pointer_over(app: tauri::AppHandle, expanded: bool) -> Result<b
 fn current_settings_readiness(app: &tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
     let settings = load_current_settings(app);
     let platform = CurrentPlatform::new();
-    let local_model_ready = model_manager(app)
-        .map(|manager| manager.ready())
-        .unwrap_or_else(|_| {
-            settings
-                .model
-                .as_ref()
-                .is_some_and(|path| PathBuf::from(path).exists())
-        });
+    let local_model_ready = local_model_ready(app);
     slugtale_lib::settings_readiness_report(
         &settings,
         &platform,
         local_model_ready,
         &current_engine_availability(app, &settings),
     )
+}
+
+/// Whether the Whisper ggml file — or a user-selected custom model — is on disk.
+fn local_model_ready(app: &tauri::AppHandle) -> bool {
+    model_manager(app)
+        .map(|manager| manager.ready())
+        .unwrap_or_else(|_| {
+            load_current_settings(app)
+                .model
+                .as_ref()
+                .is_some_and(|path| PathBuf::from(path).exists())
+        })
+}
+
+/// One Hotkey activation's consistent view of the world (slugtale-g1o.6): one
+/// Settings read, one probe per OS permission, one engine availability pass.
+/// The readiness gate and the Start path share it instead of each re-reading
+/// global state and possibly disagreeing.
+fn build_activation_snapshot(
+    app: &tauri::AppHandle,
+) -> slugtale_lib::DictationActivation {
+    let settings = load_current_settings(app);
+    let platform = CurrentPlatform::new();
+    let local_model_ready = local_model_ready(app);
+    let engines = current_engine_availability(app, &settings);
+    slugtale_lib::DictationActivation::build(settings, &platform, local_model_ready, engines)
 }
 
 /// Engine availability for the readiness report, asked of the same providers the
@@ -1040,13 +1113,9 @@ fn current_engine_availability(
         .availability(settings)
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn hotkey_dictation_is_ready(app: &tauri::AppHandle) -> bool {
-    let report = current_settings_readiness(app);
-    if report.dictation_available {
-        return true;
-    }
-
+/// Tell the user which required items are missing and open Settings, where
+/// they can act on each one.
+fn report_not_ready(app: &tauri::AppHandle, report: &slugtale_lib::SettingsReadinessReport) -> bool {
     let missing = report
         .items
         .iter()
@@ -1069,7 +1138,7 @@ fn hotkey_dictation_is_ready(app: &tauri::AppHandle) -> bool {
         );
     }
     slugtale_lib::show_settings(app.clone());
-    false
+    true
 }
 
 #[tauri::command]
