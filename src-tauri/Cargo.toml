@@ -28,6 +28,12 @@ apple-speech-runtime = []
 [lib]
 name = "slugtale_lib"
 
+# Strip symbols during compilation so Tauri signs and packages an already
+# stripped executable (slugtale-g1o.8). The bead's baseline measured a copy of
+# the 17,030,480-byte executable at 13,663,936 bytes after stripping (-19.77%).
+[profile.release]
+strip = "symbols"
+
 [[example]]
 name = "decode_benchmark"
 required-features = ["local-whisper-runtime"]
