@@ -531,10 +531,10 @@ fn run_dictation_segment(
         .ok()
         .and_then(|guard| *guard);
 
-    let (insertion, rescue) = slugtale_lib::prepare_text_insertion(target_pid)?;
+    let prepared = slugtale_lib::prepare_text_insertion(target_pid)?;
     let runtime = DiagnosticAsrRuntime::new(&runtime, diagnostic_log.clone());
-    let insertion = DiagnosticTextInsertion::new(insertion.as_ref(), diagnostic_log.clone());
-    let rescue = DiagnosticInsertionRescue::new(rescue.as_ref(), diagnostic_log);
+    let insertion = DiagnosticTextInsertion::new(&prepared.insertion, diagnostic_log.clone());
+    let rescue = DiagnosticInsertionRescue::new(prepared.rescue.as_ref(), diagnostic_log);
     slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue, settings.transcript_cleanup)
         .complete(audio, position)
         .map_err(|error| error.to_string())
