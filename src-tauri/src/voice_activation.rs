@@ -32,23 +32,24 @@ pub(super) fn save_settings(
     }
 
     let previous = load_current_settings(app);
-    let mut settings = previous.clone();
-    slugtale_lib::apply_voice_activation_settings(&mut settings, enabled);
-    if enabled
-        && app
-            .state::<slugtale_lib::TranscriptionEngineCatalogue>()
-            .whisper_provider(&settings)
-            .is_none()
-    {
-        return Err("Voice activation needs the local Whisper model.".to_string());
-    }
-
-    sync_worker(app, enabled)?;
-    if let Err(error) = save_current_settings(app, &settings) {
-        let _ = sync_worker(app, previous.voice_activation_enabled);
-        return Err(error);
-    }
-    Ok(settings)
+    slugtale_lib::apply_and_persist(
+        &previous,
+        |settings| slugtale_lib::apply_voice_activation_settings(settings, enabled),
+        // Validation rides the side-effect step: the worker must not start
+        // without an engine that can run the wake checks.
+        |settings| {
+            if enabled
+                && app
+                    .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                    .whisper_provider(settings)
+                    .is_none()
+            {
+                return Err("Voice activation needs the local Whisper model.".to_string());
+            }
+            sync_worker(app, settings.voice_activation_enabled)
+        },
+        |settings| save_current_settings(app, settings),
+    )
 }
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]

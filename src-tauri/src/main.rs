@@ -1276,16 +1276,12 @@ fn save_hotkey_settings(
     activation_mode: slugtale_lib::ActivationMode,
 ) -> Result<slugtale_lib::Settings, String> {
     let previous = load_current_settings(&app);
-    let mut settings = previous.clone();
-    slugtale_lib::apply_hotkey_settings(&mut settings, hotkey, activation_mode);
-
-    update_registered_hotkey(&app, &settings)?;
-    if let Err(error) = save_current_settings(&app, &settings) {
-        let _ = update_registered_hotkey(&app, &previous);
-        return Err(error);
-    }
-
-    Ok(settings)
+    slugtale_lib::apply_and_persist(
+        &previous,
+        |settings| slugtale_lib::apply_hotkey_settings(settings, hotkey, activation_mode),
+        |settings| update_registered_hotkey(&app, settings),
+        |settings| save_current_settings(&app, settings),
+    )
 }
 
 #[tauri::command]
@@ -1384,16 +1380,12 @@ fn save_launch_at_login(
     enabled: bool,
 ) -> Result<slugtale_lib::Settings, String> {
     let previous = load_current_settings(&app);
-    let mut settings = previous.clone();
-    slugtale_lib::apply_launch_at_login_settings(&mut settings, enabled);
-
-    set_launch_at_login_state(&app, enabled)?;
-    if let Err(error) = save_current_settings(&app, &settings) {
-        let _ = set_launch_at_login_state(&app, previous.launch_at_login);
-        return Err(error);
-    }
-
-    Ok(settings)
+    slugtale_lib::apply_and_persist(
+        &previous,
+        |settings| slugtale_lib::apply_launch_at_login_settings(settings, enabled),
+        |settings| set_launch_at_login_state(&app, settings.launch_at_login),
+        |settings| save_current_settings(&app, settings),
+    )
 }
 
 /// What Settings renders for one app-update check (slugtale-9pr). `version` is

@@ -172,6 +172,30 @@ pub fn apply_usage_settings(settings: &mut Settings, store_usage: bool) {
     settings.store_usage = store_usage;
 }
 
+/// The one transactional settings save: apply the change to a copy of
+/// `current`, perform the external side effect against the changed value,
+/// persist — and roll the side effect back onto `current` when persisting
+/// fails, so the saved file and the outside world can never disagree.
+///
+/// Every settings save with an external side effect (hotkey registration,
+/// launch at login, the Voice Activation worker) goes through here; hand
+/// copies of this dance had already drifted.
+pub fn apply_and_persist(
+    current: &Settings,
+    apply: impl FnOnce(&mut Settings),
+    side_effect: impl Fn(&Settings) -> Result<(), String>,
+    persist: impl FnOnce(&Settings) -> Result<(), String>,
+) -> Result<Settings, String> {
+    let mut settings = current.clone();
+    apply(&mut settings);
+    side_effect(&settings)?;
+    if let Err(error) = persist(&settings) {
+        let _ = side_effect(current);
+        return Err(error);
+    }
+    Ok(settings)
+}
+
 /// Update which Transcription Engine leads and whether a second local engine
 /// may be asked for another opinion (slugtale-vjs.3, slugtale-vjs.4).
 ///
@@ -284,6 +308,52 @@ pub fn load_settings(path: &std::path::Path) -> Settings {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
+    #[test]
+    fn a_failed_persist_rolls_the_side_effect_back_onto_current() {
+        let current = Settings::default();
+        let effects = RefCell::new(Vec::new());
+
+        let result = apply_and_persist(
+            &current,
+            |settings| settings.store_usage = true,
+            |settings| {
+                effects
+                    .borrow_mut()
+                    .push(format!("effect:{}", settings.store_usage));
+                Ok(())
+            },
+            |_| Err("disk full".to_string()),
+        );
+
+        assert_eq!(result.unwrap_err(), "disk full");
+        // Applied against the changed value, then rolled back onto current.
+        assert_eq!(
+            *effects.borrow(),
+            ["effect:true".to_string(), "effect:false".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_successful_persist_keeps_the_applied_value() {
+        let current = Settings::default();
+
+        let saved = RefCell::new(None);
+        let result = apply_and_persist(
+            &current,
+            |settings| settings.voice_activation_enabled = true,
+            |_| Ok(()),
+            |settings| {
+                *saved.borrow_mut() = Some(settings.voice_activation_enabled);
+                Ok(())
+            },
+        );
+
+        assert!(result.unwrap().voice_activation_enabled);
+        assert_eq!(saved.borrow().map(|enabled| enabled), Some(true));
+    }
+
     use super::*;
 
     #[test]
