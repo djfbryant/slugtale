@@ -11,7 +11,7 @@
     "macos:install": "node scripts/install-macos-app.js",
     "macos:reauthorize": "node scripts/reauthorize-macos-app.js",
     "macos:reset-permissions": "node scripts/reset-dev-permissions.js",
-    "test": "cd tests && node --test && cd .. && npm run test:rust",
+    "test": "node scripts/run-node-tests.js && npm run test:rust",
     "test:rust": "node scripts/run-cargo.js test --lib",
     "test:voice-activation": "node scripts/run-cargo.js test --bin slugtale --features local-whisper-runtime,voice-activation",
     "test:whisper-build": "node scripts/run-cargo.js build --lib --features local-whisper-runtime",

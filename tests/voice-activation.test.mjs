@@ -7,6 +7,10 @@ const workerSource = readFileSync(
   new URL("../src-tauri/src/voice_activation.rs", import.meta.url),
   "utf8",
 );
+const listenLoopSource = readFileSync(
+  new URL("../src-tauri/src/listen_loop.rs", import.meta.url),
+  "utf8",
+);
 
 test("unsupported builds hide voice activation instead of claiming to listen", () => {
   assert.match(settingsHtml, /invoke\("voice_activation_supported"\)/);
@@ -21,18 +25,20 @@ test("voice activation tells the user to wait for the dictation bar", () => {
 
 test("voice activation reports a blocked or silent microphone", () => {
   assert.match(workerSource, /PlatformReadiness::microphone_granted/);
-  assert.match(workerSource, /NewAudioState::DigitalSilence/);
+  assert.match(listenLoopSource, /NewAudioState::DigitalSilence/);
   assert.match(workerSource, /report_voice_activation_microphone_problem/);
 });
 
-test("the listener rebuilds capture after dictation or digital silence", () => {
-  assert.match(workerSource, /VoiceActivationCapture::new/);
-  assert.match(workerSource, /target_is_dictating/);
-  assert.match(workerSource, /whisper_ready/);
-  assert.match(workerSource, /wait_or_stop/);
-  const rebuilds = workerSource.match(/capture\.rebuild\(CpalAudioRecorder::new\(\)\)/g) ?? [];
+test("the listen loop lives in lib and the adapter answers its ports", () => {
+  // The decision loop is platform-independent and unit-tested there; the
+  // macOS tier only implements WakeListener against the app handle.
+  assert.match(listenLoopSource, /fn run_listen_loop/);
+  assert.match(listenLoopSource, /trait WakeListener/);
+  assert.match(workerSource, /impl slugtale_lib::WakeListener for AppWakeListener/);
+  assert.match(workerSource, /run_listen_loop\(&mut AppWakeListener::new/);
+  const rebuilds = workerSource.match(/rebuild\(slugtale_lib::CpalAudioRecorder::new\(\)\)/g) ?? [];
   assert.ok(
-    rebuilds.length >= 4,
-    "dictation, start failure, capture failure, and digital silence must each rebuild",
+    rebuilds.length >= 1,
+    "the adapter must expose capture rebuilds to the loop",
   );
 });
