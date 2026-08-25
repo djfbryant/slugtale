@@ -380,7 +380,8 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_and_rescue_suppress_pause_flushes_but_not_the_last_segment() {        let control = DictationSegmentControl::default();
+    fn cancellation_and_rescue_suppress_pause_flushes_but_not_the_last_segment() {
+        let control = DictationSegmentControl::default();
         let dictation = control.begin();
         control.suspend_pause_flushes();
         let mut worker = DictationSegmentWorker::default();

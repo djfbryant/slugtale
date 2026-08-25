@@ -103,6 +103,13 @@ pub use dictation_workflow::*;
 mod dictation_segments;
 pub use dictation_segments::*;
 
+/// The Dictation Runtime (CONTEXT.md, ADR-0026): the module that coordinates
+/// ordered Dictation Segment execution — the segment channel, the single
+/// worker that preserves spoken order, and the Counted Segment handoff — with
+/// everything OS-touching behind the `DictationRuntimeHost` adapter.
+mod dictation_runtime;
+pub use dictation_runtime::*;
+
 /// Transcript Cleanup (slugtale-m4h): the deterministic, entirely local passes
 /// that run between transcription and insertion — whitespace normalization in
 /// every mode, plus conservative filler-word removal when enabled.

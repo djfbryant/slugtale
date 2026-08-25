@@ -55,46 +55,24 @@ impl Default for AudioCaptureState {
     }
 }
 
-/// Tauri transport for the ordered Dictation Segment module. The module owns
-/// the execution policy; this state only owns the channel that crosses into
-/// the worker thread.
+/// Tauri transport for the Dictation Runtime. The runtime owns the segment
+/// channel and worker thread; setup starts it once the app handle exists.
 #[derive(Default)]
-struct DictationSegments {
-    jobs: Mutex<Option<std::sync::mpsc::Sender<slugtale_lib::DictationSegmentJob>>>,
-    control: slugtale_lib::DictationSegmentControl,
-}
+struct DictationRuntimeState(Mutex<Option<std::sync::Arc<slugtale_lib::DictationRuntime>>>);
 
-impl DictationSegments {
-    fn current(&self) -> u64 {
-        self.control.current()
-    }
-
-    /// Open a new dictation and return its number.
-    fn begin(&self) -> u64 {
-        self.control.begin()
-    }
-
-    /// Abandon the active dictation's un-inserted remainder.
-    fn abandon(&self) {
-        self.control.abandon();
-    }
-
-    fn pause_flushes_suspended(&self) -> bool {
-        self.control.pause_flushes_suspended()
-    }
-
-    fn control(&self) -> &slugtale_lib::DictationSegmentControl {
-        &self.control
-    }
-
-    /// Queue a job, reporting whether the worker accepted it.
-    fn send(&self, job: slugtale_lib::DictationSegmentJob) -> bool {
-        self.jobs
+impl DictationRuntimeState {
+    fn get(&self) -> std::sync::Arc<slugtale_lib::DictationRuntime> {
+        self.0
             .lock()
             .ok()
-            .and_then(|guard| guard.as_ref().map(|sender| sender.send(job).is_ok()))
-            .unwrap_or(false)
+            .and_then(|guard| guard.clone())
+            .expect("dictation runtime started")
     }
+}
+
+/// The app's one Dictation Runtime.
+fn dictation_runtime(app: &tauri::AppHandle) -> std::sync::Arc<slugtale_lib::DictationRuntime> {
+    app.state::<DictationRuntimeState>().get()
 }
 
 /// One Counted Segment on its way to the Usage File (ADR-0025).
@@ -343,7 +321,7 @@ fn handle_dictation_event_with(
             capture_focus_target(app);
             // Open the dictation before capture starts: the level callback
             // installed below stamps every Pause Flush with this number.
-            app.state::<DictationSegments>().begin();
+            dictation_runtime(app).begin();
             // If the microphone cannot start, do not show a recording state.
             handle_audio_capture_event(app, event)?;
             let settings = match activation.take() {
@@ -366,7 +344,7 @@ fn handle_dictation_event_with(
         // after the user asks Slugtale to stop. Text inserted by an earlier
         // Segment Pause is not undone (ADR-0014). It reads no Settings at all.
         slugtale_lib::DictationEvent::Cancel => {
-            app.state::<DictationSegments>().abandon();
+            dictation_runtime(app).abandon();
             apply_recording_feedback(app, event, None)?;
             handle_audio_capture_event(app, event)?;
         }
@@ -490,11 +468,7 @@ fn handle_audio_capture_event_with_settings(
                 DictationPhase::Transcribing,
                 bar_settings.unwrap_or(&load_current_settings(app)),
             );
-            let segments = app.state::<DictationSegments>();
-            let queued = segments.send(slugtale_lib::DictationSegmentJob::Last {
-                dictation: segments.current(),
-                audio,
-            });
+            let queued = dictation_runtime(app).send_last(audio);
             if !queued {
                 eprintln!("dictation segment worker is unavailable; dropping final segment");
                 hide_dictation_bar(app);
@@ -518,55 +492,13 @@ fn handle_audio_capture_event_with_settings(
 }
 
 fn dictation_audio_level_callback(app: tauri::AppHandle) -> slugtale_lib::AudioLevelCallback {
-    // One detector per dictation. The callback is installed on Start, so every
-    // dictation begins with a detector that has heard nothing and therefore
-    // cannot flush before the user has said anything.
-    let detector = Mutex::new(slugtale_lib::SegmentPauseDetector::new());
+    // The Segment Pause detector lives inside the Dictation Runtime, which
+    // re-arms it on every begin(), so each dictation starts unable to flush.
+    let runtime = dictation_runtime(&app);
     Arc::new(move |level| {
         emit_dictation_audio_level(&app, level);
-        request_pause_flush_if_due(&app, &detector, level);
+        runtime.on_voice_level(level);
     })
-}
-
-/// Feed the voice level to the Segment Pause detector and queue a Pause Flush
-/// when one has elapsed.
-///
-/// This runs on the recorder's level-emitter thread, so it must never block: it
-/// takes only its own detector lock plus a brief capture-state lock to read the
-/// voiced-sample watermark, and hands the queue a request rather than touching
-/// the audio session.
-fn request_pause_flush_if_due(
-    app: &tauri::AppHandle,
-    detector: &Mutex<slugtale_lib::SegmentPauseDetector>,
-    level: f32,
-) {
-    let due = detector
-        .lock()
-        .map(|mut detector| detector.on_level(level, std::time::Instant::now()))
-        .unwrap_or(false);
-    if !due {
-        return;
-    }
-
-    let segments = app.state::<DictationSegments>();
-    if segments.pause_flushes_suspended() {
-        return;
-    }
-
-    // Cut at the last voiced sample the ring knows about, not at whatever has
-    // arrived by the time the worker gets here — queue delay must not turn
-    // into extra tail audio in the segment (slugtale-g1o.4).
-    let cut = app
-        .state::<AudioCaptureState>()
-        .0
-        .lock()
-        .map(|guard| slugtale_lib::AudioRecorder::voice_watermark(guard.recorder()))
-        .unwrap_or(0);
-
-    segments.send(slugtale_lib::DictationSegmentJob::PauseFlush {
-        dictation: segments.current(),
-        cut,
-    });
 }
 
 fn clear_dictation_audio_level_callback(app: &tauri::AppHandle) {
@@ -658,87 +590,40 @@ fn take_dictation_segment(app: &tauri::AppHandle, cut: u64) -> Option<slugtale_l
     }
 }
 
-struct AppSegmentExecution<'a> {
-    app: &'a tauri::AppHandle,
+/// The host half of the Dictation Runtime's adapter: microphone cuts, the
+/// transcription-and-insertion workflow, the Usage handoff, and the bar hide
+/// that follows the final job. Everything OS-touching lives here; the runtime
+/// owns ordering, rescue suspension, and panic containment.
+struct AppHost {
+    app: tauri::AppHandle,
 }
 
-impl slugtale_lib::DictationSegmentExecution for AppSegmentExecution<'_> {
-    type Error = String;
-
+impl slugtale_lib::DictationRuntimeHost for AppHost {
     fn take_pause_segment(&mut self, cut: u64) -> Option<slugtale_lib::CapturedAudio> {
-        take_dictation_segment(self.app, cut)
+        take_dictation_segment(&self.app, cut)
     }
 
     fn complete(
         &mut self,
         audio: slugtale_lib::CapturedAudio,
         position: slugtale_lib::DictationSegmentPosition,
-    ) -> Result<slugtale_lib::DictationSegmentOutcome, Self::Error> {
-        run_dictation_segment(self.app, audio, position)
+    ) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
+        run_dictation_segment(&self.app, audio, position)
     }
 
-    fn record(&mut self, segment: slugtale_lib::CountedSegment) {
+    fn record_counted_segment(&mut self, segment: slugtale_lib::CountedSegment) {
         self.app.state::<UsageRecorder>().record(UsageUpdate {
             date: slugtale_lib::today_local(),
             segment,
         });
     }
-}
 
-/// Start the single worker that transcribes and inserts Dictation Segments.
-///
-/// Segments are decoded one at a time on purpose. Whisper would happily be
-/// asked for two at once, but then a short segment could overtake a long one and
-/// the user's words would land out of order — so the queue is the ordering
-/// guarantee, and the cost is that a slow segment delays the next.
-fn start_dictation_segment_worker(app: &tauri::AppHandle) -> Result<(), String> {
-    let (sender, receiver) = std::sync::mpsc::channel::<slugtale_lib::DictationSegmentJob>();
-    {
-        let segments = app.state::<DictationSegments>();
-        let mut jobs = segments
-            .jobs
-            .lock()
-            .map_err(|_| "dictation segment queue mutex poisoned".to_string())?;
-        *jobs = Some(sender);
+    fn last_job_settled(&mut self) {
+        // The worker calls this after the final job settles whatever the
+        // outcome, so the bar stays up until every earlier Segment Pause has
+        // landed too, not just this last one (slugtale-0t4).
+        hide_dictation_bar(&self.app);
     }
-
-    let app = app.clone();
-    std::thread::Builder::new()
-        .name("slugtale-dictation-segments".to_string())
-        .spawn(move || {
-            let mut worker = slugtale_lib::DictationSegmentWorker::default();
-
-            while let Ok(job) = receiver.recv() {
-                let last = job.is_last();
-                let segments = app.state::<DictationSegments>();
-                let mut execution = AppSegmentExecution { app: &app };
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    worker.process(job, segments.control(), &mut execution)
-                }));
-                match result {
-                    Ok(Ok(slugtale_lib::DictationSegmentJobResult::Completed {
-                        inserted,
-                        text_chars,
-                        ..
-                    })) => {
-                        if inserted {
-                            eprintln!("inserted dictation segment: {text_chars} chars");
-                        } else {
-                            eprintln!("dictation segment heard nothing; inserted nothing");
-                        }
-                    }
-                    Ok(Ok(slugtale_lib::DictationSegmentJobResult::Skipped { .. })) => {}
-                    Ok(Err(error)) => eprintln!("dictation workflow failed: {error}"),
-                    Err(_) => eprintln!("dictation segment panicked; the queue stays open"),
-                }
-                if last {
-                    hide_dictation_bar(&app);
-                }
-            }
-        })
-        .map_err(|error| error.to_string())?;
-
-    Ok(())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1033,15 +918,7 @@ fn show_dictation_bar(
     if let Some(window) = app.get_webview_window("dictation-bar") {
         let appearance = DictationBarAppearance::from_settings(settings);
         let bar_display = settings.bar_display.clone();
-        // Tell the frontend which state to render before showing, so the bar never
-        // flashes a stale "recording" pill when it reappears for transcription.
-        let _ = window.emit("dictation-phase", phase.as_str());
-        // Same reason for the appearance: a bar that appears in the old accent or
-        // aligned to the old edge and then jumps is worse than one that never did.
-        let _ = window.emit("dictation-appearance", appearance.clone());
-        // The bar polls for the pointer only while it is on screen; the webview
-        // stays alive between dictations and has no other way to know.
-        let _ = window.emit("dictation-visibility", true);
+        push_dictation_bar_render_state(&window, phase, &appearance);
         // Placing the bar reads monitor geometry, and those reads block until the
         // main thread answers them. The global-key worker calls this while holding
         // the hotkey registration lock, and the main thread takes that same lock on
@@ -1060,6 +937,22 @@ fn show_dictation_bar(
             }
         });
     }
+}
+
+/// The bar's render-state protocol, written once (slugtale-s2g): every fact the
+/// frontend renders is pushed before the window can appear, so the bar never
+/// flashes a stale "recording" pill when it reappears for transcription, nor an
+/// old accent or edge alignment. Phase first, appearance second, visibility last.
+fn push_dictation_bar_render_state(
+    window: &tauri::WebviewWindow,
+    phase: DictationPhase,
+    appearance: &DictationBarAppearance,
+) {
+    let _ = window.emit("dictation-phase", phase.as_str());
+    let _ = window.emit("dictation-appearance", appearance.clone());
+    // The bar polls for the pointer only while it is on screen; the webview
+    // stays alive between dictations and has no other way to know.
+    let _ = window.emit("dictation-visibility", true);
 }
 
 fn hide_dictation_bar(app: &tauri::AppHandle) {
@@ -2371,7 +2264,7 @@ fn main() {
         .manage(RecordingFeedbackState::default())
         .manage(FocusTargetState::default())
         .manage(AudioCaptureState::default())
-        .manage(DictationSegments::default())
+        .manage(DictationRuntimeState::default())
         .manage(HotkeyRegistrationState::default())
         .manage(UsageRecorder::default())
         .manage(TypingChallengeOpen::default())
@@ -2391,7 +2284,32 @@ fn main() {
             setup_configured_hotkey(app)?;
             // The Dictation Segment worker outlives every dictation: it is what
             // keeps segments landing in the order they were spoken.
-            start_dictation_segment_worker(app.handle()).map_err(std::io::Error::other)?;
+            // The runtime probes the capture ring's voiced-sample watermark at
+            // the moment a Pause Flush is due — the microphone half of the
+            // watermark cut (ADR-0026).
+            let watermark_app = app.handle().clone();
+            let runtime = slugtale_lib::DictationRuntime::start(
+                AppHost {
+                    app: app.handle().clone(),
+                },
+                move || {
+                    watermark_app
+                        .state::<AudioCaptureState>()
+                        .0
+                        .lock()
+                        .map(|guard| slugtale_lib::AudioRecorder::voice_watermark(guard.recorder()))
+                        .unwrap_or(0)
+                },
+            )
+            .map_err(std::io::Error::other)?;
+            {
+                let state = app.state::<DictationRuntimeState>();
+                let mut guard = state
+                    .0
+                    .lock()
+                    .map_err(|_| std::io::Error::other("dictation runtime state mutex poisoned"))?;
+                *guard = Some(std::sync::Arc::new(runtime));
+            }
             // Usage writes happen off the Dictation Workflow path (ADR-0025), so
             // the queue that carries them has to exist before the first segment.
             start_usage_worker(app.handle()).map_err(std::io::Error::other)?;
