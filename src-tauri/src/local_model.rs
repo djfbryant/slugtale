@@ -81,14 +81,6 @@ impl LocalModelManager {
         self.status().present
     }
 
-    pub fn active_model_path(&self, settings: &crate::Settings) -> std::path::PathBuf {
-        settings
-            .model
-            .as_ref()
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| default_model_path(&self.model_dir))
-    }
-
     pub fn download_default(
         &self,
         downloader: &dyn ModelDownloader,
@@ -453,6 +445,79 @@ mod tests {
         std::fs::remove_dir_all(&model_dir).ok();
     }
     #[test]
+    fn model_download_installs_only_when_the_pinned_checksum_matches() {
+        const TRUSTED_SHA256: &str =
+            "6d6065cea517391b0166d6a74be33c924cc416b959fa1eee6a146094195b639d";
+        let trusted_dir = unique_test_dir("trusted-model");
+        let corrupt_dir = unique_test_dir("corrupt-model");
+        let trusted = FakeModelDownloader::new(b"trusted model");
+        let corrupt = FakeModelDownloader::new(b"corrupt model");
+        let mut progress = Vec::new();
+
+        let installed = ensure_default_model_with_sha256(
+            &trusted_dir,
+            &trusted,
+            TRUSTED_SHA256,
+            &mut |update| progress.push(update),
+        )
+        .unwrap();
+        assert!(installed.present);
+        assert_eq!(installed.bytes, Some(13));
+        assert_eq!(
+            trusted.urls.borrow().as_slice(),
+            &[DEFAULT_MODEL_DOWNLOAD_URL]
+        );
+        assert_eq!(
+            progress.first().copied(),
+            Some(DownloadProgress {
+                downloaded: 0,
+                total: Some(13),
+            })
+        );
+        assert_eq!(
+            progress.last().copied(),
+            Some(DownloadProgress {
+                downloaded: 13,
+                total: Some(13),
+            })
+        );
+
+        let error =
+            ensure_default_model_with_sha256(&corrupt_dir, &corrupt, TRUSTED_SHA256, &mut |_| {})
+                .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "model download error: downloaded model checksum mismatch: expected 6d6065cea517391b0166d6a74be33c924cc416b959fa1eee6a146094195b639d, got 1d606b22e45655bf1b0908053d32f069e2cb36f77d920d900499032f61c07f86"
+        );
+        assert!(!default_model_path(&corrupt_dir).exists());
+        assert!(!corrupt_dir.join("ggml-base.en.bin.download").exists());
+
+        std::fs::remove_dir_all(trusted_dir).ok();
+        std::fs::remove_dir_all(corrupt_dir).ok();
+    }
+    #[test]
+    fn model_manager_persists_only_a_verified_model_path() {
+        const TRUSTED_SHA256: &str =
+            "6d6065cea517391b0166d6a74be33c924cc416b959fa1eee6a146094195b639d";
+        let model_dir = unique_test_dir("manager-model");
+        let settings_path = model_dir.join("settings.json");
+        let manager = LocalModelManager::new(model_dir.clone(), settings_path.clone());
+        let downloader = FakeModelDownloader::new(b"trusted model");
+
+        let status = manager
+            .download_default_with_sha256(&downloader, TRUSTED_SHA256, &mut |_| {})
+            .unwrap();
+        let settings = crate::load_settings(&settings_path);
+
+        assert!(status.present);
+        assert_eq!(
+            settings.model,
+            Some(default_model_path(&model_dir).to_string_lossy().to_string())
+        );
+
+        std::fs::remove_dir_all(model_dir).ok();
+    }
+    #[test]
     fn copy_with_progress_reports_zero_then_each_chunk() {
         let data = vec![7u8; 200_000];
         let mut reader = std::io::Cursor::new(data.clone());
@@ -613,6 +678,7 @@ mod tests {
     struct FakeModelDownloader {
         bytes: &'static [u8],
         total: Option<u64>,
+        urls: std::cell::RefCell<Vec<String>>,
     }
 
     impl FakeModelDownloader {
@@ -620,6 +686,7 @@ mod tests {
             Self {
                 bytes,
                 total: Some(bytes.len() as u64),
+                urls: std::cell::RefCell::new(Vec::new()),
             }
         }
 
@@ -632,10 +699,11 @@ mod tests {
     impl ModelDownloader for FakeModelDownloader {
         fn download(
             &self,
-            _url: &str,
+            url: &str,
             destination: &std::path::Path,
             on_progress: &mut dyn FnMut(DownloadProgress),
         ) -> Result<(), ModelError> {
+            self.urls.borrow_mut().push(url.to_string());
             let total = self.total;
             on_progress(DownloadProgress {
                 downloaded: 0,

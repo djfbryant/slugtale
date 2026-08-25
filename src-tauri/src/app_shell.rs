@@ -20,18 +20,6 @@ pub fn build_tray_menu_items() -> Vec<(&'static str, &'static str)> {
     vec![("settings", "Settings\u{2026}"), ("quit", "Quit Slugtale")]
 }
 
-pub struct AppState {
-    pub settings_visible: bool,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            settings_visible: false,
-        }
-    }
-}
-
 /// Whether a window should hide (stay alive) on a close request rather than be
 /// destroyed. Slugtale is a tray resident app (ADR-0008): the settings window is
 /// reopened from the tray, so closing it must hide it — destroying it both kills
@@ -182,12 +170,6 @@ mod tests {
         assert!(recovery_script.contains("com.slugtale.desktop"));
         assert!(recovery_script.contains("--all-accessibility"));
         assert!(recovery_script.contains("npm run dev"));
-    }
-
-    #[test]
-    fn app_state_defaults_to_settings_hidden() {
-        let state = AppState::default();
-        assert!(!state.settings_visible);
     }
 
     #[test]

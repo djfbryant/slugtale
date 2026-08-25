@@ -194,8 +194,7 @@ pub struct ParakeetAssetStatus {
 /// This checks presence and exact size, not digests. Re-hashing 631 MiB is a
 /// multi-second read, and it is the *install* that decides whether bytes are
 /// trusted (see [`install_parakeet_assets`]); this function only has to notice
-/// that a file went missing or was truncated afterwards. Callers who want the
-/// full guarantee back call [`verify_parakeet_assets`].
+/// that a file went missing or was truncated afterwards.
 pub fn parakeet_asset_status(asset_dir: &Path) -> ParakeetAssetStatus {
     parakeet_asset_status_for_manifest(asset_dir, &PARAKEET_ASSETS)
 }
@@ -230,16 +229,7 @@ fn asset_file_is_installed(asset_dir: &Path, asset: &ParakeetAsset) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() == asset.bytes)
 }
 
-/// Re-hash every installed file against its pinned digest.
-///
-/// Deliberately not on the dictation path — this reads the whole 631 MiB. It
-/// exists for the explicit "verify installation" action and for the integrity
-/// tests, so a user who suspects a corrupted download can get a definite answer
-/// without deleting and re-fetching first.
-pub fn verify_parakeet_assets(asset_dir: &Path) -> Result<(), ModelError> {
-    verify_manifest(asset_dir, &PARAKEET_ASSETS)
-}
-
+#[cfg(test)]
 fn verify_manifest(asset_dir: &Path, manifest: &[ParakeetAsset]) -> Result<(), ModelError> {
     for asset in manifest {
         let path = asset_dir.join(asset.filename);

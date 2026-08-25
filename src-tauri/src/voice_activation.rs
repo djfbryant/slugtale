@@ -150,6 +150,14 @@ fn wait_or_stop(
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+fn stop_requested(receiver: &std::sync::mpsc::Receiver<VoiceActivationCommand>) -> bool {
+    matches!(
+        receiver.try_recv(),
+        Ok(VoiceActivationCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected)
+    )
+}
+
 /// The macOS half of the Voice Activation adapter: it owns the app handle and
 /// answers the listen loop's questions. Every decision lives in
 /// `slugtale_lib::run_listen_loop`; nothing here but app reads and effects.
@@ -186,10 +194,7 @@ impl slugtale_lib::WakeListener for AppWakeListener {
     }
 
     fn stop_requested(&self) -> bool {
-        matches!(
-            self.receiver.try_recv(),
-            Ok(VoiceActivationCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected)
-        )
+        self::stop_requested(&self.receiver)
     }
 
     fn wait(&mut self, timeout: std::time::Duration) -> bool {
@@ -213,7 +218,7 @@ impl slugtale_lib::WakeListener for AppWakeListener {
     }
 
     fn start_capture(&mut self) -> Result<(), String> {
-        self.capture.start()
+        self.capture.start().map_err(|error| error.to_string())
     }
 
     fn rebuild_capture(&mut self) {

@@ -415,3 +415,26 @@ test("leaving the orb hands clicks back at once, not on the next poll", async ()
   assert.equal(bar.invocations.length, before + 1);
   assert.equal(bar.invocations.at(-1).command, "dictation_bar_pointer_over");
 });
+
+function dictationBarMarkup() {
+  return readFileSync(new URL("../src/dictation-bar.html", import.meta.url), "utf8");
+}
+
+test("the voice waveform is painted with CSS so the Tauri webview can see it", () => {
+  // WKWebView often leaves SVG `fill="url(#id)"` and `stop-color="var(--accent)"`
+  // presentation attributes unpainted on a Tauri page. The halo still reacts
+  // because it is an HTML background. The envelope has to take its colour from
+  // a stylesheet rule on the path itself, or speech opens an empty pill.
+  const html = dictationBarMarkup();
+  const [, style] = html.match(/<style>([\s\S]*?)<\/style>/);
+  assert.match(
+    style,
+    /#envelope\s*\{[^}]*fill:\s*var\(--accent\)/,
+    "envelope colour must come from CSS fill, not an SVG paint server",
+  );
+  assert.doesNotMatch(
+    html,
+    /<path id="envelope"[^>]*fill="/,
+    "do not pin the envelope fill to a url(#id) presentation attribute",
+  );
+});

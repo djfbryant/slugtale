@@ -134,6 +134,10 @@
       min-width: 0;
       height: 26px;
       overflow: hidden;
+      /* Fade the older samples. A CSS mask, not an SVG gradient: WKWebView
+         often leaves fill="url(#id)" unpainted on a Tauri page. */
+      -webkit-mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.25), #000 70%);
+      mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.25), #000 70%);
     }
 
     .wave svg {
@@ -143,14 +147,21 @@
       overflow: hidden;
     }
 
+    /* Colour the envelope from CSS, not from an SVG paint server. WKWebView
+       on a Tauri page often leaves fill="url(#id)" and stop-color="var(--accent)"
+       unpainted, so speech would open an empty pill while the HTML halo still
+       flexed. */
+    #envelope {
+      fill: var(--accent);
+    }
+
     body[data-reason="voice"] .wave { display: block; }
     body[data-reason="voice"] .elapsed,
     body[data-reason="voice"] .controls { display: none; }
 
     /* The status stays in the accessibility tree in every state, so the wave
        replacing the words costs a screen reader nothing. */
-    body[data-reason="voice"] .label,
-    .visually-hidden {
+    body[data-reason="voice"] .label {
       position: absolute;
       width: 1px;
       height: 1px;
@@ -267,14 +278,7 @@
     <span class="tail">
       <span class="wave" aria-hidden="true">
         <svg viewBox="0 0 160 26" preserveAspectRatio="none">
-          <defs>
-            <linearGradient id="voice-envelope" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.25"/>
-              <stop offset="70%" stop-color="var(--accent)" stop-opacity="0.85"/>
-              <stop offset="100%" stop-color="var(--accent)" stop-opacity="1"/>
-            </linearGradient>
-          </defs>
-          <path id="envelope" fill="url(#voice-envelope)"/>
+          <path id="envelope"/>
         </svg>
       </span>
       <span id="label" class="label" aria-live="polite">Recording</span>

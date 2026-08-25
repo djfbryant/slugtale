@@ -63,11 +63,6 @@ enum GlobalKeyCommand {
     SyncEscape(slugtale_lib::EscapeCommand),
 }
 
-#[tauri::command]
-fn show_settings(app: tauri::AppHandle) {
-    slugtale_lib::show_settings(app);
-}
-
 /// Drive the recording surface (ADR-0014) from a dictation lifecycle event:
 /// play the start/stop sound and show or hide the Dictation Bar. The bar's Stop
 /// and Cancel controls route here; the global hotkey lifecycle routes the
@@ -1742,36 +1737,6 @@ fn reveal_model_location(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-async fn transcribe_captured_audio(
-    app: tauri::AppHandle,
-    sample_rate_hz: u32,
-    samples: Vec<f32>,
-) -> Result<slugtale_lib::FinalTranscription, String> {
-    let settings = load_current_settings(&app);
-    let diagnostic_log = current_diagnostic_log(&app, &settings);
-    // Routed like the hotkey path through the same assembled stack, so a
-    // dictation driven from the frontend gets the same engine stack and the
-    // same second opinion as one driven from the hotkey. Two transcription
-    // paths that disagreed would be a bug the user could only find by noticing
-    // that one of them was worse.
-    let stack = app
-        .state::<slugtale_lib::TranscriptionEngineCatalogue>()
-        .dictation_stack(&settings, diagnostic_log.clone())
-        .map_err(|error| error.to_string())?;
-    let audio = slugtale_lib::CapturedAudio {
-        sample_rate_hz,
-        samples,
-    };
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let runtime = stack.asr_runtime();
-        slugtale_lib::transcribe_captured_audio(&runtime, audio).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
 #[derive(Default)]
 struct CurrentPlatform;
 
@@ -2044,7 +2009,6 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            show_settings,
             get_settings_readiness,
             get_settings,
             dictation_bar_displays,
@@ -2068,7 +2032,6 @@ fn main() {
             set_transcription_engines,
             install_engine_assets,
             remove_engine_assets,
-            transcribe_captured_audio,
             dictation_event,
             get_usage_summary,
             set_usage_storing,
