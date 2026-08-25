@@ -88,6 +88,10 @@ _Avoid_: Autostart, startup item
 The state where Slugtale can actually start dictation. Dictation readiness requires microphone permission, text insertion permission, a configured hotkey, a downloaded local model, and a transcription engine that can actually run — a downloaded model is not enough on its own, because a build compiled without that engine's runtime has the weights on disk and nothing able to decode them.
 _Avoid_: Setup complete, onboarding complete
 
+**Dictation Runtime**:
+The module that coordinates the Dictation Workflow's execution: it owns the segment channel, the worker that keeps Final Transcriptions inserting in spoken order, the Pause Flush trigger, and Usage counting for Counted Segments. It reaches the rest of the app through one small adapter (settings, Dictation Bar control and feedback, focus target, usage file). Microphone ownership, window management, and file writes stay outside it.
+_Avoid_: Dictation service, dictation manager, pipeline runner
+
 **Dictation Bar**:
 A small on-screen surface shown while dictation is active. It communicates that Slugtale is recording and gives the user explicit stop and cancel controls. It rests as the **Orb** and grows into the **Pill** to show those controls when the user reaches for them (slugtale-z7a).
 _Avoid_: Overlay, live preview
