@@ -23,29 +23,6 @@ const DICTATION_ESCAPE_KEY: &str = "Escape";
 /// carrying a live webview for the life of the app is a cost with no benefit.
 const TYPING_CHALLENGE_WINDOW: &str = "typing-challenge";
 
-#[derive(Default)]
-struct RecordingFeedbackState(Mutex<slugtale_lib::RecordingFeedback>);
-
-/// The process id of the app the user was dictating into, captured when recording
-/// starts so insertion can re-target it after transcription (slugtale-squ).
-#[derive(Default)]
-struct FocusTargetState(Mutex<Option<i32>>);
-
-struct AudioCaptureState(Mutex<slugtale_lib::AudioCaptureSession<slugtale_lib::CpalAudioRecorder>>);
-
-impl Default for AudioCaptureState {
-    fn default() -> Self {
-        Self(Mutex::new(slugtale_lib::AudioCaptureSession::new(
-            slugtale_lib::CpalAudioRecorder::new(),
-        )))
-    }
-}
-
-/// Tauri transport for the Dictation Runtime. The runtime owns the segment
-/// channel and worker thread; setup starts it once the app handle exists.
-#[derive(Default)]
-struct DictationRuntimeState(Mutex<Option<std::sync::Arc<slugtale_lib::DictationRuntime>>>);
-
 /// Whether the Typing Challenge window is on screen.
 ///
 /// A flag rather than asking the window itself, because the only reader is the
@@ -300,20 +277,10 @@ impl DictationSurface for TauriSurface {
     }
 }
 
-/// One borrowed view over the lifecycle state this process manages, wired to
-/// the Tauri surface. Cheap to build per call site.
-fn dictation_host(app: &tauri::AppHandle) -> DictationHost<'_> {
-    let feedback = &app.state::<RecordingFeedbackState>().inner().0;
-    let focus_target = &app.state::<FocusTargetState>().inner().0;
-    let capture = &app.state::<AudioCaptureState>().inner().0;
-    let runtime_state = &app.state::<DictationRuntimeState>().inner().0;
-    DictationHost {
-        surface: Arc::new(TauriSurface { app: app.clone() }),
-        feedback,
-        focus_target,
-        capture,
-        runtime_state,
-    }
+/// The app's one dictation lifecycle host, managed by setup before any
+/// activation input can arrive.
+fn dictation_host(app: &tauri::AppHandle) -> Arc<DictationHost> {
+    app.state::<Arc<DictationHost>>().inner().clone()
 }
 
 /// The host half of the Dictation Runtime's adapter: microphone cuts, the
@@ -322,11 +289,12 @@ fn dictation_host(app: &tauri::AppHandle) -> DictationHost<'_> {
 /// owns ordering, rescue suspension, and panic containment.
 struct AppHost {
     app: tauri::AppHandle,
+    host: Arc<DictationHost>,
 }
 
 impl slugtale_lib::DictationRuntimeHost for AppHost {
     fn take_pause_segment(&mut self, cut: u64) -> Option<slugtale_lib::CapturedAudio> {
-        dictation_host(&self.app).take_dictation_segment(cut)
+        self.host.take_dictation_segment(cut)
     }
 
     fn complete(
@@ -334,7 +302,7 @@ impl slugtale_lib::DictationRuntimeHost for AppHost {
         audio: slugtale_lib::CapturedAudio,
         position: slugtale_lib::DictationSegmentPosition,
     ) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
-        dictation_host(&self.app).run_dictation_segment(audio, position)
+        self.host.run_dictation_segment(audio, position)
     }
 
     fn last_job_settled(&mut self) {
@@ -1977,10 +1945,6 @@ fn main() {
         slugtale_lib::permission_reauthorization_requested(std::env::args());
     let app = tauri::Builder::default()
         .manage(slugtale_lib::TranscriptionEngineCatalogue::default())
-        .manage(RecordingFeedbackState::default())
-        .manage(FocusTargetState::default())
-        .manage(AudioCaptureState::default())
-        .manage(DictationRuntimeState::default())
         .manage(HotkeyRegistrationState::default())
         .manage(TypingChallengeOpen::default())
         .manage(voice_activation::VoiceActivationState::default())
@@ -1995,6 +1959,13 @@ fn main() {
             // Every local file path resolves through this one store, so it has
             // to exist before anything that reads or writes a file.
             app.manage(AppFiles::from_app(app.handle()));
+            // The dictation lifecycle host owns its own state; it is managed
+            // here, before the hotkey worker starts, so every activation input
+            // finds it in place.
+            let host = Arc::new(DictationHost::new(Arc::new(TauriSurface {
+                app: app.handle().clone(),
+            })));
+            app.manage(host.clone());
             slugtale_lib::setup_tray(app)?;
             setup_configured_hotkey(app)?;
             // The Dictation Segment worker outlives every dictation: it is what
@@ -2002,30 +1973,18 @@ fn main() {
             // The runtime probes the capture ring's voiced-sample watermark at
             // the moment a Pause Flush is due — the microphone half of the
             // watermark cut (ADR-0026).
-            let watermark_app = app.handle().clone();
+            let watermark_host = host.clone();
             let runtime = slugtale_lib::DictationRuntime::start(
                 AppHost {
                     app: app.handle().clone(),
+                    host: host.clone(),
                 },
-                move || {
-                    watermark_app
-                        .state::<AudioCaptureState>()
-                        .0
-                        .lock()
-                        .map(|guard| slugtale_lib::AudioRecorder::voice_watermark(guard.recorder()))
-                        .unwrap_or(0)
-                },
+                move || watermark_host.voice_watermark(),
                 usage_writer(app.handle().clone()),
             )
             .map_err(std::io::Error::other)?;
-            {
-                let state = app.state::<DictationRuntimeState>();
-                let mut guard = state
-                    .0
-                    .lock()
-                    .map_err(|_| std::io::Error::other("dictation runtime state mutex poisoned"))?;
-                *guard = Some(std::sync::Arc::new(runtime));
-            }
+            host.set_runtime(Arc::new(runtime))
+                .map_err(std::io::Error::other)?;
             // Usage writes happen off the Dictation Workflow path (ADR-0025), so
             // the queue that carries them has to exist before the first segment.
             // The Dictation Runtime starts that writer; nothing to do here.
@@ -2044,9 +2003,7 @@ fn main() {
             // must never prompt, and a denied microphone stays on the normal
             // permission path.
             if slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new()) {
-                if let Ok(mut capture) = app.state::<AudioCaptureState>().0.lock() {
-                    let _ = slugtale_lib::AudioRecorder::prepare(capture.recorder_mut());
-                }
+                dictation_host(app.handle()).prepare_capture();
             }
             // Voice Activation is opt-in: the always-on listener only starts
             // when a previously saved preference asks for it (slugtale-e95).

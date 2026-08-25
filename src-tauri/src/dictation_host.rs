@@ -45,22 +45,65 @@ pub trait DictationSurface: Send + Sync {
         settings: &slugtale_lib::Settings,
     ) -> Result<slugtale_lib::DictationStack<slugtale_lib::FileDiagnosticSink>, String>;
 }
-
-/// One borrowed view over the dictation lifecycle's state plus its surface.
-/// Cheap to build per call site; every method leaves the locks held no longer
-/// than the state move itself.
-pub struct DictationHost<'a> {
-    pub surface: Arc<dyn DictationSurface>,
-    pub feedback: &'a Mutex<slugtale_lib::RecordingFeedback>,
+/// The dictation lifecycle's one owner of state: recording feedback, the focus
+/// target, the audio capture session, and the runtime handle. The locks are
+/// private so the ordering rules stay inside this module; every method holds a
+/// lock no longer than the state move itself and never across a surface call.
+pub struct DictationHost {
+    surface: Arc<dyn DictationSurface>,
+    feedback: Mutex<slugtale_lib::RecordingFeedback>,
     /// The process id of the app the user was dictating into, captured when
     /// recording starts so insertion can re-target it after transcription
     /// (slugtale-squ).
-    pub focus_target: &'a Mutex<Option<i32>>,
-    pub capture: &'a Mutex<slugtale_lib::AudioCaptureSession<slugtale_lib::CpalAudioRecorder>>,
-    pub runtime_state: &'a Mutex<Option<Arc<slugtale_lib::DictationRuntime>>>,
+    focus_target: Mutex<Option<i32>>,
+    capture: Mutex<slugtale_lib::AudioCaptureSession<slugtale_lib::CpalAudioRecorder>>,
+    runtime_state: Mutex<Option<Arc<slugtale_lib::DictationRuntime>>>,
 }
 
-impl<'a> DictationHost<'a> {
+impl DictationHost {
+    pub fn new(surface: Arc<dyn DictationSurface>) -> Self {
+        Self {
+            surface,
+            feedback: Mutex::new(slugtale_lib::RecordingFeedback::default()),
+            focus_target: Mutex::new(None),
+            capture: Mutex::new(slugtale_lib::AudioCaptureSession::new(
+                slugtale_lib::CpalAudioRecorder::new(),
+            )),
+            runtime_state: Mutex::new(None),
+        }
+    }
+
+    /// Install the runtime once setup has started it. Every lifecycle call
+    /// before this would find nothing able to record, so setup orders this
+    /// ahead of any activation input.
+    pub fn set_runtime(&self, runtime: Arc<slugtale_lib::DictationRuntime>) -> Result<(), String> {
+        let mut guard = self
+            .runtime_state
+            .lock()
+            .map_err(|_| "dictation runtime state mutex poisoned".to_string())?;
+        *guard = Some(runtime);
+        Ok(())
+    }
+
+    /// The capture ring's voiced-sample watermark, read when the Pause Flush is
+    /// due — the microphone half of the watermark cut (ADR-0026).
+    pub fn voice_watermark(&self) -> u64 {
+        self.capture
+            .lock()
+            .ok()
+            .map(|guard| slugtale_lib::AudioRecorder::voice_watermark(guard.recorder()))
+            .unwrap_or(0)
+    }
+
+    /// Prepare audio capture while idle so the first Hotkey does not pay for
+    /// device discovery and ring allocation (slugtale-g1o.3). Preparation must
+    /// never prompt, so callers gate this on an already-granted microphone.
+    pub fn prepare_capture(&self) {
+        if let Ok(mut guard) = self.capture.lock() {
+            let _ = slugtale_lib::AudioRecorder::prepare(guard.recorder_mut());
+        }
+    }
+
     /// The app's one Dictation Runtime.
     ///
     /// # Panics
