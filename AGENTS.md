@@ -65,6 +65,11 @@ one platform must test from inside itself, since `lib.rs` cannot reach it.
 The runner looks for Cargo on `PATH`, then at `$HOME/.cargo/bin/cargo`. If
 Cargo is installed somewhere else, set `CARGO=/path/to/cargo`.
 
+Every cargo invocation through these scripts has a hard wall-clock cap
+(default 10 minutes) that kills the entire cargo process tree, so a hung
+test or build cannot exhaust the machine. Override per run with
+`SLUGTALE_CARGO_TIMEOUT=<seconds>`, or `SLUGTALE_CARGO_TIMEOUT=0` to disable.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
 
