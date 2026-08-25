@@ -7,9 +7,10 @@
 //! so tests drive the whole flush→transcribe→insert→count path against one fake.
 
 use crate::{
-    CapturedAudio, CountedSegment, DictationSegmentControl, DictationSegmentExecution,
+    today_local, CapturedAudio, CountedSegment, DictationSegmentControl, DictationSegmentExecution,
     DictationSegmentJob, DictationSegmentJobResult, DictationSegmentOutcome,
-    DictationSegmentPosition, DictationSegmentWorker, SegmentPauseDetector, SEGMENT_PAUSE,
+    DictationSegmentPosition, DictationSegmentWorker, LocalDate, SegmentPauseDetector,
+    SEGMENT_PAUSE,
 };
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -29,14 +30,17 @@ pub trait DictationRuntimeHost {
         position: DictationSegmentPosition,
     ) -> Result<DictationSegmentOutcome, String>;
 
-    /// Hand a Counted Segment toward the Usage File. Never blocks the workflow.
-    fn record_counted_segment(&mut self, segment: CountedSegment);
-
     /// A dictation's final job has settled — inserted, skipped, failed, or even
     /// panicked. Whatever happens, nothing else will end the transcribing
     /// state: the host hides the Dictation Bar here.
     fn last_job_settled(&mut self);
 }
+
+/// Where counted segments go once the runtime has decided they count. The
+/// sink runs on the usage writer thread, where being slow costs nothing and
+/// failing costs only a count (ADR-0025): it re-checks the opt-in at the last
+/// possible moment and writes the Usage File.
+pub type UsageSink = dyn Fn(LocalDate, CountedSegment) + Send + Sync;
 
 /// Ordered Dictation Segment execution behind one small interface: begin,
 /// abandon, queue a flush, queue the last segment. The implementation holds
@@ -57,8 +61,32 @@ pub struct DictationRuntime {
     voice_watermark: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 
+/// The queue that carries Counted Segments to the Usage sink.
+///
+/// Usage must never slow or fail Dictation (ADR-0025), so the dictation path
+/// only ever does a non-blocking channel send. The local date rides along at
+/// enqueue time rather than being resolved by the writer, because a Counted
+/// Segment belongs to the date it landed on — and by the time a backed-up
+/// queue is drained, midnight may have passed.
+struct UsageQueue {
+    jobs: Mutex<Option<mpsc::Sender<(LocalDate, CountedSegment)>>>,
+}
+
+impl UsageQueue {
+    /// Hand a Counted Segment to the writer without waiting for it. A closed or
+    /// unstarted queue drops it on the floor: the insertion already happened,
+    /// which is the part that mattered.
+    fn record(&self, segment: CountedSegment) {
+        if let Ok(guard) = self.jobs.lock() {
+            if let Some(sender) = guard.as_ref() {
+                let _ = sender.send((today_local(), segment));
+            }
+        }
+    }
+}
+
 impl DictationRuntime {
-    /// Start the single worker that transcribes and inserts Dictation Segments.
+    /// Start the workers that transcribe, insert, and count Dictation Segments.
     ///
     /// Segments are decoded one at a time on purpose. Whisper would happily be
     /// asked for two at once, but then a short segment could overtake a long one
@@ -67,22 +95,45 @@ impl DictationRuntime {
     pub fn start(
         host: impl DictationRuntimeHost + Send + 'static,
         voice_watermark: impl Fn() -> u64 + Send + Sync + 'static,
+        usage_sink: Arc<UsageSink>,
     ) -> Result<Self, String> {
-        Self::start_with_pause(host, Arc::new(voice_watermark), SEGMENT_PAUSE)
+        Self::start_with_pause(host, Arc::new(voice_watermark), usage_sink, SEGMENT_PAUSE)
     }
 
     fn start_with_pause(
         host: impl DictationRuntimeHost + Send + 'static,
         voice_watermark: Arc<dyn Fn() -> u64 + Send + Sync>,
+        usage_sink: Arc<UsageSink>,
         pause: std::time::Duration,
     ) -> Result<Self, String> {
         let control = Arc::new(DictationSegmentControl::default());
         let (sender, receiver) = mpsc::channel::<DictationSegmentJob>();
         let worker_control = Arc::clone(&control);
+        // The Usage writer (ADR-0025): a Counted Segment has already reached
+        // the user's document by the time it is counted, so nothing here may
+        // delay the next segment or fail the dictation. Every failure in the
+        // sink is therefore a skip, not an error.
+        let (usage_sender, usage_receiver) = mpsc::channel::<(LocalDate, CountedSegment)>();
+        let usage_queue = Arc::new(UsageQueue {
+            jobs: Mutex::new(Some(usage_sender)),
+        });
         std::thread::Builder::new()
             .name("slugtale-dictation-segments".to_string())
-            .spawn(move || run_worker(receiver, worker_control, host))
+            .spawn({
+                let usage = Arc::clone(&usage_queue);
+                move || run_worker(receiver, worker_control, host, usage)
+            })
             .map_err(|error| error.to_string())?;
+
+        std::thread::Builder::new()
+            .name("slugtale-usage".to_string())
+            .spawn(move || {
+                while let Ok((date, segment)) = usage_receiver.recv() {
+                    usage_sink(date, segment);
+                }
+            })
+            .map_err(|error| error.to_string())?;
+
         Ok(Self {
             control,
             jobs: Mutex::new(Some(sender)),
@@ -217,10 +268,11 @@ fn run_worker<H: DictationRuntimeHost>(
     receiver: mpsc::Receiver<DictationSegmentJob>,
     control: Arc<DictationSegmentControl>,
     mut host: H,
+    usage: Arc<UsageQueue>,
 ) {
     let mut worker = DictationSegmentWorker::default();
     while let Ok(job) = receiver.recv() {
-        settle_job(&mut worker, job, &control, &mut host);
+        settle_job(&mut worker, job, &control, &mut host, &usage);
     }
 }
 
@@ -232,10 +284,11 @@ fn settle_job<H: DictationRuntimeHost>(
     job: DictationSegmentJob,
     control: &DictationSegmentControl,
     host: &mut H,
+    usage: &UsageQueue,
 ) {
     let last = job.is_last();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut execution = HostExecution { host };
+        let mut execution = HostExecution { host, usage };
         worker.process(job, control, &mut execution)
     }));
     match result {
@@ -259,9 +312,11 @@ fn settle_job<H: DictationRuntimeHost>(
     }
 }
 
-/// Adapt the host to the segment-execution seam the policy module defines.
+/// Adapt the host and the usage queue to the segment-execution seam the
+/// policy module defines.
 struct HostExecution<'a, H> {
     host: &'a mut H,
+    usage: &'a UsageQueue,
 }
 
 impl<H: DictationRuntimeHost> DictationSegmentExecution for HostExecution<'_, H> {
@@ -280,7 +335,7 @@ impl<H: DictationRuntimeHost> DictationSegmentExecution for HostExecution<'_, H>
     }
 
     fn record(&mut self, segment: CountedSegment) {
-        self.host.record_counted_segment(segment);
+        self.usage.record(segment);
     }
 }
 
@@ -296,7 +351,6 @@ mod tests {
         audio: Vec<Option<CapturedAudio>>,
         outcomes: Vec<DictationSegmentOutcome>,
         positions: Vec<DictationSegmentPosition>,
-        recorded: Vec<CountedSegment>,
         bars_hidden: usize,
     }
 
@@ -316,10 +370,6 @@ mod tests {
                 panic!("decode exploded");
             }
             Ok(outcome)
-        }
-
-        fn record_counted_segment(&mut self, segment: CountedSegment) {
-            self.recorded.push(segment);
         }
 
         fn last_job_settled(&mut self) {
@@ -345,13 +395,24 @@ mod tests {
         }
     }
 
+    /// A usage queue whose writer never runs, so tests read what was queued.
+    fn test_usage_queue() -> (Arc<UsageQueue>, mpsc::Receiver<(LocalDate, CountedSegment)>) {
+        let (sender, receiver) = mpsc::channel();
+        (
+            Arc::new(UsageQueue {
+                jobs: Mutex::new(Some(sender)),
+            }),
+            receiver,
+        )
+    }
+
     /// Drive queued jobs through the same settle path the worker thread uses.
-    fn drive(host: &mut FakeHost, jobs: Vec<DictationSegmentJob>) {
+    fn drive(host: &mut FakeHost, usage: &UsageQueue, jobs: Vec<DictationSegmentJob>) {
         let control = DictationSegmentControl::default();
         control.begin();
         let mut worker = DictationSegmentWorker::default();
         for job in jobs {
-            settle_job(&mut worker, job, &control, host);
+            settle_job(&mut worker, job, &control, host, usage);
         }
     }
 
@@ -370,9 +431,11 @@ mod tests {
             ],
             ..Default::default()
         };
+        let (usage, usage_rx) = test_usage_queue();
 
         drive(
             &mut host,
+            &usage,
             vec![
                 DictationSegmentJob::PauseFlush {
                     dictation: 1,
@@ -397,9 +460,10 @@ mod tests {
                 DictationSegmentPosition::Continuation,
             ]
         );
-        assert_eq!(host.recorded.len(), 3);
-        assert!(host.recorded[0].starts_dictation);
-        assert!(!host.recorded[1].starts_dictation);
+        let counted: Vec<_> = std::iter::from_fn(|| usage_rx.try_recv().ok()).collect();
+        assert_eq!(counted.len(), 3);
+        assert!(counted[0].1.starts_dictation);
+        assert!(!counted[1].1.starts_dictation);
     }
 
     #[test]
@@ -413,9 +477,11 @@ mod tests {
             ],
             ..Default::default()
         };
+        let (usage, usage_rx) = test_usage_queue();
 
         drive(
             &mut host,
+            &usage,
             vec![
                 DictationSegmentJob::PauseFlush {
                     dictation: 1,
@@ -442,7 +508,9 @@ mod tests {
                 DictationSegmentPosition::Continuation
             ]
         );
-        assert_eq!(host.recorded.len(), 2);
+        assert_eq!(usage_rx.try_recv().map(|(_, s)| s.words).unwrap_or(0), 2);
+        assert_eq!(usage_rx.try_recv().map(|(_, s)| s.words).unwrap_or(0), 2);
+        assert!(usage_rx.try_recv().is_err());
     }
 
     #[test]
@@ -456,9 +524,11 @@ mod tests {
             ],
             ..Default::default()
         };
+        let (usage, usage_rx) = test_usage_queue();
 
         drive(
             &mut host,
+            &usage,
             vec![
                 DictationSegmentJob::PauseFlush {
                     dictation: 1,
@@ -475,8 +545,12 @@ mod tests {
             ],
         );
 
-        assert_eq!(host.recorded.len(), 1);
-        assert_eq!(host.recorded[0].words, 2);
+        let counted: Vec<_> = std::iter::from_fn(|| usage_rx.try_recv().ok()).collect();
+        assert_eq!(counted.len(), 1);
+        assert_eq!(counted[0].1.words, 2);
+        // A Counted Segment belongs to the date it landed on, stamped at
+        // enqueue time rather than whenever the writer drains.
+        assert_eq!(counted[0].0, today_local());
     }
 
     #[test]
@@ -489,6 +563,7 @@ mod tests {
             outcomes: vec![outcome("too late", true, false)],
             ..Default::default()
         };
+        let (usage, _usage_rx) = test_usage_queue();
 
         control.abandon();
 
@@ -502,6 +577,7 @@ mod tests {
             },
             &control,
             &mut host,
+            &usage,
         );
         settle_job(
             &mut worker,
@@ -511,10 +587,11 @@ mod tests {
             },
             &control,
             &mut host,
+            &usage,
         );
 
         assert!(host.positions.is_empty());
-        assert!(host.recorded.is_empty());
+        assert!(_usage_rx.try_recv().is_err());
         assert_eq!(host.bars_hidden, 1);
     }
 
@@ -529,6 +606,7 @@ mod tests {
             ..Default::default()
         };
         failing.audio.push(None); // take_pause_segment finds nothing
+        let (usage, _usage_rx) = test_usage_queue();
         settle_job(
             &mut worker,
             DictationSegmentJob::Last {
@@ -537,6 +615,7 @@ mod tests {
             },
             &control,
             &mut failing,
+            &usage,
         );
         assert_eq!(failing.bars_hidden, 1);
 
@@ -553,6 +632,7 @@ mod tests {
             audio: vec![Some(audio(1, 1))],
             ..Default::default()
         };
+        let (usage, _usage_rx) = test_usage_queue();
         settle_job(
             &mut worker,
             DictationSegmentJob::Last {
@@ -561,6 +641,7 @@ mod tests {
             },
             &control,
             &mut panicking,
+            &usage,
         );
         settle_job(
             &mut worker,
@@ -570,6 +651,7 @@ mod tests {
             },
             &control,
             &mut panicking,
+            &usage,
         );
         assert_eq!(panicking.bars_hidden, 1);
         // The panicked decode pushed its position before exploding; the next
@@ -587,6 +669,7 @@ mod tests {
             outcomes: vec![outcome("mid-dictation words", true, false)],
             ..Default::default()
         };
+        let (usage, _usage_rx) = test_usage_queue();
 
         settle_job(
             &mut worker,
@@ -596,6 +679,7 @@ mod tests {
             },
             &control,
             &mut host,
+            &usage,
         );
 
         assert_eq!(host.bars_hidden, 0);

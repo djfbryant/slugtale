@@ -75,16 +75,6 @@ fn dictation_runtime(app: &tauri::AppHandle) -> std::sync::Arc<slugtale_lib::Dic
     app.state::<DictationRuntimeState>().get()
 }
 
-/// One Counted Segment on its way to the Usage File (ADR-0025).
-///
-/// The local date rides along rather than being resolved by the writer, because
-/// a Counted Segment belongs to the date it landed on — and by the time a
-/// backed-up queue is drained, midnight may have passed.
-struct UsageUpdate {
-    date: slugtale_lib::LocalDate,
-    segment: slugtale_lib::CountedSegment,
-}
-
 /// Whether the Typing Challenge window is on screen.
 ///
 /// A flag rather than asking the window itself, because the only reader is the
@@ -101,28 +91,6 @@ impl TypingChallengeOpen {
 
     fn get(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-/// The queue that carries Counted Segments to the Usage File.
-///
-/// Usage must never slow or fail Dictation (ADR-0025), so the dictation path
-/// only ever does a non-blocking channel send. Reading the Settings File,
-/// reading the Usage File, and writing it back all happen on the writer thread,
-/// where being slow costs nothing and failing costs only a count.
-#[derive(Default)]
-struct UsageRecorder(Mutex<Option<std::sync::mpsc::Sender<UsageUpdate>>>);
-
-impl UsageRecorder {
-    /// Hand a Counted Segment to the writer without waiting for it. A closed or
-    /// unstarted queue is dropped on the floor: the insertion already happened,
-    /// which is the part that mattered.
-    fn record(&self, update: UsageUpdate) {
-        if let Ok(guard) = self.0.lock() {
-            if let Some(sender) = guard.as_ref() {
-                let _ = sender.send(update);
-            }
-        }
     }
 }
 
@@ -609,13 +577,6 @@ impl slugtale_lib::DictationRuntimeHost for AppHost {
         position: slugtale_lib::DictationSegmentPosition,
     ) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
         run_dictation_segment(&self.app, audio, position)
-    }
-
-    fn record_counted_segment(&mut self, segment: slugtale_lib::CountedSegment) {
-        self.app.state::<UsageRecorder>().record(UsageUpdate {
-            date: slugtale_lib::today_local(),
-            segment,
-        });
     }
 
     fn last_job_settled(&mut self) {
@@ -2130,61 +2091,38 @@ fn locale_week_start(_app: &tauri::AppHandle) -> slugtale_lib::WeekStart {
     }
 }
 
-/// Start the single worker that writes Daily Usage Records.
-///
-/// It is a worker rather than an inline write for one reason: a Counted Segment
-/// has already reached the user's document by the time it is counted, so nothing
-/// here may be allowed to delay the next segment or fail the dictation. Every
-/// failure below is therefore a skip, not an error.
-fn start_usage_worker(app: &tauri::AppHandle) -> Result<(), String> {
-    let (sender, receiver) = std::sync::mpsc::channel::<UsageUpdate>();
-    {
-        let recorder = app.state::<UsageRecorder>();
-        let mut queue = recorder
-            .0
-            .lock()
-            .map_err(|_| "usage queue mutex poisoned".to_string())?;
-        *queue = Some(sender);
-    }
-
-    let app = app.clone();
-    std::thread::Builder::new()
-        .name("slugtale-usage".to_string())
-        .spawn(move || {
-            while let Ok(update) = receiver.recv() {
-                // The opt-in is checked here, at the last possible moment, so a
-                // segment that was in flight when the user turned storing off
-                // does not land in a file they just asked to be deleted.
-                if !load_current_settings(&app).store_usage {
-                    continue;
-                }
-                let Some(path) = usage_path(&app) else {
-                    continue;
-                };
-                if let Some(parent) = path.parent() {
-                    if std::fs::create_dir_all(parent).is_err() {
-                        continue;
-                    }
-                }
-
-                let mut usage = slugtale_lib::load_usage(&path);
-                slugtale_lib::record_counted_segment(&mut usage, update.date, update.segment);
-                if let Err(error) = slugtale_lib::save_usage(&path, &usage) {
-                    eprintln!("could not write the usage file: {error}");
-                    continue;
-                }
-
-                // The Usage pane is the only surface that shows any of this, so
-                // it is the only thing told. Nothing reaches the Pill, the tray,
-                // or a notification (ADR-0025).
-                if let Some(window) = app.get_webview_window("settings") {
-                    let _ = window.emit("usage-changed", ());
-                }
+/// Start the Dictation Runtime's Usage writer body (ADR-0025): the opt-in is
+/// checked here, at the last possible moment, so a segment that was in flight
+/// when the user turned storing off does not land in a file they just asked to
+/// be deleted. Every failure below is a skip, not an error.
+fn usage_writer(app: tauri::AppHandle) -> std::sync::Arc<slugtale_lib::UsageSink> {
+    std::sync::Arc::new(move |date, segment| {
+        if !load_current_settings(&app).store_usage {
+            return;
+        }
+        let Some(path) = usage_path(&app) else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return;
             }
-        })
-        .map_err(|error| error.to_string())?;
+        }
 
-    Ok(())
+        let mut usage = slugtale_lib::load_usage(&path);
+        slugtale_lib::record_counted_segment(&mut usage, date, segment);
+        if let Err(error) = slugtale_lib::save_usage(&path, &usage) {
+            eprintln!("could not write the usage file: {error}");
+            return;
+        }
+
+        // The Usage pane is the only surface that shows any of this, so
+        // it is the only thing told. Nothing reaches the Pill, the tray,
+        // or a notification (ADR-0025).
+        if let Some(window) = app.get_webview_window("settings") {
+            let _ = window.emit("usage-changed", ());
+        }
+    })
 }
 
 fn load_current_settings(app: &tauri::AppHandle) -> slugtale_lib::Settings {
@@ -2266,7 +2204,6 @@ fn main() {
         .manage(AudioCaptureState::default())
         .manage(DictationRuntimeState::default())
         .manage(HotkeyRegistrationState::default())
-        .manage(UsageRecorder::default())
         .manage(TypingChallengeOpen::default())
         .manage(voice_activation::VoiceActivationState::default())
         .plugin(tauri_plugin_autostart::init(
@@ -2300,6 +2237,7 @@ fn main() {
                         .map(|guard| slugtale_lib::AudioRecorder::voice_watermark(guard.recorder()))
                         .unwrap_or(0)
                 },
+                usage_writer(app.handle().clone()),
             )
             .map_err(std::io::Error::other)?;
             {
@@ -2312,7 +2250,7 @@ fn main() {
             }
             // Usage writes happen off the Dictation Workflow path (ADR-0025), so
             // the queue that carries them has to exist before the first segment.
-            start_usage_worker(app.handle()).map_err(std::io::Error::other)?;
+            // The Dictation Runtime starts that writer; nothing to do here.
             // Reconcile the OS login item with the stored preference so a moved or
             // rebuilt app (dev binaries change path) does not drift out of sync.
             let settings = load_current_settings(app.handle());
