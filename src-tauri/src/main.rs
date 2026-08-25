@@ -115,7 +115,7 @@ struct HotkeyRegistration {
 #[derive(Clone, Copy)]
 enum GlobalKeyCommand {
     Input(slugtale_lib::DictationKey, slugtale_lib::HotkeyInput),
-    SyncEscape(bool),
+    SyncEscape(slugtale_lib::EscapeCommand),
 }
 
 #[tauri::command]
@@ -641,8 +641,22 @@ fn request_escape_registration(
         .as_ref()
         .ok_or_else(|| "global key worker has not started".to_string())?;
     commands
-        .send(GlobalKeyCommand::SyncEscape(should_register))
+        .send(GlobalKeyCommand::SyncEscape(escape_command(
+            should_register,
+        )))
         .map_err(|_| "global key worker is unavailable".to_string())
+}
+
+/// A requested registration state expressed through the arbiter's vocabulary:
+/// the caller says what it wants true/false to mean (armed or matching the
+/// lifecycle), and the arbiter decides whether the OS must change.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn escape_command(should_register: bool) -> slugtale_lib::EscapeCommand {
+    if should_register {
+        slugtale_lib::EscapeCommand::Arm
+    } else {
+        slugtale_lib::EscapeCommand::Disarm
+    }
 }
 
 /// Bare Escape must only be global while recording; otherwise Slugtale would
@@ -666,12 +680,13 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
     std::thread::Builder::new()
         .name("dictation-global-keys".to_string())
         .spawn(move || {
-            let mut escape_registered = false;
+            // The one owner of bare Escape's armed state on this thread.
+            let mut escape_arbiter = slugtale_lib::EscapeArbiter::new();
             for event in events {
                 match event {
-                    GlobalKeyCommand::SyncEscape(should_register) => {
+                    GlobalKeyCommand::SyncEscape(command) => {
                         if let Err(error) =
-                            sync_escape_registration(&app, &mut escape_registered, should_register)
+                            sync_escape_registration(&app, &mut escape_arbiter, command)
                         {
                             eprintln!("could not update global Escape key: {error}");
                         }
@@ -709,8 +724,8 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             let mut set_escape = |should_register: bool| {
                                 sync_escape_registration(
                                     &app,
-                                    &mut escape_registered,
-                                    should_register,
+                                    &mut escape_arbiter,
+                                    escape_command(should_register),
                                 )
                             };
                             if let Err(error) = begin_dictation(
@@ -756,8 +771,8 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             }
                             if let Err(error) = sync_escape_registration(
                                 &app,
-                                &mut escape_registered,
-                                should_register,
+                                &mut escape_arbiter,
+                                slugtale_lib::EscapeCommand::MatchDictation(should_register),
                             ) {
                                 eprintln!("could not update global Escape key: {error}");
                             }
@@ -774,12 +789,12 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn sync_escape_registration(
     app: &tauri::AppHandle,
-    registered: &mut bool,
-    should_register: bool,
+    arbiter: &mut slugtale_lib::EscapeArbiter,
+    command: slugtale_lib::EscapeCommand,
 ) -> Result<(), String> {
-    if should_register == *registered {
+    let Some(should_register) = arbiter.resolve(command) else {
         return Ok(());
-    }
+    };
 
     if should_register {
         app.global_shortcut()
@@ -790,7 +805,6 @@ fn sync_escape_registration(
             .unregister(DICTATION_ESCAPE_KEY)
             .map_err(|error| error.to_string())?;
     }
-    *registered = should_register;
     Ok(())
 }
 

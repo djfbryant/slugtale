@@ -122,6 +122,12 @@ pub use readiness::*;
 mod hotkey;
 pub use hotkey::*;
 
+/// Bare-Escape arming: the one arbiter that owns whether Escape is global, so
+/// there is never an active but uncancellable dictation and never a duplicate
+/// OS registration.
+mod global_key;
+pub use global_key::*;
+
 /// Dictation Control (CONTEXT.md): the begin/rollback activation policy shared
 /// by the Hotkey, Voice Activation, and Dictation Bar inputs. The lifecycle's
 /// transitions live in `hotkey`; this module decides when a begin request may
