@@ -8,7 +8,10 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_updater::UpdaterExt;
 
+mod dictation_host;
 mod voice_activation;
+
+use dictation_host::{DictationHost, DictationPhase, DictationSurface};
 
 use slugtale_lib::AppFiles;
 
@@ -28,23 +31,6 @@ struct RecordingFeedbackState(Mutex<slugtale_lib::RecordingFeedback>);
 #[derive(Default)]
 struct FocusTargetState(Mutex<Option<i32>>);
 
-/// What the Dictation Bar is currently doing, sent to its frontend so it can show
-/// the matching state. The bar stays on screen through transcription (slugtale-0t4).
-#[derive(Clone, Copy)]
-enum DictationPhase {
-    Recording,
-    Transcribing,
-}
-
-impl DictationPhase {
-    fn as_str(self) -> &'static str {
-        match self {
-            DictationPhase::Recording => "recording",
-            DictationPhase::Transcribing => "transcribing",
-        }
-    }
-}
-
 struct AudioCaptureState(Mutex<slugtale_lib::AudioCaptureSession<slugtale_lib::CpalAudioRecorder>>);
 
 impl Default for AudioCaptureState {
@@ -59,21 +45,6 @@ impl Default for AudioCaptureState {
 /// channel and worker thread; setup starts it once the app handle exists.
 #[derive(Default)]
 struct DictationRuntimeState(Mutex<Option<std::sync::Arc<slugtale_lib::DictationRuntime>>>);
-
-impl DictationRuntimeState {
-    fn get(&self) -> std::sync::Arc<slugtale_lib::DictationRuntime> {
-        self.0
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
-            .expect("dictation runtime started")
-    }
-}
-
-/// The app's one Dictation Runtime.
-fn dictation_runtime(app: &tauri::AppHandle) -> std::sync::Arc<slugtale_lib::DictationRuntime> {
-    app.state::<DictationRuntimeState>().get()
-}
 
 /// Whether the Typing Challenge window is on screen.
 ///
@@ -94,10 +65,7 @@ impl TypingChallengeOpen {
     }
 }
 
-use slugtale_lib::{
-    DiagnosticInsertionRescue, DiagnosticTextInsertion, FileDiagnosticSink, SharedDiagnosticLog,
-    TranscriptionProvider,
-};
+use slugtale_lib::{FileDiagnosticSink, SharedDiagnosticLog, TranscriptionProvider};
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Default)]
@@ -137,7 +105,7 @@ fn dictation_event(app: tauri::AppHandle, event: String) -> Result<(), String> {
         other => return Err(format!("unknown dictation event: {other}")),
     };
 
-    handle_dictation_event(&app, event)
+    dictation_host(&app).handle_dictation_event(event)
 }
 
 /// Stop from the Dictation Bar and reset the shared control at the same time.
@@ -188,8 +156,8 @@ fn end_active_dictation(
     };
 
     match event {
-        Some(event) => handle_dictation_event(app, event),
-        None => handle_dictation_event(app, fallback),
+        Some(event) => dictation_host(app).handle_dictation_event(event),
+        None => dictation_host(app).handle_dictation_event(fallback),
     }
 }
 
@@ -251,7 +219,7 @@ fn begin_dictation(
         return Err(error);
     }
 
-    if let Err(error) = handle_dictation_event_with(app, event, activation) {
+    if let Err(error) = dictation_host(app).handle_dictation_event_with(event, activation) {
         // Roll the lifecycle back so the next activation can try again instead
         // of finding a discarded dictation still marked active.
         if let Ok(mut registration) = app.state::<HotkeyRegistrationState>().0.lock() {
@@ -264,228 +232,6 @@ fn begin_dictation(
     Ok(())
 }
 
-fn handle_dictation_event(
-    app: &tauri::AppHandle,
-    event: slugtale_lib::DictationEvent,
-) -> Result<(), String> {
-    handle_dictation_event_with(app, event, None)
-}
-
-/// `activation` is the snapshot a Hotkey press built for its readiness gate;
-/// Start consumes it so the rest of the activation reuses the same Settings
-/// value instead of reloading (slugtale-g1o.6). Callers without one — Cancel
-/// from the tray, tests — pass `None`.
-fn handle_dictation_event_with(
-    app: &tauri::AppHandle,
-    event: slugtale_lib::DictationEvent,
-    mut activation: Option<slugtale_lib::DictationActivation>,
-) -> Result<(), String> {
-    record_diagnostic_event(app, slugtale_lib::DiagnosticEvent::hotkey_transition(event));
-
-    match event {
-        slugtale_lib::DictationEvent::Start => {
-            // Capture the app the user is dictating into before our own bar can
-            // take focus, so insertion can re-target it later (slugtale-squ).
-            capture_focus_target(app);
-            // Open the dictation before capture starts: the level callback
-            // installed below stamps every Pause Flush with this number.
-            dictation_runtime(app).begin();
-            // If the microphone cannot start, do not show a recording state.
-            handle_audio_capture_event(app, event)?;
-            let settings = match activation.take() {
-                Some(activation) => activation.settings,
-                None => load_current_settings(app),
-            };
-            apply_recording_feedback(app, event, Some(&settings))?;
-        }
-        // Stop plays its cue but leaves the bar on screen: the audio-capture step
-        // switches it to a transcribing state and hides it once the workflow
-        // finishes, so the user sees the model working (slugtale-0t4). Its bar
-        // update is this Stop press's own activation, so read Settings once here.
-        slugtale_lib::DictationEvent::Stop => {
-            advance_recording_feedback(app, event)?;
-            let settings = load_current_settings(app);
-            handle_audio_capture_event_with_settings(app, event, Some(&settings))?;
-        }
-        // Cancel clears the bar immediately and discards the audio. It also
-        // drops any Dictation Segment still queued, so nothing further is typed
-        // after the user asks Slugtale to stop. Text inserted by an earlier
-        // Segment Pause is not undone (ADR-0014). It reads no Settings at all.
-        slugtale_lib::DictationEvent::Cancel => {
-            dictation_runtime(app).abandon();
-            apply_recording_feedback(app, event, None)?;
-            handle_audio_capture_event(app, event)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Advance the recording-feedback state machine and play its audible cue without
-/// touching the Dictation Bar window. Callers that own the bar's visibility (Stop,
-/// which keeps it up for transcription) use this directly.
-fn advance_recording_feedback(
-    app: &tauri::AppHandle,
-    event: slugtale_lib::DictationEvent,
-) -> Result<slugtale_lib::RecordingFeedbackEffect, String> {
-    let feedback = app.state::<RecordingFeedbackState>();
-    let effect = {
-        let mut guard = feedback
-            .0
-            .lock()
-            .map_err(|_| "recording feedback mutex poisoned".to_string())?;
-        guard.on_event(event)
-    };
-
-    if let Some(sound) = effect.sound {
-        let _ = slugtale_lib::play_dictation_sound(sound);
-    }
-
-    Ok(effect)
-}
-
-fn apply_recording_feedback(
-    app: &tauri::AppHandle,
-    event: slugtale_lib::DictationEvent,
-    settings: Option<&slugtale_lib::Settings>,
-) -> Result<(), String> {
-    let effect = advance_recording_feedback(app, event)?;
-
-    if effect.bar_visible {
-        // Only the visible branch needs Settings; Cancel passes `None` and
-        // never pays for a read.
-        let owned;
-        let settings = match settings {
-            Some(settings) => settings,
-            None => {
-                owned = load_current_settings(app);
-                &owned
-            }
-        };
-        show_dictation_bar(app, DictationPhase::Recording, settings);
-    } else {
-        hide_dictation_bar(app);
-    }
-
-    Ok(())
-}
-
-fn capture_focus_target(app: &tauri::AppHandle) {
-    if let Ok(mut guard) = app.state::<FocusTargetState>().0.lock() {
-        *guard = slugtale_lib::capture_text_target();
-    }
-}
-
-fn handle_audio_capture_event(
-    app: &tauri::AppHandle,
-    event: slugtale_lib::DictationEvent,
-) -> Result<(), String> {
-    handle_audio_capture_event_with_settings(app, event, None)
-}
-
-/// `bar_settings` is needed only when a Stop completes and the bar switches to
-/// its transcribing state; passing it in spares that path a Settings reload
-/// (slugtale-g1o.6).
-fn handle_audio_capture_event_with_settings(
-    app: &tauri::AppHandle,
-    event: slugtale_lib::DictationEvent,
-    bar_settings: Option<&slugtale_lib::Settings>,
-) -> Result<(), String> {
-    let capture = app.state::<AudioCaptureState>();
-    let outcome = {
-        let mut guard = capture
-            .0
-            .lock()
-            .map_err(|_| "audio capture mutex poisoned".to_string())?;
-        if matches!(event, slugtale_lib::DictationEvent::Start) {
-            guard
-                .recorder_mut()
-                .set_level_callback(Some(dictation_audio_level_callback(app.clone())));
-        }
-        guard.on_event(event)
-    };
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            clear_dictation_audio_level_callback(app);
-            hide_dictation_bar(app);
-            record_diagnostic_event(
-                app,
-                slugtale_lib::DiagnosticEvent::audio_capture_failed(&error),
-            );
-            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            let _ = slugtale_lib::notify("Slugtale could not capture audio", &error.to_string());
-            return Err(error.to_string());
-        }
-    };
-
-    match outcome {
-        Some(slugtale_lib::AudioCaptureOutcome::Completed(audio)) => {
-            clear_dictation_audio_level_callback(app);
-            eprintln!(
-                "captured dictation audio: {} samples at {} Hz",
-                audio.samples.len(),
-                audio.sample_rate_hz
-            );
-            // Keep the bar on screen in a transcribing state while the model runs,
-            // then hide it once insertion completes (slugtale-0t4). The worker
-            // hides it, so it stays up until every earlier Segment Pause has
-            // landed too, not just this last one.
-            show_dictation_bar(
-                app,
-                DictationPhase::Transcribing,
-                bar_settings.unwrap_or(&load_current_settings(app)),
-            );
-            let queued = dictation_runtime(app).send_last(audio);
-            if !queued {
-                eprintln!("dictation segment worker is unavailable; dropping final segment");
-                hide_dictation_bar(app);
-            }
-        }
-        Some(slugtale_lib::AudioCaptureOutcome::Discarded) => {
-            clear_dictation_audio_level_callback(app);
-            eprintln!("discarded dictation audio");
-            hide_dictation_bar(app);
-        }
-        // No active session to drain. A terminal event still clears any bar left
-        // on screen (e.g. Stop with nothing captured); Start has none to hide.
-        None => {
-            if matches!(event, slugtale_lib::DictationEvent::Stop) {
-                hide_dictation_bar(app);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn dictation_audio_level_callback(app: tauri::AppHandle) -> slugtale_lib::AudioLevelCallback {
-    // The Segment Pause detector lives inside the Dictation Runtime, which
-    // re-arms it on every begin(), so each dictation starts unable to flush.
-    let runtime = dictation_runtime(&app);
-    Arc::new(move |level| {
-        emit_dictation_audio_level(&app, level);
-        runtime.on_voice_level(level);
-    })
-}
-
-fn clear_dictation_audio_level_callback(app: &tauri::AppHandle) {
-    if let Ok(mut guard) = app.state::<AudioCaptureState>().0.lock() {
-        guard.recorder_mut().set_level_callback(None);
-    }
-    emit_dictation_audio_level(app, 0.0);
-}
-
-fn emit_dictation_audio_level(app: &tauri::AppHandle, level: f32) {
-    if let Some(window) = app.get_webview_window("dictation-bar") {
-        let _ = window.emit("dictation-audio-level", level.clamp(0.0, 1.0));
-    }
-}
-
-/// Warm whichever Transcription Engine the current Settings resolve to,
-/// including fallback rules, and release large models it does not need. The
-/// model load itself runs off this thread, so startup and Settings saves never
-/// wait on a multi-second read.
 fn warm_effective_primary_engine(app: &tauri::AppHandle) {
     let settings = load_current_settings(app);
     let catalogue = app.state::<slugtale_lib::TranscriptionEngineCatalogue>();
@@ -500,61 +246,73 @@ fn warm_effective_primary_engine(app: &tauri::AppHandle) {
     });
 }
 
-/// Transcribe and insert one Dictation Segment, start to finish.
-///
-/// Runs synchronously on the Dictation Segment worker thread. Everything it
-/// touches is resolved per segment rather than per dictation, so a Settings
-/// change part-way through a long dictation takes effect at the next Segment
-/// Pause instead of being pinned at Start.
-fn run_dictation_segment(
-    app: &tauri::AppHandle,
-    audio: slugtale_lib::CapturedAudio,
-    position: slugtale_lib::DictationSegmentPosition,
-) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
-    let settings = load_current_settings(app);
-    let diagnostic_log = current_diagnostic_log(app, &settings);
-    let stack = app
-        .state::<slugtale_lib::TranscriptionEngineCatalogue>()
-        .dictation_stack(&settings, diagnostic_log.clone())
-        .map_err(|error| error.to_string())?;
-    let target_pid = app
-        .state::<FocusTargetState>()
-        .0
-        .lock()
-        .ok()
-        .and_then(|guard| *guard);
-
-    let prepared = slugtale_lib::prepare_text_insertion(target_pid)?;
-    let runtime = stack.asr_runtime();
-    let insertion = DiagnosticTextInsertion::new(&prepared.insertion, diagnostic_log.clone());
-    let rescue = DiagnosticInsertionRescue::new(prepared.rescue.as_ref(), diagnostic_log);
-    slugtale_lib::DictationWorkflow::new(&runtime, &insertion, &rescue, settings.transcript_cleanup)
-        .complete(audio, position)
-        .map_err(|error| error.to_string())
+/// The Tauri adapter for the dictation lifecycle's surface: the bar window,
+/// Settings reads, diagnostics, and failure notifications, reached through the
+/// one AppHandle.
+struct TauriSurface {
+    app: tauri::AppHandle,
 }
 
-/// Take the speech captured so far as a Dictation Segment, leaving the
-/// microphone running. Called only from the worker thread. `cut` is the sample
-/// watermark the Pause Flush was queued with: the segment ends there (plus a
-/// small acoustic guard), whatever else has arrived since.
-fn take_dictation_segment(app: &tauri::AppHandle, cut: u64) -> Option<slugtale_lib::CapturedAudio> {
-    let capture = app.state::<AudioCaptureState>();
-    let flushed = capture
-        .0
-        .lock()
-        .map_err(|_| "audio capture mutex poisoned".to_string())
-        .and_then(|mut guard| {
-            guard
-                .flush_segment_through(cut)
-                .map_err(|error| error.to_string())
-        });
+impl DictationSurface for TauriSurface {
+    fn settings(&self) -> slugtale_lib::Settings {
+        load_current_settings(&self.app)
+    }
 
-    match flushed {
-        Ok(audio) => audio,
-        Err(error) => {
-            eprintln!("could not take dictation segment: {error}");
-            None
+    fn record_diagnostic_event(&self, event: slugtale_lib::DiagnosticEvent) {
+        record_diagnostic_event(&self.app, event);
+    }
+
+    fn show_dictation_bar(&self, phase: DictationPhase, settings: &slugtale_lib::Settings) {
+        show_dictation_bar(&self.app, phase, settings);
+    }
+
+    fn hide_dictation_bar(&self) {
+        hide_dictation_bar(&self.app);
+    }
+
+    fn emit_dictation_audio_level(&self, level: f32) {
+        if let Some(window) = self.app.get_webview_window("dictation-bar") {
+            let _ = window.emit("dictation-audio-level", level.clamp(0.0, 1.0));
         }
+    }
+
+    fn notify_capture_failure(&self, error: &str) {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let _ = slugtale_lib::notify("Slugtale could not capture audio", error);
+    }
+
+    fn diagnostic_log(
+        &self,
+        settings: &slugtale_lib::Settings,
+    ) -> slugtale_lib::SharedDiagnosticLog<slugtale_lib::FileDiagnosticSink> {
+        current_diagnostic_log(&self.app, settings)
+    }
+
+    fn dictation_stack(
+        &self,
+        settings: &slugtale_lib::Settings,
+    ) -> Result<slugtale_lib::DictationStack<slugtale_lib::FileDiagnosticSink>, String> {
+        let diagnostic_log = self.diagnostic_log(settings);
+        self.app
+            .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+            .dictation_stack(settings, diagnostic_log)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// One borrowed view over the lifecycle state this process manages, wired to
+/// the Tauri surface. Cheap to build per call site.
+fn dictation_host(app: &tauri::AppHandle) -> DictationHost<'_> {
+    let feedback = &app.state::<RecordingFeedbackState>().inner().0;
+    let focus_target = &app.state::<FocusTargetState>().inner().0;
+    let capture = &app.state::<AudioCaptureState>().inner().0;
+    let runtime_state = &app.state::<DictationRuntimeState>().inner().0;
+    DictationHost {
+        surface: Arc::new(TauriSurface { app: app.clone() }),
+        feedback,
+        focus_target,
+        capture,
+        runtime_state,
     }
 }
 
@@ -568,7 +326,7 @@ struct AppHost {
 
 impl slugtale_lib::DictationRuntimeHost for AppHost {
     fn take_pause_segment(&mut self, cut: u64) -> Option<slugtale_lib::CapturedAudio> {
-        take_dictation_segment(&self.app, cut)
+        dictation_host(&self.app).take_dictation_segment(cut)
     }
 
     fn complete(
@@ -576,7 +334,7 @@ impl slugtale_lib::DictationRuntimeHost for AppHost {
         audio: slugtale_lib::CapturedAudio,
         position: slugtale_lib::DictationSegmentPosition,
     ) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
-        run_dictation_segment(&self.app, audio, position)
+        dictation_host(&self.app).run_dictation_segment(audio, position)
     }
 
     fn last_job_settled(&mut self) {
@@ -765,7 +523,9 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             // without preventing the main-thread shortcut handler
                             // from forwarding the next key transition (slugtale-pil).
                             if let Some(event) = event {
-                                if let Err(error) = handle_dictation_event_with(&app, event, None) {
+                                if let Err(error) =
+                                    dictation_host(&app).handle_dictation_event(event)
+                                {
                                     eprintln!("dictation event failed: {error}");
                                 }
                             }
