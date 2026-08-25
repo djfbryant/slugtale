@@ -10,6 +10,75 @@ pub trait PlatformReadiness {
     fn insertion_granted(&self) -> bool;
 }
 
+/// The five facts every readiness snapshot is built from. Both snapshot paths —
+/// the Settings pane's report and an activation's snapshot — probe through this
+/// one interface so their answers cannot drift apart (slugtale-g1o.6: each
+/// probe is paid for exactly once per snapshot).
+pub trait ReadinessProbes {
+    /// The Settings value this snapshot sees. Loaded once and shared.
+    fn settings(&self) -> Settings;
+    fn microphone_granted(&self) -> bool;
+    fn insertion_granted(&self) -> bool;
+    fn local_model_ready(&self) -> bool;
+    /// Asked of the same providers the dictation path uses, so the report and
+    /// the engine decision cannot disagree.
+    fn engine_availability(
+        &self,
+        settings: &Settings,
+    ) -> Vec<(TranscriptionEngine, EngineAvailability)>;
+}
+
+/// One readiness snapshot over any probe source. Every consumer reads the same
+/// Settings value, permission answers, model answer, and engine table.
+pub fn readiness_snapshot(
+    probes: &dyn ReadinessProbes,
+    input: impl FnOnce(&Settings) -> DictationInput,
+) -> DictationActivation {
+    let settings = probes.settings();
+    let engines = probes.engine_availability(&settings);
+    let chosen_input = input(&settings);
+    let permissions = ProbedPermissions {
+        microphone: probes.microphone_granted(),
+        insertion: probes.insertion_granted(),
+    };
+    DictationActivation::build_for_input(
+        settings,
+        &permissions,
+        probes.local_model_ready(),
+        engines,
+        chosen_input,
+    )
+}
+
+/// Permission answers already collected, so [`readiness_snapshot`] can hand
+/// [`DictationActivation`] a [`PlatformReadiness`] without re-probing.
+struct ProbedPermissions {
+    microphone: bool,
+    insertion: bool,
+}
+
+impl PlatformReadiness for ProbedPermissions {
+    fn microphone_granted(&self) -> bool {
+        self.microphone
+    }
+
+    fn insertion_granted(&self) -> bool {
+        self.insertion
+    }
+}
+
+/// The required items of a report that are not ready. Written once here so
+/// the notification path and the diagnostic path cannot disagree about what
+/// "missing" means.
+pub fn missing_required_items(report: &SettingsReadinessReport) -> Vec<ReadinessItem> {
+    report
+        .items
+        .iter()
+        .filter(|item| item.required && !item.ready)
+        .cloned()
+        .collect()
+}
+
 /// The user input that starts one dictation. Voice Activation does not need a
 /// configured hotkey; every other readiness requirement is shared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,6 +414,121 @@ impl DictationActivation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    /// A probe source that counts how often each fact is asked for, so tests
+    /// can hold snapshots to the "probe exactly once" contract.
+    struct CountingProbes {
+        settings: Settings,
+        microphone: bool,
+        insertion: bool,
+        model_ready: bool,
+        settings_loads: RefCell<usize>,
+        mic_probes: RefCell<usize>,
+        insertion_probes: RefCell<usize>,
+        engine_probes: RefCell<usize>,
+    }
+
+    impl CountingProbes {
+        fn all_ready(settings: Settings) -> Self {
+            Self {
+                settings,
+                microphone: true,
+                insertion: true,
+                model_ready: true,
+                settings_loads: RefCell::new(0),
+                mic_probes: RefCell::new(0),
+                insertion_probes: RefCell::new(0),
+                engine_probes: RefCell::new(0),
+            }
+        }
+    }
+
+    impl ReadinessProbes for CountingProbes {
+        fn settings(&self) -> Settings {
+            *self.settings_loads.borrow_mut() += 1;
+            self.settings.clone()
+        }
+
+        fn microphone_granted(&self) -> bool {
+            *self.mic_probes.borrow_mut() += 1;
+            self.microphone
+        }
+
+        fn insertion_granted(&self) -> bool {
+            *self.insertion_probes.borrow_mut() += 1;
+            self.insertion
+        }
+
+        fn local_model_ready(&self) -> bool {
+            self.model_ready
+        }
+
+        fn engine_availability(
+            &self,
+            _settings: &Settings,
+        ) -> Vec<(TranscriptionEngine, EngineAvailability)> {
+            *self.engine_probes.borrow_mut() += 1;
+            whisper_available()
+        }
+    }
+
+    #[test]
+    fn one_snapshot_probes_every_fact_exactly_once() {
+        let probes = CountingProbes::all_ready(configured_settings());
+
+        let snapshot = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
+
+        assert!(snapshot.report.dictation_available);
+        assert_eq!(*probes.settings_loads.borrow(), 1);
+        assert_eq!(*probes.mic_probes.borrow(), 1);
+        assert_eq!(*probes.insertion_probes.borrow(), 1);
+        assert_eq!(*probes.engine_probes.borrow(), 1);
+    }
+
+    #[test]
+    fn the_snapshot_and_the_checked_report_answer_alike() {
+        let settings = configured_settings();
+        let direct = settings_readiness_report_checked_for_input(
+            &settings,
+            true,
+            true,
+            true,
+            &whisper_available(),
+            DictationInput::Hotkey,
+        );
+        let probes = CountingProbes::all_ready(settings);
+
+        assert_eq!(
+            readiness_snapshot(&probes, |_| DictationInput::Hotkey).report,
+            direct
+        );
+    }
+
+    #[test]
+    fn missing_required_items_lists_only_unmet_requirements() {
+        let mut report = settings_readiness_report_checked_for_input(
+            &configured_settings(),
+            false, // microphone missing and required
+            true,
+            false, // local model missing; required for Whisper
+            &whisper_available(),
+            DictationInput::Hotkey,
+        );
+        // launch_at_login is not ready=false here by default; force an optional
+        // item to be unready so the filter must skip it.
+        for item in report.items.iter_mut() {
+            if item.id == "launch_at_login" {
+                item.ready = false;
+            }
+        }
+
+        let ids = missing_required_items(&report)
+            .into_iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["microphone", "local_model"]);
+    }
 
     #[test]
     fn dictation_is_not_ready_when_nothing_is_ready() {

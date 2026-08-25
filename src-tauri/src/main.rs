@@ -1009,26 +1009,58 @@ fn dictation_bar_pointer_over(app: tauri::AppHandle, expanded: bool) -> Result<b
     Ok(over)
 }
 
+/// The app's answers to the five readiness facts, probed through one
+/// interface so both snapshot paths see identical state (slugtale-g1o.6).
+struct AppReadinessProbes<'a> {
+    app: &'a tauri::AppHandle,
+}
+
+impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_> {
+    fn settings(&self) -> slugtale_lib::Settings {
+        load_current_settings(self.app)
+    }
+
+    fn microphone_granted(&self) -> bool {
+        slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new())
+    }
+
+    fn insertion_granted(&self) -> bool {
+        slugtale_lib::PlatformReadiness::insertion_granted(&CurrentPlatform::new())
+    }
+
+    fn local_model_ready(&self) -> bool {
+        local_model_ready(self.app)
+    }
+
+    fn engine_availability(
+        &self,
+        settings: &slugtale_lib::Settings,
+    ) -> Vec<(
+        slugtale_lib::TranscriptionEngine,
+        slugtale_lib::EngineAvailability,
+    )> {
+        current_engine_availability(self.app, settings)
+    }
+}
+
 fn current_settings_readiness(app: &tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
-    let settings = load_current_settings(app);
-    let platform = CurrentPlatform::new();
-    let local_model_ready = local_model_ready(app);
-    let microphone_granted = slugtale_lib::PlatformReadiness::microphone_granted(&platform);
-    let insertion_granted = slugtale_lib::PlatformReadiness::insertion_granted(&platform);
-    let engines = current_engine_availability(app, &settings);
-    let input = if voice_activation::supported() && settings.voice_activation_enabled {
-        slugtale_lib::DictationInput::VoiceActivation
-    } else {
-        slugtale_lib::DictationInput::Hotkey
-    };
-    slugtale_lib::settings_readiness_report_checked_for_input(
-        &settings,
-        microphone_granted,
-        insertion_granted,
-        local_model_ready,
-        &engines,
-        input,
-    )
+    readiness_snapshot_for(app, |settings| {
+        if voice_activation::supported() && settings.voice_activation_enabled {
+            slugtale_lib::DictationInput::VoiceActivation
+        } else {
+            slugtale_lib::DictationInput::Hotkey
+        }
+    })
+    .report
+}
+
+/// One readiness snapshot over the app's probes. `input` decides which
+/// activation's requirements the report reflects.
+fn readiness_snapshot_for(
+    app: &tauri::AppHandle,
+    input: impl FnOnce(&slugtale_lib::Settings) -> slugtale_lib::DictationInput,
+) -> slugtale_lib::DictationActivation {
+    slugtale_lib::readiness_snapshot(&AppReadinessProbes { app }, input)
 }
 
 /// Whether the Whisper ggml file — or a user-selected custom model — is on disk.
@@ -1047,17 +1079,7 @@ fn build_activation_snapshot_for(
     app: &tauri::AppHandle,
     input: slugtale_lib::DictationInput,
 ) -> slugtale_lib::DictationActivation {
-    let settings = load_current_settings(app);
-    let platform = CurrentPlatform::new();
-    let local_model_ready = local_model_ready(app);
-    let engines = current_engine_availability(app, &settings);
-    slugtale_lib::DictationActivation::build_for_input(
-        settings,
-        &platform,
-        local_model_ready,
-        engines,
-        input,
-    )
+    readiness_snapshot_for(app, |_| input)
 }
 
 /// Engine availability for the readiness report, asked of the same providers the
@@ -1079,12 +1101,7 @@ fn report_not_ready(
     app: &tauri::AppHandle,
     report: &slugtale_lib::SettingsReadinessReport,
 ) -> bool {
-    let missing = report
-        .items
-        .iter()
-        .filter(|item| item.required && !item.ready)
-        .cloned()
-        .collect::<Vec<_>>();
+    let missing = slugtale_lib::missing_required_items(report);
     if !missing.is_empty() {
         record_diagnostic_event(
             app,
@@ -1116,12 +1133,7 @@ fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadin
         warm_effective_primary_engine(&app);
     }
     if !report.dictation_available {
-        let missing = report
-            .items
-            .iter()
-            .filter(|item| item.required && !item.ready)
-            .cloned()
-            .collect::<Vec<_>>();
+        let missing = slugtale_lib::missing_required_items(&report);
         if !missing.is_empty() {
             record_diagnostic_event(
                 &app,
