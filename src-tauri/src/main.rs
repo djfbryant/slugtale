@@ -258,6 +258,10 @@ impl DictationSurface for TauriSurface {
         let _ = slugtale_lib::notify("Slugtale could not capture audio", error);
     }
 
+    fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound) {
+        let _ = slugtale_lib::play_dictation_sound(sound);
+    }
+
     fn diagnostic_log(
         &self,
         settings: &slugtale_lib::Settings,

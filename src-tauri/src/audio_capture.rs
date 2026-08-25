@@ -219,6 +219,11 @@ pub trait AudioRecorder {
     fn voice_watermark(&self) -> u64 {
         0
     }
+
+    /// Install the real-time-safe level publisher (see [`AudioLevelCallback`]).
+    /// Only backends with a live audio callback distribute levels; the default
+    /// records nothing.
+    fn set_level_callback(&mut self, _callback: Option<AudioLevelCallback>) {}
 }
 
 pub type AudioLevelCallback = std::sync::Arc<dyn Fn(f32) + Send + Sync + 'static>;

@@ -36,6 +36,7 @@ pub trait DictationSurface: Send + Sync {
     fn hide_dictation_bar(&self);
     fn emit_dictation_audio_level(&self, level: f32);
     fn notify_capture_failure(&self, error: &str);
+    fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound);
     fn diagnostic_log(
         &self,
         settings: &slugtale_lib::Settings,
@@ -49,26 +50,34 @@ pub trait DictationSurface: Send + Sync {
 /// target, the audio capture session, and the runtime handle. The locks are
 /// private so the ordering rules stay inside this module; every method holds a
 /// lock no longer than the state move itself and never across a surface call.
-pub struct DictationHost {
+pub struct DictationHost<R = slugtale_lib::CpalAudioRecorder> {
     surface: Arc<dyn DictationSurface>,
     feedback: Mutex<slugtale_lib::RecordingFeedback>,
     /// The process id of the app the user was dictating into, captured when
     /// recording starts so insertion can re-target it after transcription
     /// (slugtale-squ).
     focus_target: Mutex<Option<i32>>,
-    capture: Mutex<slugtale_lib::AudioCaptureSession<slugtale_lib::CpalAudioRecorder>>,
+    capture: Mutex<slugtale_lib::AudioCaptureSession<R>>,
     runtime_state: Mutex<Option<Arc<slugtale_lib::DictationRuntime>>>,
 }
 
-impl DictationHost {
-    pub fn new(surface: Arc<dyn DictationSurface>) -> Self {
+impl<R> DictationHost<R>
+where
+    R: slugtale_lib::AudioRecorder,
+{
+    pub fn new(surface: Arc<dyn DictationSurface>) -> Self
+    where
+        R: Default,
+    {
+        Self::with_recorder(surface, R::default())
+    }
+
+    pub fn with_recorder(surface: Arc<dyn DictationSurface>, recorder: R) -> Self {
         Self {
             surface,
             feedback: Mutex::new(slugtale_lib::RecordingFeedback::default()),
             focus_target: Mutex::new(None),
-            capture: Mutex::new(slugtale_lib::AudioCaptureSession::new(
-                slugtale_lib::CpalAudioRecorder::new(),
-            )),
+            capture: Mutex::new(slugtale_lib::AudioCaptureSession::new(recorder)),
             runtime_state: Mutex::new(None),
         }
     }
@@ -191,7 +200,7 @@ impl DictationHost {
         };
 
         if let Some(sound) = effect.sound {
-            let _ = slugtale_lib::play_dictation_sound(sound);
+            self.surface.play_dictation_sound(sound);
         }
 
         Ok(effect)
@@ -283,10 +292,17 @@ impl DictationHost {
                 // then hide it once insertion completes (slugtale-0t4). The worker
                 // hides it, so it stays up until every earlier Segment Pause has
                 // landed too, not just this last one.
-                self.surface.show_dictation_bar(
-                    DictationPhase::Transcribing,
-                    bar_settings.unwrap_or(&self.surface.settings()),
-                );
+                let owned;
+                let bar_settings = match bar_settings {
+                    Some(settings) => settings,
+                    // Only this path pays for a Settings reload (slugtale-g1o.6).
+                    None => {
+                        owned = self.surface.settings();
+                        &owned
+                    }
+                };
+                self.surface
+                    .show_dictation_bar(DictationPhase::Transcribing, bar_settings);
                 let queued = self.runtime().send_last(audio);
                 if !queued {
                     eprintln!("dictation segment worker is unavailable; dropping final segment");
@@ -382,5 +398,341 @@ impl DictationHost {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slugtale_lib::{
+        AudioCaptureError, AudioRecorder, CapturedAudio, CountedSegment, DictationEvent,
+        DictationRuntime, DictationRuntimeHost, DictationSegmentOutcome, DictationSegmentPosition,
+        FileDiagnosticSink, SharedDiagnosticLog,
+    };
+
+    /// Every effect the lifecycle asked of its surface, in the order it asked.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Call {
+        Diagnostic(&'static str),
+        PlaySound(&'static str),
+        ShowBar(&'static str),
+        HideBar,
+        ClearAudioLevel,
+        ReadSettings,
+        NotifyCaptureFailure,
+    }
+
+    #[derive(Default, Clone)]
+    struct FakeSurface {
+        calls: Arc<std::sync::Mutex<Vec<Call>>>,
+    }
+
+    impl FakeSurface {
+        fn record(&self, call: Call) {
+            self.calls.lock().unwrap().push(call);
+        }
+
+        fn calls(&self) -> Vec<Call> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl DictationSurface for FakeSurface {
+        fn settings(&self) -> slugtale_lib::Settings {
+            self.record(Call::ReadSettings);
+            slugtale_lib::Settings::default()
+        }
+
+        fn record_diagnostic_event(&self, event: slugtale_lib::DiagnosticEvent) {
+            let tag = match event {
+                slugtale_lib::DiagnosticEvent::HotkeyTransition { .. } => "hotkey_transition",
+                slugtale_lib::DiagnosticEvent::AudioCaptureFailed { .. } => "audio_capture_failed",
+                _ => "other",
+            };
+            self.record(Call::Diagnostic(tag));
+        }
+
+        fn show_dictation_bar(&self, phase: DictationPhase, _settings: &slugtale_lib::Settings) {
+            self.record(Call::ShowBar(phase.as_str()));
+        }
+
+        fn hide_dictation_bar(&self) {
+            self.record(Call::HideBar);
+        }
+
+        fn emit_dictation_audio_level(&self, level: f32) {
+            if level == 0.0 {
+                self.record(Call::ClearAudioLevel);
+            }
+        }
+
+        fn notify_capture_failure(&self, _error: &str) {
+            self.record(Call::NotifyCaptureFailure);
+        }
+
+        fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound) {
+            let name = match sound {
+                slugtale_lib::DictationSound::Start => "start",
+                slugtale_lib::DictationSound::Stop => "stop",
+            };
+            self.record(Call::PlaySound(name));
+        }
+
+        fn diagnostic_log(
+            &self,
+            _settings: &slugtale_lib::Settings,
+        ) -> SharedDiagnosticLog<FileDiagnosticSink> {
+            SharedDiagnosticLog::new(false, FileDiagnosticSink::unavailable())
+        }
+
+        fn dictation_stack(
+            &self,
+            _settings: &slugtale_lib::Settings,
+        ) -> Result<slugtale_lib::DictationStack<FileDiagnosticSink>, String> {
+            unreachable!("the tested events never reach the segment worker path")
+        }
+    }
+
+    /// A recorder that never touches a device. `fail_start` simulates a
+    /// microphone that cannot open; `silent_stop` produces the digital silence
+    /// of a denied macOS microphone.
+    struct FakeRecorder {
+        fail_start: bool,
+        silent_stop: bool,
+    }
+
+    impl FakeRecorder {
+        fn healthy() -> Self {
+            Self {
+                fail_start: false,
+                silent_stop: false,
+            }
+        }
+    }
+
+    impl Default for FakeRecorder {
+        fn default() -> Self {
+            Self::healthy()
+        }
+    }
+
+    impl AudioRecorder for FakeRecorder {
+        fn prepare(&mut self) -> Result<(), AudioCaptureError> {
+            Ok(())
+        }
+
+        fn start(&mut self) -> Result<(), AudioCaptureError> {
+            if self.fail_start {
+                return Err(AudioCaptureError::new("fake start failure"));
+            }
+            Ok(())
+        }
+
+        fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
+            Ok(self.captured())
+        }
+
+        fn cancel(&mut self) -> Result<(), AudioCaptureError> {
+            Ok(())
+        }
+
+        fn take_segment(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
+            Ok(self.captured())
+        }
+
+        fn take_segment_through(&mut self, _cut: u64) -> Result<CapturedAudio, AudioCaptureError> {
+            Ok(self.captured())
+        }
+    }
+
+    impl FakeRecorder {
+        fn captured(&self) -> CapturedAudio {
+            CapturedAudio {
+                sample_rate_hz: 16_000,
+                samples: if self.silent_stop {
+                    vec![0.0; 160]
+                } else {
+                    vec![0.4; 480]
+                },
+            }
+        }
+    }
+
+    /// A runtime host that answers nothing: the worker stays idle because no
+    /// test drives Pause Flushes, and a stray settle touches no surface.
+    struct IdleRuntimeHost;
+
+    impl DictationRuntimeHost for IdleRuntimeHost {
+        fn take_pause_segment(&mut self, _cut: u64) -> Option<CapturedAudio> {
+            None
+        }
+
+        fn complete(
+            &mut self,
+            _audio: CapturedAudio,
+            _position: DictationSegmentPosition,
+        ) -> Result<DictationSegmentOutcome, String> {
+            Err("test host never transcribes".to_string())
+        }
+
+        fn last_job_settled(&mut self) {}
+    }
+
+    fn started_runtime() -> Arc<DictationRuntime> {
+        Arc::new(
+            DictationRuntime::start(
+                IdleRuntimeHost,
+                || 0,
+                Arc::new(|_: slugtale_lib::LocalDate, _: CountedSegment| {}),
+            )
+            .expect("test runtime starts"),
+        )
+    }
+
+    fn host_with(
+        surface: &Arc<FakeSurface>,
+        recorder: FakeRecorder,
+    ) -> DictationHost<FakeRecorder> {
+        let host = DictationHost::with_recorder(surface.clone(), recorder);
+        host.set_runtime(started_runtime()).unwrap();
+        host
+    }
+
+    #[test]
+    fn cancelling_from_a_hidden_bar_reads_no_settings_and_replays_nothing() {
+        let surface = Arc::new(FakeSurface::default());
+        let host = host_with(&surface, FakeRecorder::healthy());
+
+        host.handle_dictation_event(DictationEvent::Cancel).unwrap();
+
+        // Cancel reads no Settings at all (CONTEXT.md: Cancel discards), and a
+        // hidden bar means no sound and exactly one hide.
+        assert_eq!(
+            surface.calls(),
+            vec![Call::Diagnostic("hotkey_transition"), Call::HideBar,]
+        );
+    }
+
+    #[test]
+    fn a_stray_stop_from_a_hidden_bar_replays_nothing() {
+        let surface = Arc::new(FakeSurface::default());
+        let host = host_with(&surface, FakeRecorder::healthy());
+
+        host.handle_dictation_event(DictationEvent::Stop).unwrap();
+
+        // A hold-mode key release arriving after the bar went down must not
+        // replay the stop sound or re-end the session (ADR-0014). The Stop
+        // path still reads Settings before discovering nothing was active —
+        // pinned here as the price of the shared event handler.
+        assert_eq!(
+            surface.calls(),
+            vec![
+                Call::Diagnostic("hotkey_transition"),
+                Call::ReadSettings,
+                Call::HideBar,
+            ]
+        );
+    }
+
+    #[test]
+    fn start_plays_its_cue_then_shows_the_recording_bar_after_capture_opens() {
+        let surface = Arc::new(FakeSurface::default());
+        let host = host_with(&surface, FakeRecorder::healthy());
+
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+
+        let calls = surface.calls();
+        assert_eq!(calls[0], Call::Diagnostic("hotkey_transition"));
+        // If the microphone cannot start, no recording state is shown — so the
+        // cue must come after capture opened, immediately before the bar.
+        let sound = calls
+            .iter()
+            .position(|call| *call == Call::PlaySound("start"))
+            .expect("start plays its cue");
+        assert_eq!(calls[sound + 1], Call::ShowBar("recording"));
+        assert!(!calls.contains(&Call::HideBar));
+        assert_eq!(
+            calls.iter().filter(|c| **c == Call::ReadSettings).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn stop_switches_the_bar_to_transcribing_and_keeps_it_up() {
+        let surface = Arc::new(FakeSurface::default());
+        let host = host_with(&surface, FakeRecorder::healthy());
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+        let recording = surface
+            .calls()
+            .iter()
+            .position(|call| *call == Call::ShowBar("recording"))
+            .unwrap();
+
+        host.handle_dictation_event(DictationEvent::Stop).unwrap();
+
+        let calls = surface.calls();
+        // The bar stays on screen for transcription (slugtale-0t4): shown again
+        // as transcribing, never hidden between the two shows.
+        let transcribing = calls
+            .iter()
+            .position(|call| *call == Call::ShowBar("transcribing"))
+            .expect("stop shows the transcribing state");
+        assert!(!calls[recording..transcribing].contains(&Call::HideBar));
+        assert!(calls.contains(&Call::PlaySound("stop")));
+        // Start reads Settings once (no activation snapshot) and Stop reads it
+        // once more; nothing else pays for a read.
+        assert_eq!(
+            calls.iter().filter(|c| **c == Call::ReadSettings).count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_failed_capture_hides_the_bar_and_reports_instead_of_showing_recording() {
+        let surface = Arc::new(FakeSurface::default());
+        let host = host_with(
+            &surface,
+            FakeRecorder {
+                fail_start: true,
+                silent_stop: true,
+            },
+        );
+
+        let result = host.handle_dictation_event(DictationEvent::Start);
+
+        assert!(result.is_err());
+        assert_eq!(
+            surface.calls(),
+            vec![
+                Call::Diagnostic("hotkey_transition"),
+                Call::ClearAudioLevel,
+                Call::HideBar,
+                Call::Diagnostic("audio_capture_failed"),
+                Call::NotifyCaptureFailure,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_silent_stop_reports_a_denied_microphone_instead_of_transcribing() {
+        let surface = Arc::new(FakeSurface::default());
+        let host = host_with(
+            &surface,
+            FakeRecorder {
+                fail_start: false,
+                silent_stop: true,
+            },
+        );
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+
+        let result = host.handle_dictation_event(DictationEvent::Stop);
+
+        // Digital silence is how a denied macOS microphone fails (slugtale-d3k):
+        // the bar hides and the user is told, rather than a "You" transcription.
+        assert!(result.is_err());
+        let calls = surface.calls();
+        assert!(calls.contains(&Call::ShowBar("recording")));
+        assert!(calls.contains(&Call::NotifyCaptureFailure));
+        assert!(!calls.contains(&Call::ShowBar("transcribing")));
     }
 }
