@@ -118,20 +118,15 @@ fn listening_channel() -> Result<
 }
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
-const POLL: std::time::Duration = std::time::Duration::from_millis(250);
-#[cfg(all(target_os = "macos", feature = "voice-activation"))]
-const CAPTURE_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
-#[cfg(all(target_os = "macos", feature = "voice-activation"))]
-const MIN_NEW_SAMPLES: usize = 32_000;
-#[cfg(all(target_os = "macos", feature = "voice-activation"))]
-const OVERLAP_SAMPLES: usize = 16_000;
-#[cfg(all(target_os = "macos", feature = "voice-activation"))]
-const SPEECH_FRAME_SAMPLES: usize = 320;
-#[cfg(all(target_os = "macos", feature = "voice-activation"))]
-const MINIMUM_SPEECH_RMS: f32 = 0.006;
-#[cfg(all(target_os = "macos", feature = "voice-activation"))]
-const SPEECH_CONTRAST_RATIO: f32 = 1.5;
+fn whisper_ready(app: &tauri::AppHandle) -> bool {
+    let settings = load_current_settings(app);
+    app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+        .whisper_provider(&settings)
+        .is_some()
+}
 
+/// Wait up to `timeout` for a command so turning Voice Activation off closes
+/// the microphone without sitting out a poll or retry sleep.
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ListenWait {
@@ -139,8 +134,6 @@ enum ListenWait {
     Stop,
 }
 
-/// Wait up to `timeout` for a command so turning Voice Activation off closes
-/// the microphone without sitting out a poll or retry sleep.
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 fn wait_or_stop(
     receiver: &std::sync::mpsc::Receiver<VoiceActivationCommand>,
@@ -156,186 +149,120 @@ fn wait_or_stop(
     }
 }
 
+/// The macOS half of the Voice Activation adapter: it owns the app handle and
+/// answers the listen loop's questions. Every decision lives in
+/// `slugtale_lib::run_listen_loop`; nothing here but app reads and effects.
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
-fn stop_requested(receiver: &std::sync::mpsc::Receiver<VoiceActivationCommand>) -> bool {
-    matches!(
-        receiver.try_recv(),
-        Ok(VoiceActivationCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected)
-    )
+struct AppWakeListener {
+    app: tauri::AppHandle,
+    receiver: std::sync::mpsc::Receiver<VoiceActivationCommand>,
+    capture: slugtale_lib::VoiceActivationCapture<slugtale_lib::CpalAudioRecorder>,
 }
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
-fn whisper_ready(app: &tauri::AppHandle) -> bool {
-    let settings = load_current_settings(app);
-    app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
-        .whisper_provider(&settings)
-        .is_some()
+impl AppWakeListener {
+    fn new(
+        app: tauri::AppHandle,
+        receiver: std::sync::mpsc::Receiver<VoiceActivationCommand>,
+    ) -> Self {
+        Self {
+            app,
+            receiver,
+            capture: slugtale_lib::VoiceActivationCapture::new(
+                slugtale_lib::CpalAudioRecorder::new(),
+            ),
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+impl slugtale_lib::WakeListener for AppWakeListener {
+    fn next_command(&mut self) -> Option<slugtale_lib::ListenerCommand> {
+        self.receiver.recv().ok().map(|command| match command {
+            VoiceActivationCommand::Listen => slugtale_lib::ListenerCommand::Listen,
+            VoiceActivationCommand::Stop => slugtale_lib::ListenerCommand::Stop,
+        })
+    }
+
+    fn stop_requested(&self) -> bool {
+        matches!(
+            self.receiver.try_recv(),
+            Ok(VoiceActivationCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected)
+        )
+    }
+
+    fn wait(&mut self, timeout: std::time::Duration) -> bool {
+        wait_or_stop(&self.receiver, timeout) == ListenWait::Continue
+    }
+
+    fn dictating(&self) -> bool {
+        target_is_dictating(&self.app)
+    }
+
+    fn engine_ready(&self) -> bool {
+        whisper_ready(&self.app)
+    }
+
+    fn microphone_granted(&self) -> bool {
+        slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new())
+    }
+
+    fn capture_is_open(&self) -> bool {
+        self.capture.is_open()
+    }
+
+    fn start_capture(&mut self) -> Result<(), String> {
+        self.capture.start()
+    }
+
+    fn rebuild_capture(&mut self) {
+        self.capture.rebuild(slugtale_lib::CpalAudioRecorder::new());
+    }
+
+    fn close_capture(&mut self) {
+        self.capture.close();
+    }
+
+    fn take_segment(&mut self) -> Result<Vec<f32>, String> {
+        self.capture
+            .take_segment()
+            .map(|chunk| chunk.samples)
+            .map_err(|error| error.to_string())
+    }
+
+    fn wake_check(&mut self, samples: Vec<f32>) -> slugtale_lib::WakeCheck {
+        let audio = slugtale_lib::CapturedAudio::mono_16khz(samples);
+        // Wake checks always use greedy decoding. The user's wider beam is
+        // useful for dictation text, but wasteful for a two-word phrase.
+        let mut settings = load_current_settings(&self.app);
+        settings.speed_profile = slugtale_lib::SpeedProfile::Fast;
+        let Some(provider) = self
+            .app
+            .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+            .whisper_provider(&settings)
+        else {
+            return slugtale_lib::WakeCheck::EngineUnavailable;
+        };
+        match provider.transcribe(&audio) {
+            Ok(transcription) => slugtale_lib::WakeCheck::Transcript(
+                transcription.transcription.text.trim().to_string(),
+            ),
+            Err(error) => slugtale_lib::WakeCheck::TranscriptionFailed(error.to_string()),
+        }
+    }
+
+    fn report_microphone_problem(&mut self) {
+        report_voice_activation_microphone_problem(&self.app);
+    }
+
+    fn trigger_wake(&mut self) {
+        trigger_start(&self.app);
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceActivationCommand>) {
-    use slugtale_lib::{
-        CpalAudioRecorder, NewAudioState, SpeechWindowBuffer, VoiceActivationCapture,
-        WakeWordConfig, WakeWordDetector,
-    };
-
-    while let Ok(command) = receiver.recv() {
-        if command == VoiceActivationCommand::Stop {
-            continue;
-        }
-
-        let mut capture = VoiceActivationCapture::new(CpalAudioRecorder::new());
-        let mut capture_error_reported = false;
-        let mut microphone_problem_reported = false;
-        let mut window = SpeechWindowBuffer::new();
-        let mut detector = WakeWordDetector::new(WakeWordConfig::default());
-
-        loop {
-            if stop_requested(&receiver) {
-                break;
-            }
-
-            if target_is_dictating(&app) {
-                if capture.is_open() {
-                    capture.rebuild(CpalAudioRecorder::new());
-                }
-                window.clear();
-                if wait_or_stop(&receiver, POLL) == ListenWait::Stop {
-                    break;
-                }
-                continue;
-            }
-
-            if !whisper_ready(&app) {
-                if capture.is_open() {
-                    capture.rebuild(CpalAudioRecorder::new());
-                    window.clear();
-                }
-                if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
-                    break;
-                }
-                continue;
-            }
-
-            if !capture.is_open() {
-                if !slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new()) {
-                    if !microphone_problem_reported {
-                        report_voice_activation_microphone_problem(&app);
-                        microphone_problem_reported = true;
-                    }
-                    if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
-                        break;
-                    }
-                    continue;
-                }
-                if let Err(error) = capture.start() {
-                    if !capture_error_reported {
-                        eprintln!("voice activation could not open the microphone: {error}");
-                        capture_error_reported = true;
-                    }
-                    capture.rebuild(CpalAudioRecorder::new());
-                    if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
-                        break;
-                    }
-                    continue;
-                }
-                capture_error_reported = false;
-                window.clear();
-                eprintln!("voice activation: listening");
-            }
-
-            if wait_or_stop(&receiver, POLL) == ListenWait::Stop {
-                break;
-            }
-            let chunk = match capture.take_segment() {
-                Ok(chunk) => chunk,
-                Err(error) => {
-                    eprintln!("voice activation capture failed: {error}");
-                    capture.rebuild(CpalAudioRecorder::new());
-                    capture_error_reported = true;
-                    window.clear();
-                    if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
-                        break;
-                    }
-                    continue;
-                }
-            };
-            window.push(&chunk.samples);
-
-            if !window.ready_for_evaluation(MIN_NEW_SAMPLES) {
-                continue;
-            }
-            let audio_state = window.new_audio_state(
-                SPEECH_FRAME_SAMPLES,
-                MINIMUM_SPEECH_RMS,
-                SPEECH_CONTRAST_RATIO,
-            );
-            match audio_state {
-                NewAudioState::DigitalSilence => {
-                    if !microphone_problem_reported {
-                        eprintln!("voice activation: microphone supplied digital silence");
-                        report_voice_activation_microphone_problem(&app);
-                        microphone_problem_reported = true;
-                    }
-                    capture.rebuild(CpalAudioRecorder::new());
-                    window.clear();
-                    if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
-                        break;
-                    }
-                    continue;
-                }
-                NewAudioState::Quiet => {
-                    microphone_problem_reported = false;
-                    window.retain_recent(OVERLAP_SAMPLES);
-                    continue;
-                }
-                NewAudioState::Speech => microphone_problem_reported = false,
-            }
-
-            let audio = slugtale_lib::CapturedAudio::mono_16khz(window.take_for_evaluation());
-            window.retain_recent(OVERLAP_SAMPLES);
-
-            // Wake checks always use greedy decoding. The user's wider beam is
-            // useful for dictation text, but wasteful for a two-word phrase.
-            let mut settings = load_current_settings(&app);
-            settings.speed_profile = slugtale_lib::SpeedProfile::Fast;
-            let provider = app
-                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
-                .whisper_provider(&settings);
-            let Some(provider) = provider else {
-                capture.rebuild(CpalAudioRecorder::new());
-                window.clear();
-                if wait_or_stop(&receiver, CAPTURE_RETRY) == ListenWait::Stop {
-                    break;
-                }
-                continue;
-            };
-
-            match provider.transcribe(&audio) {
-                Ok(transcription) => {
-                    let text = transcription.transcription.text.trim();
-                    if text.is_empty() {
-                        continue;
-                    }
-                    let score = slugtale_lib::wake_phrase_score(text);
-                    // Scores are safe to log. Transcript text and audio are not.
-                    eprintln!("voice activation: score {score:.2}");
-                    if detector.on_transcript(text, now_unix_ms()).is_some() {
-                        if stop_requested(&receiver) {
-                            break;
-                        }
-                        window.clear();
-                        eprintln!("voice activation: wake phrase detected");
-                        trigger_start(&app);
-                    }
-                }
-                Err(error) => eprintln!("voice activation transcription failed: {error}"),
-            }
-        }
-
-        capture.close();
-        eprintln!("voice activation: stopped listening");
-    }
+    slugtale_lib::run_listen_loop(&mut AppWakeListener::new(app, receiver));
 }
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
@@ -386,14 +313,6 @@ fn trigger_start(app: &tauri::AppHandle) {
     ) {
         eprintln!("voice activation could not start dictation: {error}");
     }
-}
-
-#[cfg(all(target_os = "macos", feature = "voice-activation"))]
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(all(target_os = "macos", feature = "voice-activation", test))]

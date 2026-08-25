@@ -135,6 +135,13 @@ pub use dictation_control::*;
 mod wake_word;
 pub use wake_word::*;
 
+/// The Voice Activation listen loop (slugtale-e95): the always-listening state
+/// machine — dictation suppression, engine readiness, capture retry,
+/// report-once microphone problems, and the wake trigger — with every OS touch
+/// behind the `WakeListener` port so all platforms test and run it unchanged.
+mod listen_loop;
+pub use listen_loop::*;
+
 /// macOS implementation of platform adapters (ADR-0021). Resolves OS-specific
 /// dictation gates, text insertion, insertion rescue, permission setup, and
 /// focused-app activation from live system state.
