@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace AudioRecorder::voice_watermark -> u64 with 1
+@@ -212,17 +212,17 @@
+     /// so queue delay cannot append later speech or extra silence to this one
+     /// (slugtale-g1o.4).
+     fn take_segment_through(&mut self, cut: u64) -> Result<CapturedAudio, AudioCaptureError>;
+ 
+     /// The ring position of the most recent voiced sample — the watermark a
+     /// queued Pause Flush should carry as its cut. `0` when nothing voiced has
+     /// been captured since the ring was cleared.
+     fn voice_watermark(&self) -> u64 {
+-        0
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Install the real-time-safe level publisher (see [`AudioLevelCallback`]).
+     /// Only backends with a live audio callback distribute levels; the default
+     /// records nothing.
+     fn set_level_callback(&mut self, _callback: Option<AudioLevelCallback>) {}
+ }
+ 

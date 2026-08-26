@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ delete match arm 3 in LocalDate::weekday
+@@ -74,17 +74,17 @@
+     /// Which day of the week this date falls on.
+     pub fn weekday(self) -> Weekday {
+         // 1970-01-01 was a Thursday.
+         let index = (self.days_from_epoch() + 4).rem_euclid(7);
+         match index {
+             0 => Weekday::Sunday,
+             1 => Weekday::Monday,
+             2 => Weekday::Tuesday,
+-            3 => Weekday::Wednesday,
++             /* ~ changed by cargo-mutants ~ */
+             4 => Weekday::Thursday,
+             5 => Weekday::Friday,
+             _ => Weekday::Saturday,
+         }
+     }
+ 
+     /// The first date of the calendar week containing this date, given where the
+     /// user's locale starts its weeks.

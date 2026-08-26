@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace <impl DictationSurface for TauriSurface>::settings -> slugtale_lib::Settings with Default::default()
+@@ -222,17 +222,17 @@
+ /// Settings reads, diagnostics, and failure notifications, reached through the
+ /// one AppHandle.
+ struct TauriSurface {
+     app: tauri::AppHandle,
+ }
+ 
+ impl DictationSurface for TauriSurface {
+     fn settings(&self) -> slugtale_lib::Settings {
+-        load_current_settings(&self.app)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn record_diagnostic_event(&self, event: slugtale_lib::DiagnosticEvent) {
+         record_diagnostic_event(&self.app, event);
+     }
+ 
+     fn show_dictation_bar(&self, phase: DictationPhase, settings: &slugtale_lib::Settings) {
+         show_dictation_bar(&self.app, phase, settings);

@@ -105,12 +105,18 @@ pub fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
 fn play_sound(sound: DictationSound) -> std::io::Result<()> {
     // Reuse the built-in system sounds so v1 ships no bundled audio assets. Tink
     // marks the start of recording; Pop marks the end.
-    let file = match sound {
+    std::process::Command::new("afplay")
+        .arg(macos_dictation_sound_file(sound))
+        .spawn()?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_dictation_sound_file(sound: DictationSound) -> &'static str {
+    match sound {
         DictationSound::Start => "/System/Library/Sounds/Tink.aiff",
         DictationSound::Stop => "/System/Library/Sounds/Pop.aiff",
-    };
-    std::process::Command::new("afplay").arg(file).spawn()?;
-    Ok(())
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -190,5 +196,18 @@ mod tests {
         assert_eq!(effect.sound, None);
         assert!(!effect.bar_visible);
         assert_eq!(effect.outcome, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_dictation_sound_files_are_the_system_cues() {
+        assert!(macos_dictation_sound_file(DictationSound::Start).contains("Tink"));
+        assert!(macos_dictation_sound_file(DictationSound::Stop).contains("Pop"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn play_dictation_sound_returns_without_blocking() {
+        assert!(play_dictation_sound(DictationSound::Start).is_ok());
     }
 }

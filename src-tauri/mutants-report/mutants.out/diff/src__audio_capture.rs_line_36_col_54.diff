@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace / with % in captured_audio_from_interleaved_input
+@@ -28,17 +28,17 @@
+         return Err(AudioCaptureError::new(
+             "input channel count must be non-zero",
+         ));
+     }
+ 
+     let channels = channels as usize;
+     let mut mono = Vec::with_capacity(samples.len() / channels);
+     for frame in samples.chunks_exact(channels) {
+-        mono.push(frame.iter().copied().sum::<f32>() / channels as f32);
++        mono.push(frame.iter().copied().sum::<f32>() % /* ~ changed by cargo-mutants ~ */ channels as f32);
+     }
+ 
+     if sample_rate_hz == 16_000 {
+         return Ok(CapturedAudio::mono_16khz(mono));
+     }
+ 
+     let ratio = sample_rate_hz as f64 / 16_000.0;
+     let target_len = ((mono.len() as f64) / ratio).round() as usize;

@@ -1,0 +1,28 @@
+--- src/main.rs
++++ replace dictation_event -> Result<(), String> with Ok(())
+@@ -65,24 +65,17 @@
+ 
+ /// Drive the recording surface (ADR-0014) from a dictation lifecycle event:
+ /// play the start/stop sound and show or hide the Dictation Bar. The bar's Stop
+ /// and Cancel controls route here; the global hotkey lifecycle routes the
+ /// configured activation hotkey and Escape here while preserving text-target
+ /// focus.
+ #[tauri::command]
+ fn dictation_event(app: tauri::AppHandle, event: String) -> Result<(), String> {
+-    let event = match event.as_str() {
+-        "start" => slugtale_lib::DictationEvent::Start,
+-        "stop" => return stop_active_dictation(&app),
+-        "cancel" => return cancel_active_dictation(&app),
+-        other => return Err(format!("unknown dictation event: {other}")),
+-    };
+-
+-    dictation_host(&app).handle_dictation_event(event)
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Stop from the Dictation Bar and reset the shared control at the same time.
+ /// Voice Activation can then trigger again without a stale active state.
+ fn stop_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
+     end_active_dictation(
+         app,
+         |control| control.stop(),

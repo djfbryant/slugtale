@@ -1,0 +1,23 @@
+--- src/main.rs
++++ replace whisper_engine_provider -> Result<Arc<dyn TranscriptionProvider>, String> with Ok(Arc::new(Default::default()))
+@@ -1216,19 +1216,17 @@
+ /// A [`slugtale_lib::TranscriptionProvider`] for the Whisper engine, built the
+ /// same way `complete_captured_dictation` builds one: from the cache keyed by
+ /// the currently configured model path. Constructing it does not load model
+ /// weights, so this is cheap enough to call every time Settings asks.
+ fn whisper_engine_provider(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> Result<Arc<dyn TranscriptionProvider>, String> {
+-    app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+-        .whisper_provider(settings)
+-        .ok_or_else(|| "could not resolve a local model directory for Whisper".to_string())
++    Ok(Arc::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Build one engine's Settings row from its cached provider. Never re-probes:
+ /// every branch reads `metadata()`/`availability()` off a provider that was
+ /// already constructed (Whisper) or already registered at startup (Parakeet,
+ /// Apple SpeechTranscriber), matching how the dictation path itself asks these
+ /// questions.
+ fn build_engine_view(

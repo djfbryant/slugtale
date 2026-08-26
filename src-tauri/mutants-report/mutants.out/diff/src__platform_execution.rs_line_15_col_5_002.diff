@@ -1,0 +1,29 @@
+--- src/platform_execution.rs
++++ replace capture_text_target -> Option<i32> with Some(1)
+@@ -7,25 +7,17 @@
+ use crate::{InsertionRescue, TextInsertion};
+ 
+ /// How long the target application needs after activation before it is safe to
+ /// type into. Unchanged from the previous always-sleep behaviour; what changed
+ /// is *when* the clock runs (slugtale-g1o.1).
+ pub const FOCUS_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
+ 
+ pub fn capture_text_target() -> Option<i32> {
+-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+-    {
+-        return crate::frontmost_app_pid();
+-    }
+-
+-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+-    {
+-        None
+-    }
++    Some(1) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// When an activated target becomes safe to type into, as a deadline rather
+ /// than a sleep: `None` when no activation happened (nothing to wait for),
+ /// otherwise `now` plus [`FOCUS_SETTLE_DELAY`]. Injected-clock seam for tests.
+ fn settle_deadline(activated: bool, now: std::time::Instant) -> Option<std::time::Instant> {
+     activated.then(|| now + FOCUS_SETTLE_DELAY)
+ }

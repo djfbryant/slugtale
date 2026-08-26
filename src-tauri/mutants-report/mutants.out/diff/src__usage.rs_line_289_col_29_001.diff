@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ replace += with *= in record_counted_segment
+@@ -281,17 +281,17 @@
+                 .expect("the record was just inserted")
+         }
+     };
+ 
+     if segment.starts_dictation {
+         record.dictations = record.dictations.saturating_add(1);
+     }
+     record.words = record.words.saturating_add(segment.words);
+-    record.speaking_seconds += segment.speaking_seconds.max(0.0);
++    record.speaking_seconds *= /* ~ changed by cargo-mutants ~ */ segment.speaking_seconds.max(0.0);
+ }
+ 
+ /// Totals for exactly one local day.
+ pub fn totals_for_day(usage: &UsageFile, date: LocalDate) -> UsageTotals {
+     let iso = date.to_iso();
+     let mut totals = UsageTotals::default();
+     for record in usage.days.iter().filter(|record| record.date == iso) {
+         totals.add(record);

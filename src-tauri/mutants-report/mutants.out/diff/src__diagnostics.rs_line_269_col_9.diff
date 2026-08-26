@@ -1,0 +1,24 @@
+--- src/diagnostics.rs
++++ replace SharedDiagnosticLog<S>::record with ()
+@@ -261,20 +261,17 @@
+ {
+     pub fn new(enabled: bool, sink: S) -> Self {
+         Self {
+             inner: Arc::new(Mutex::new(LocalDiagnosticLog::new(enabled, sink))),
+         }
+     }
+ 
+     pub fn record(&self, event: DiagnosticEvent) {
+-        match self.inner.lock() {
+-            Ok(mut log) => log.record(event),
+-            Err(_) => eprintln!("diagnostic log mutex poisoned"),
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Decorates an [`AsrRuntime`], logging transcription outcomes (never the
+ /// transcript text itself, per ADR-0019) without changing its behavior.
+ pub struct DiagnosticAsrRuntime<'a, S> {
+     runtime: &'a dyn AsrRuntime,
+     log: SharedDiagnosticLog<S>,

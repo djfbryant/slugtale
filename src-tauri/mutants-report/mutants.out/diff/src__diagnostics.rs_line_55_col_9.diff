@@ -1,0 +1,23 @@
+--- src/diagnostics.rs
++++ replace DiagnosticEvent::readiness_incomplete -> Self with Default::default()
+@@ -47,19 +47,17 @@
+     /// a duration — there is no field on it that could hold what the user said
+     /// (ADR-0019).
+     RoutingDecision { routing: RoutingDiagnostics },
+ }
+ 
+ impl DiagnosticEvent {
+     /// Reduce unmet [`ReadinessItem`]s to their ids for logging.
+     pub fn readiness_incomplete(missing: &[ReadinessItem]) -> Self {
+-        Self::ReadinessIncomplete {
+-            missing: missing.iter().map(|item| item.id.clone()).collect(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Reduce a [`FinalTranscription`] to a character count so the transcript text
+     /// can never reach the Local Diagnostic Log.
+     pub fn transcription_completed(transcription: &FinalTranscription) -> Self {
+         Self::TranscriptionCompleted {
+             characters: transcription.text.chars().count(),
+         }

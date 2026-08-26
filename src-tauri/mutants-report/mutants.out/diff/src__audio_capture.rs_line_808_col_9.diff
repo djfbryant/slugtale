@@ -1,0 +1,28 @@
+--- src/audio_capture.rs
++++ replace <impl AudioRecorder for CpalAudioRecorder>::take_segment_through -> Result<CapturedAudio, AudioCaptureError> with Ok(Default::default())
+@@ -800,24 +800,17 @@
+             .as_ref()
+             .ok_or_else(|| AudioCaptureError::new("audio capture buffer is unavailable"))?
+             .drain()?;
+ 
+         captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
+     }
+ 
+     fn take_segment_through(&mut self, cut: u64) -> Result<CapturedAudio, AudioCaptureError> {
+-        let buffer = self
+-            .buffer
+-            .as_ref()
+-            .ok_or_else(|| AudioCaptureError::new("audio capture buffer is unavailable"))?;
+-        let guard = (QUIET_TAIL_GUARD.as_secs_f64() * f64::from(self.sample_rate_hz)) as u64;
+-        let samples = buffer.drain_through(cut, guard)?;
+-
+-        captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn voice_watermark(&self) -> u64 {
+         self.buffer
+             .as_ref()
+             .map(|buffer| buffer.voice_watermark())
+             .unwrap_or(0)
+     }

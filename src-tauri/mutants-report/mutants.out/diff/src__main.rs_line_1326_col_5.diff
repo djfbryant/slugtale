@@ -1,0 +1,27 @@
+--- src/main.rs
++++ replace set_transcription_engines -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+@@ -1318,23 +1318,17 @@
+ /// is resolved fresh by `transcription_router` on the next dictation instead
+ /// (see [`slugtale_lib::apply_engine_settings`]).
+ #[tauri::command]
+ fn set_transcription_engines(
+     app: tauri::AppHandle,
+     primary_engine: slugtale_lib::TranscriptionEngine,
+     second_opinion: slugtale_lib::SecondOpinionMode,
+ ) -> Result<slugtale_lib::Settings, String> {
+-    let mut settings = load_current_settings(&app);
+-    slugtale_lib::apply_engine_settings(&mut settings, primary_engine, second_opinion);
+-    save_current_settings(&app, &settings)?;
+-    // Start warming the newly effective engine now so the first dictation
+-    // after the change does not pay for a cold model load.
+-    warm_effective_primary_engine(&app);
+-    Ok(settings)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Install one engine's assets as an explicit user action (slugtale-vjs.4).
+ ///
+ /// Whisper and Parakeet both fetch pinned artefacts over HTTP and report
+ /// progress on `on_progress`, exactly like [`download_local_model`]. Apple
+ /// SpeechTranscriber has no download for Slugtale to drive — it asks macOS to
+ /// install its own system assets via

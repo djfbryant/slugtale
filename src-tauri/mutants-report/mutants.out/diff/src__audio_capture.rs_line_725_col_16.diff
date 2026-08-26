@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ delete ! in <impl AudioRecorder for CpalAudioRecorder>::start
+@@ -717,17 +717,17 @@
+                 self.level_bits.clone(),
+             )?;
+             self.stream = Some(stream);
+             self.buffer = Some(buffer);
+             self.stream_identity = Some(identity.clone());
+         }
+ 
+         if let Err(error) = self.stream.as_ref().expect("audio stream exists").play() {
+-            if !reused_stream {
++            if  /* ~ changed by cargo-mutants ~ */reused_stream {
+                 return Err(AudioCaptureError::new(error.to_string()));
+             }
+ 
+             // A retained stream can become unusable after a device interruption
+             // without its identity changing. Fall back to a cold start once so a
+             // stale stream never strands dictation.
+             self.stream.take();
+             self.buffer = None;

@@ -1,0 +1,28 @@
+--- src/main.rs
++++ replace current_settings_readiness -> slugtale_lib::SettingsReadinessReport with Default::default()
+@@ -780,24 +780,17 @@
+         slugtale_lib::TranscriptionEngine,
+         slugtale_lib::EngineAvailability,
+     )> {
+         current_engine_availability(self.app, settings)
+     }
+ }
+ 
+ fn current_settings_readiness(app: &tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
+-    readiness_snapshot_for(app, |settings| {
+-        if voice_activation::supported() && settings.voice_activation_enabled {
+-            slugtale_lib::DictationInput::VoiceActivation
+-        } else {
+-            slugtale_lib::DictationInput::Hotkey
+-        }
+-    })
+-    .report
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// One readiness snapshot over the app's probes. `input` decides which
+ /// activation's requirements the report reflects.
+ fn readiness_snapshot_for(
+     app: &tauri::AppHandle,
+     input: impl FnOnce(&slugtale_lib::Settings) -> slugtale_lib::DictationInput,
+ ) -> slugtale_lib::DictationActivation {

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace != with == in update_registered_hotkey
+@@ -562,17 +562,17 @@
+         let registration = state
+             .0
+             .lock()
+             .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+         registration.current_hotkey.clone()
+     };
+     let next = settings.hotkey.clone();
+ 
+-    if previous != next {
++    if previous == /* ~ changed by cargo-mutants ~ */ next {
+         if let Some(hotkey) = next.as_deref() {
+             app.global_shortcut()
+                 .register(hotkey)
+                 .map_err(|error| error.to_string())?;
+         }
+ 
+         if let Some(hotkey) = previous.as_deref() {
+             if let Err(error) = app.global_shortcut().unregister(hotkey) {

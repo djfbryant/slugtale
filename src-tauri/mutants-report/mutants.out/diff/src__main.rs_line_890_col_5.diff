@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace get_settings -> slugtale_lib::Settings with Default::default()
+@@ -882,17 +882,17 @@
+             );
+         }
+     }
+     report
+ }
+ 
+ #[tauri::command]
+ fn get_settings(app: tauri::AppHandle) -> slugtale_lib::Settings {
+-    load_current_settings(&app)
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// One selectable display in the Settings UI. The stable monitor name is stored
+ /// in the Settings File; its label adds resolution so similarly named displays
+ /// remain distinguishable.
+ #[derive(serde::Serialize)]
+ struct DictationBarDisplayOption {
+     value: slugtale_lib::BarDisplay,

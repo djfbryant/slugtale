@@ -1,0 +1,21 @@
+--- src/recording_feedback.rs
++++ replace play_dictation_sound -> std::io::Result<()> with Ok(())
+@@ -93,17 +93,17 @@
+         }
+     }
+ }
+ 
+ /// Play the audible cue for a dictation edge (ADR-0014) through the OS sound
+ /// service. Like [`crate::open_in_file_manager`], the spawned helper returns
+ /// immediately so the recording lifecycle is never blocked waiting on audio.
+ pub fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
+-    play_sound(sound)
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(target_os = "macos")]
+ fn play_sound(sound: DictationSound) -> std::io::Result<()> {
+     // Reuse the built-in system sounds so v1 ships no bundled audio assets. Tink
+     // marks the start of recording; Pop marks the end.
+     let file = match sound {
+         DictationSound::Start => "/System/Library/Sounds/Tink.aiff",

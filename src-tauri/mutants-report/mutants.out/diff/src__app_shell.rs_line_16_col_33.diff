@@ -1,0 +1,21 @@
+--- src/app_shell.rs
++++ replace == with != in permission_reauthorization_requested
+@@ -8,17 +8,17 @@
+ pub const REAUTHORIZE_PERMISSIONS_ARGUMENT: &str = "--reauthorize-permissions";
+ 
+ pub fn permission_reauthorization_requested<I, S>(args: I) -> bool
+ where
+     I: IntoIterator<Item = S>,
+     S: AsRef<str>,
+ {
+     args.into_iter()
+-        .any(|arg| arg.as_ref() == REAUTHORIZE_PERMISSIONS_ARGUMENT)
++        .any(|arg| arg.as_ref() != /* ~ changed by cargo-mutants ~ */ REAUTHORIZE_PERMISSIONS_ARGUMENT)
+ }
+ 
+ pub fn build_tray_menu_items() -> Vec<(&'static str, &'static str)> {
+     vec![("settings", "Settings\u{2026}"), ("quit", "Quit Slugtale")]
+ }
+ 
+ /// Whether a window should hide (stay alive) on a close request rather than be
+ /// destroyed. Slugtale is a tray resident app (ADR-0008): the settings window is

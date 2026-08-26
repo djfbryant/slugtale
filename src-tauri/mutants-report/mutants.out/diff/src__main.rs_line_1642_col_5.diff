@@ -1,0 +1,46 @@
+--- src/main.rs
++++ replace open_typing_challenge -> Result<(), String> with Ok(())
+@@ -1634,42 +1634,17 @@
+ ///
+ /// It is its own window and larger than Settings on purpose: thirty seconds of
+ /// typing against a passage needs room to read, and the 480x520 settings frame
+ /// would put the passage and the typing box in a column too narrow to follow.
+ #[tauri::command]
+ fn open_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
+     // Raised before the window exists, so the hotkey is already inert by the
+     // time the webview can steal focus and the user can start typing.
+-    app.state::<TypingChallengeOpen>().set(true);
+-
+-    if let Some(window) = app.get_webview_window(TYPING_CHALLENGE_WINDOW) {
+-        window.show().map_err(|error| error.to_string())?;
+-        window.set_focus().map_err(|error| error.to_string())?;
+-        return Ok(());
+-    }
+-
+-    let built = tauri::WebviewWindowBuilder::new(
+-        &app,
+-        TYPING_CHALLENGE_WINDOW,
+-        tauri::WebviewUrl::App("typing-challenge.html".into()),
+-    )
+-    .title("Slugtale Typing Challenge")
+-    .inner_size(760.0, 620.0)
+-    .resizable(false)
+-    .build();
+-
+-    match built {
+-        Ok(_) => Ok(()),
+-        Err(error) => {
+-            // The window never appeared, so the hotkey must work again.
+-            app.state::<TypingChallengeOpen>().set(false);
+-            Err(error.to_string())
+-        }
+-    }
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn close_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
+     app.state::<TypingChallengeOpen>().set(false);
+     if let Some(window) = app.get_webview_window(TYPING_CHALLENGE_WINDOW) {
+         window.close().map_err(|error| error.to_string())?;
+     }

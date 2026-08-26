@@ -1,0 +1,26 @@
+--- src/main.rs
++++ replace usage_span -> UsageSpan with Default::default()
+@@ -1453,22 +1453,17 @@
+     dictations: u32,
+     words: u32,
+     /// `null` when there is no Typing Baseline, which is the hole the pane draws
+     /// with a take-the-baseline action rather than an invented default WPM.
+     time_saved: Option<String>,
+ }
+ 
+ fn usage_span(totals: &slugtale_lib::UsageTotals, words_per_minute: Option<u32>) -> UsageSpan {
+-    let seconds = slugtale_lib::time_saved_seconds(totals, words_per_minute);
+-    UsageSpan {
+-        dictations: totals.dictations,
+-        words: totals.words,
+-        time_saved: seconds.map(|seconds| slugtale_lib::format_time_saved(Some(seconds))),
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Everything the Usage pane draws, in one answer.
+ #[derive(serde::Serialize)]
+ struct UsageSummary {
+     /// Whether Daily Usage Records are being written at all.
+     store_usage: bool,
+     today: UsageSpan,

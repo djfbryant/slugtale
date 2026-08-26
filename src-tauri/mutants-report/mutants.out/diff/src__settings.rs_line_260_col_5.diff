@@ -1,0 +1,23 @@
+--- src/settings.rs
++++ replace apply_dictation_bar_settings with ()
+@@ -252,19 +252,17 @@
+ /// accent it paints. Both apply to the bar currently on screen as well as to
+ /// future dictations, so the user can judge the choice while making it.
+ pub fn apply_dictation_bar_settings(
+     settings: &mut Settings,
+     bar_position: BarPosition,
+     accent_color: AccentColor,
+     bar_display: BarDisplay,
+ ) {
+-    settings.bar_position = bar_position;
+-    settings.accent_color = accent_color;
+-    settings.bar_display = bar_display;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Update the launch-at-login preference stored in the Settings File. The stored
+ /// bool records the user's intent; registering the app as an OS login item is a
+ /// platform concern handled at the Tauri layer (ADR-0021).
+ pub fn apply_launch_at_login_settings(settings: &mut Settings, enabled: bool) {
+     settings.launch_at_login = enabled;
+ }

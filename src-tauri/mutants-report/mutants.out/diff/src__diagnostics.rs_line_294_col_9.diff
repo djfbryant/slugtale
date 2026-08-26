@@ -1,0 +1,30 @@
+--- src/diagnostics.rs
++++ replace <impl AsrRuntime for DiagnosticAsrRuntime<'_, S>>::transcribe -> Result<FinalTranscription, AsrError> with Ok(Default::default())
+@@ -286,26 +286,17 @@
+     }
+ }
+ 
+ impl<S> AsrRuntime for DiagnosticAsrRuntime<'_, S>
+ where
+     S: DiagnosticSink,
+ {
+     fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+-        let result = self.runtime.transcribe(audio);
+-        match &result {
+-            Ok(transcription) => self
+-                .log
+-                .record(DiagnosticEvent::transcription_completed(transcription)),
+-            Err(error) => self
+-                .log
+-                .record(DiagnosticEvent::transcription_failed(error)),
+-        }
+-        result
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Decorates a [`TextInsertion`], logging insertion failures without changing
+ /// its behavior.
+ pub struct DiagnosticTextInsertion<'a, S> {
+     insertion: &'a dyn TextInsertion,
+     log: SharedDiagnosticLog<S>,

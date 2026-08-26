@@ -1,0 +1,28 @@
+--- src/main.rs
++++ replace local_model_ready -> bool with true
+@@ -801,24 +801,17 @@
+     app: &tauri::AppHandle,
+     input: impl FnOnce(&slugtale_lib::Settings) -> slugtale_lib::DictationInput,
+ ) -> slugtale_lib::DictationActivation {
+     slugtale_lib::readiness_snapshot(&AppReadinessProbes { app }, input)
+ }
+ 
+ /// Whether the Whisper ggml file — or a user-selected custom model — is on disk.
+ fn local_model_ready(app: &tauri::AppHandle) -> bool {
+-    model_manager(app)
+-        .map(|manager| manager.ready())
+-        .unwrap_or_else(|_| {
+-            load_current_settings(app)
+-                .model
+-                .as_ref()
+-                .is_some_and(|path| PathBuf::from(path).exists())
+-        })
++    true /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn build_activation_snapshot_for(
+     app: &tauri::AppHandle,
+     input: slugtale_lib::DictationInput,
+ ) -> slugtale_lib::DictationActivation {
+     readiness_snapshot_for(app, |_| input)
+ }

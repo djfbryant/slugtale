@@ -11,6 +11,16 @@
 
 use crate::{ActivationMode, DictationEvent, DictationLifecycle};
 
+/// Parse a Dictation Bar / frontend lifecycle string into a [`DictationEvent`].
+pub fn parse_dictation_ui_event(name: &str) -> Result<DictationEvent, String> {
+    match name {
+        "start" => Ok(DictationEvent::Start),
+        "stop" => Ok(DictationEvent::Stop),
+        "cancel" => Ok(DictationEvent::Cancel),
+        other => Err(format!("unknown dictation event: {other}")),
+    }
+}
+
 /// Why a begin request left the dictation idle. The host has usually already
 /// told the user why — these are for the host's own tracing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,5 +161,19 @@ mod tests {
 
         assert_eq!(control.on_hotkey(HotkeyInput::Released), None);
         assert!(!control.is_dictating());
+    }
+
+    #[test]
+    fn dictation_ui_events_parse_to_lifecycle_events() {
+        assert_eq!(
+            parse_dictation_ui_event("start"),
+            Ok(DictationEvent::Start)
+        );
+        assert_eq!(parse_dictation_ui_event("stop"), Ok(DictationEvent::Stop));
+        assert_eq!(
+            parse_dictation_ui_event("cancel"),
+            Ok(DictationEvent::Cancel)
+        );
+        assert!(parse_dictation_ui_event("pause").is_err());
     }
 }

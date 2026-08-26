@@ -1,0 +1,68 @@
+--- src/audio_capture.rs
++++ replace captured_audio_from_interleaved_input -> Result<CapturedAudio, AudioCaptureError> with Ok(Default::default())
+@@ -16,64 +16,17 @@
+     }
+ }
+ 
+ pub fn captured_audio_from_interleaved_input(
+     sample_rate_hz: u32,
+     channels: u16,
+     samples: &[f32],
+ ) -> Result<CapturedAudio, AudioCaptureError> {
+-    if sample_rate_hz == 0 {
+-        return Err(AudioCaptureError::new("input sample rate must be non-zero"));
+-    }
+-    if channels == 0 {
+-        return Err(AudioCaptureError::new(
+-            "input channel count must be non-zero",
+-        ));
+-    }
+-
+-    let channels = channels as usize;
+-    let mut mono = Vec::with_capacity(samples.len() / channels);
+-    for frame in samples.chunks_exact(channels) {
+-        mono.push(frame.iter().copied().sum::<f32>() / channels as f32);
+-    }
+-
+-    if sample_rate_hz == 16_000 {
+-        return Ok(CapturedAudio::mono_16khz(mono));
+-    }
+-
+-    let ratio = sample_rate_hz as f64 / 16_000.0;
+-    let target_len = ((mono.len() as f64) / ratio).round() as usize;
+-    let mut resampled = Vec::with_capacity(target_len);
+-
+-    if sample_rate_hz > 16_000 {
+-        // Downsampling. Average each output sample over its whole source window
+-        // (a box filter) so content above the 8 kHz Nyquist limit is band-limited
+-        // away instead of aliasing into the speech band. Point/linear sampling
+-        // here folds high-frequency mic content down as noise and garbles Whisper
+-        // on 44.1/48 kHz mics (slugtale-8dj).
+-        for index in 0..target_len {
+-            let start = index as f64 * ratio;
+-            let end = start + ratio;
+-            resampled.push(window_average(&mono, start, end));
+-        }
+-    } else {
+-        // Upsampling (sub-16 kHz mics, rare). Linear interpolation is smooth and
+-        // adds no aliasing when moving to a higher rate.
+-        for index in 0..target_len {
+-            let source_position = index as f64 * ratio;
+-            let left = source_position.floor() as usize;
+-            let right = (left + 1).min(mono.len().saturating_sub(1));
+-            let fraction = (source_position - left as f64) as f32;
+-            let sample = mono[left] + (mono[right] - mono[left]) * fraction;
+-            resampled.push(sample);
+-        }
+-    }
+-
+-    Ok(CapturedAudio::mono_16khz(resampled))
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Average the mono signal over the source-sample window `[start, end)`,
+ /// treating each input sample as covering a unit-width cell. This box filter
+ /// band-limits the signal ahead of decimation so downsampling to 16 kHz does not
+ /// alias high-frequency microphone content into the speech band.
+ fn window_average(mono: &[f32], start: f64, end: f64) -> f32 {
+     let len = mono.len();

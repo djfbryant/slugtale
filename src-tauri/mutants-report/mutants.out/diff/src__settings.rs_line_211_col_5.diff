@@ -1,0 +1,22 @@
+--- src/settings.rs
++++ replace apply_engine_settings with ()
+@@ -203,18 +203,17 @@
+ /// depends on installed assets and on the machine, both of which can change
+ /// after the choice is made, so it is resolved when a dictation starts rather
+ /// than frozen into the Settings File.
+ pub fn apply_engine_settings(
+     settings: &mut Settings,
+     primary_engine: crate::TranscriptionEngine,
+     second_opinion: crate::SecondOpinionMode,
+ ) {
+-    settings.primary_engine = primary_engine;
+-    settings.second_opinion = second_opinion;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Update the user-configurable hotkey preferences that live in the Settings
+ /// File. Empty input clears the hotkey so Dictation Readiness reflects that the
+ /// user has not configured one.
+ pub fn apply_hotkey_settings(
+     settings: &mut Settings,
+     hotkey: Option<String>,

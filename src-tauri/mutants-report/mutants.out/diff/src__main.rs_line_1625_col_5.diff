@@ -1,0 +1,26 @@
+--- src/main.rs
++++ replace redo_typing_challenges -> Result<TypingChallengeState, String> with Ok(Default::default())
+@@ -1617,22 +1617,17 @@
+     notify_usage_changed(&app);
+     Ok(typing_challenge_state(&settings.typing_baseline))
+ }
+ 
+ /// Clear all three challenge results so the user can sit them again. Historical
+ /// Time Saved moves with the new baseline, because it was never stored.
+ #[tauri::command]
+ fn redo_typing_challenges(app: tauri::AppHandle) -> Result<TypingChallengeState, String> {
+-    let mut settings = load_current_settings(&app);
+-    slugtale_lib::redo_typing_challenges(&mut settings.typing_baseline);
+-    save_current_settings(&app, &settings)?;
+-
+-    notify_usage_changed(&app);
+-    Ok(typing_challenge_state(&settings.typing_baseline))
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Open the Typing Challenge window, creating it on first use.
+ ///
+ /// It is its own window and larger than Settings on purpose: thirty seconds of
+ /// typing against a passage needs room to read, and the 480x520 settings frame
+ /// would put the passage and the typing box in a column too narrow to follow.
+ #[tauri::command]

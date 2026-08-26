@@ -1,0 +1,23 @@
+--- src/app_shell.rs
++++ delete match arm "quit" in setup_tray
+@@ -58,19 +58,17 @@
+         .icon(icon)
+         .icon_as_template(true)
+         .tooltip("Slugtale")
+         .menu(&menu)
+         .on_menu_event(|app, event| match event.id.as_ref() {
+             "settings" => {
+                 show_settings(app.clone());
+             }
+-            "quit" => {
+-                app.exit(0);
+-            }
++             /* ~ changed by cargo-mutants ~ */
+             _ => {}
+         })
+         .build(app)?;
+ 
+     Ok(())
+ }
+ 
+ #[cfg(test)]

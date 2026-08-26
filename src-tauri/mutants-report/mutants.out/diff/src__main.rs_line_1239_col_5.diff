@@ -1,0 +1,83 @@
+--- src/main.rs
++++ replace build_engine_view -> Result<EngineView, String> with Ok(Default::default())
+@@ -1231,79 +1231,17 @@
+ /// already constructed (Whisper) or already registered at startup (Parakeet,
+ /// Apple SpeechTranscriber), matching how the dictation path itself asks these
+ /// questions.
+ fn build_engine_view(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+     engine: slugtale_lib::TranscriptionEngine,
+ ) -> Result<EngineView, String> {
+-    let is_primary = settings.primary_engine == engine;
+-
+-    let (metadata, availability, assets) = match engine {
+-        slugtale_lib::TranscriptionEngine::Whisper => {
+-            let provider = whisper_engine_provider(app, settings)?;
+-            let status = model_manager(app)?.status();
+-            (
+-                provider.metadata(),
+-                provider.availability(),
+-                EngineAssetState {
+-                    installed_bytes: status.bytes,
+-                    present: Some(status.present),
+-                },
+-            )
+-        }
+-        slugtale_lib::TranscriptionEngine::Parakeet => {
+-            let provider = app
+-                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+-                .parakeet_provider()
+-                .ok_or_else(|| "transcription engines are not ready yet".to_string())?;
+-            let status = provider.status();
+-            (
+-                provider.metadata(),
+-                provider.availability(),
+-                EngineAssetState {
+-                    installed_bytes: Some(status.installed_bytes),
+-                    present: Some(status.present),
+-                },
+-            )
+-        }
+-        slugtale_lib::TranscriptionEngine::AppleSpeech => {
+-            let provider = app
+-                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+-                .apple_provider();
+-            (
+-                provider.metadata(),
+-                provider.availability(),
+-                // System-managed: Slugtale never downloads or measures these.
+-                EngineAssetState {
+-                    installed_bytes: None,
+-                    present: None,
+-                },
+-            )
+-        }
+-    };
+-
+-    let (unavailable_reason, installable) = match &availability {
+-        slugtale_lib::EngineAvailability::Available => (None, false),
+-        slugtale_lib::EngineAvailability::Unavailable(reason) => {
+-            (Some(reason.to_string()), reason.is_user_resolvable())
+-        }
+-    };
+-
+-    Ok(EngineView {
+-        id: engine.id(),
+-        display_name: engine.display_name(),
+-        is_primary,
+-        metadata,
+-        availability,
+-        unavailable_reason,
+-        installable,
+-        assets,
+-    })
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Every Transcription Engine Settings can show, in [`slugtale_lib::TranscriptionEngine::ALL`]
+ /// order. Read-only and non-blocking: see [`build_engine_view`].
+ #[tauri::command]
+ fn transcription_engines(app: tauri::AppHandle) -> Result<Vec<EngineView>, String> {
+     let settings = load_current_settings(&app);
+     slugtale_lib::TranscriptionEngine::ALL

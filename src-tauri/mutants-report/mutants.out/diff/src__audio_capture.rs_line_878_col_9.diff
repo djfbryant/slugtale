@@ -1,0 +1,31 @@
+--- src/audio_capture.rs
++++ replace AudioCaptureSession<R>::flush_segment_through -> Result<Option<CapturedAudio>, AudioCaptureError> with Ok(None)
+@@ -870,27 +870,17 @@
+ 
+     /// Like [`Self::flush_segment`], but cut at a stable sample watermark: only
+     /// audio through `cut` plus the quiet-tail guard joins this segment, so a
+     /// slow worker queue cannot append later speech to it (slugtale-g1o.4).
+     pub fn flush_segment_through(
+         &mut self,
+         cut: u64,
+     ) -> Result<Option<CapturedAudio>, AudioCaptureError> {
+-        if !self.active {
+-            return Ok(None);
+-        }
+-
+-        let audio = self.recorder.take_segment_through(cut)?;
+-        if audio.samples.is_empty() {
+-            return Ok(None);
+-        }
+-
+-        self.flushed_a_segment = true;
+-        Ok(Some(audio))
++        Ok(None) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn on_event(
+         &mut self,
+         event: DictationEvent,
+     ) -> Result<Option<AudioCaptureOutcome>, AudioCaptureError> {
+         match event {
+             DictationEvent::Start => {

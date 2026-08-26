@@ -1,0 +1,16 @@
+--- src/main.rs
++++ replace != with == in main
+@@ -2053,12 +2053,12 @@
+             event,
+             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+         ) {
+             app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                 .shutdown();
+         }
+     });
+ 
+-    if exit_code != 0 {
++    if exit_code == /* ~ changed by cargo-mutants ~ */ 0 {
+         std::process::exit(exit_code);
+     }
+ }

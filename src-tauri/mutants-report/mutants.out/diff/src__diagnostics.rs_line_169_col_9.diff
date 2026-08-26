@@ -1,0 +1,21 @@
+--- src/diagnostics.rs
++++ replace <impl DiagnosticSink for F>::write_line with ()
+@@ -161,17 +161,17 @@
+     fn write_line(&mut self, line: &str);
+ }
+ 
+ impl<F> DiagnosticSink for F
+ where
+     F: FnMut(&str),
+ {
+     fn write_line(&mut self, line: &str) {
+-        self(line);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// The Local Diagnostic Log (ADR-0019): development troubleshooting output gated
+ /// by the user's `diagnostic_logging` preference (off by default). When disabled
+ /// it records nothing, so no log file accumulates unless the user opts in.
+ pub struct LocalDiagnosticLog<S> {
+     enabled: bool,

@@ -1,0 +1,21 @@
+--- src/settings.rs
++++ replace apply_voice_activation_settings with ()
+@@ -269,17 +269,17 @@
+     settings.launch_at_login = enabled;
+ }
+ 
+ /// Update whether the always-listening wake phrase may start a dictation
+ /// (slugtale-e95). This only records the choice; starting or stopping the
+ /// listener that holds the microphone open is the Tauri tier's job, because
+ /// its lifetime depends on platform audio support.
+ pub fn apply_voice_activation_settings(settings: &mut Settings, enabled: bool) {
+-    settings.voice_activation_enabled = enabled;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Write the Settings File as human-readable JSON so it can be inspected
+ /// during development (ADR-0018).
+ pub fn save_settings(path: &std::path::Path, settings: &Settings) -> std::io::Result<()> {
+     let json = serde_json::to_string_pretty(settings)?;
+     let file_name = path
+         .file_name()

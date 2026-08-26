@@ -1,0 +1,21 @@
+--- src/main.rs
++++ delete ! in apply_dictation_bar_appearance
+@@ -1073,17 +1073,17 @@
+ /// Does nothing visible when the bar is hidden — showing it re-sends both.
+ fn apply_dictation_bar_appearance(app: &tauri::AppHandle, settings: &slugtale_lib::Settings) {
+     let Some(window) = app.get_webview_window("dictation-bar") else {
+         return;
+     };
+     let appearance = DictationBarAppearance::from_settings(settings);
+     let _ = window.emit("dictation-appearance", appearance.clone());
+ 
+-    if !window.is_visible().unwrap_or(false) {
++    if  /* ~ changed by cargo-mutants ~ */window.is_visible().unwrap_or(false) {
+         return;
+     }
+     // Repositioning reads monitor geometry, which blocks on the main thread;
+     // hand it over rather than waiting on it from here (slugtale-1n4).
+     let bar_display = settings.bar_display.clone();
+     let _ = app.run_on_main_thread(move || {
+         position_dictation_bar(&window, appearance.position, &bar_display);
+     });

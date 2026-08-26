@@ -1,0 +1,25 @@
+--- src/diagnostics.rs
++++ replace <impl InsertionRescue for DiagnosticInsertionRescue<'_, S>>::rescue -> Result<InsertionRescueOutcome, InsertionRescueError> with Ok(Default::default())
+@@ -349,21 +349,17 @@
+ impl<S> InsertionRescue for DiagnosticInsertionRescue<'_, S>
+ where
+     S: DiagnosticSink,
+ {
+     fn rescue(
+         &self,
+         transcription: &FinalTranscription,
+     ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+-        let result = self.rescue.rescue(transcription);
+-        if result.is_ok() {
+-            self.log.record(DiagnosticEvent::insertion_rescued());
+-        }
+-        result
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use crate::Settings;
+ 

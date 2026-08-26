@@ -1,0 +1,42 @@
+--- src/platform_execution.rs
++++ replace prepare_text_insertion -> Result<PreparedInsertion, String> with Ok(Default::default())
+@@ -82,38 +82,17 @@
+ /// target.
+ ///
+ /// Focus restoration deliberately repeats for every Dictation Segment. This is
+ /// the ADR-0015 rule that makes a Pause Flush behave like ordinary Immediate
+ /// Insertion at the current caret. The activation happens here, immediately;
+ /// only its settlement is deferred to insert time so it can overlap
+ /// Transcription (slugtale-g1o.1).
+ pub fn prepare_text_insertion(target: Option<i32>) -> Result<PreparedInsertion, String> {
+-    let mut ready_at = None;
+-
+-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+-    if let Some(pid) = target {
+-        // Activate now, start the settlement clock now, and do not sleep:
+-        // Transcription runs during the window instead of after it.
+-        if crate::activate_app(pid) {
+-            ready_at = settle_deadline(true, std::time::Instant::now());
+-        }
+-    }
+-
+-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+-    {
+-        let _ = target;
+-    }
+-
+-    let insertion = make_text_insertion()?;
+-
+-    Ok(PreparedInsertion {
+-        insertion: SettledTextInsertion { inner: insertion, ready_at },
+-        rescue: make_insertion_rescue(),
+-    })
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn make_text_insertion() -> Result<Box<dyn TextInsertion>, String> {
+     #[cfg(target_os = "macos")]
+     {
+         if !crate::accessibility_trusted() {
+             let _ = crate::notify(
+                 "Slugtale needs Accessibility access",

@@ -1,0 +1,25 @@
+--- src/audio_capture.rs
++++ replace CpalAudioRecorder::stop_level_emitter with ()
+@@ -591,21 +591,17 @@
+                 self.stream.take();
+                 self.stream_identity = None;
+             }
+         }
+         self.stream_active = false;
+     }
+ 
+     fn stop_level_emitter(&mut self) {
+-        if let Some(emitter) = self.level_emitter.take() {
+-            emitter.stop();
+-        }
+-        self.level_bits
+-            .store(0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl AudioRecorder for CpalAudioRecorder {
+     /// Validate the default input device, allocate the capture ring, and build
+     /// the input stream stopped while the app is idle, so the first Hotkey only
+     /// pays for `play`. Never plays the stream (that is what activates the
+     /// microphone) and never requests permission — see [`AudioRecorder::prepare`].

@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ delete ! in VoiceActivationCapture<R>::close
+@@ -972,17 +972,17 @@
+     /// Stop capture if it is running, then replace the recorder so the next
+     /// start cannot resume a paused stream.
+     pub fn rebuild(&mut self, next: R) {
+         self.close();
+         self.recorder = next;
+     }
+ 
+     pub fn close(&mut self) {
+-        if !self.open {
++        if  /* ~ changed by cargo-mutants ~ */self.open {
+             return;
+         }
+         let _ = self.recorder.cancel();
+         self.open = false;
+     }
+ }
+ 
+ impl<R: AudioRecorder> Drop for VoiceActivationCapture<R> {

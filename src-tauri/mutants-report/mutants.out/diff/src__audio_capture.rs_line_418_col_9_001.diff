@@ -1,0 +1,34 @@
+--- src/audio_capture.rs
++++ replace RealtimeCaptureBuffer::read_range -> Result<Vec<f32>, AudioCaptureError> with Ok(vec![0.0])
+@@ -410,30 +410,17 @@
+         }
+         self.read_range(read_position, end)
+     }
+ 
+     /// Read `[from, to)` and advance the read position to `to`. Shared by
+     /// [`Self::drain`] and [`Self::drain_through`]; both callers have already
+     /// clamped their range.
+     fn read_range(&self, from: usize, to: usize) -> Result<Vec<f32>, AudioCaptureError> {
+-        use std::sync::atomic::Ordering;
+-
+-        let available = to.wrapping_sub(from).min(self.slots.len());
+-        let mut samples = Vec::with_capacity(available);
+-        for offset in 0..available {
+-            let slot = from.wrapping_add(offset) % self.slots.len();
+-            samples.push(f32::from_bits(self.slots[slot].load(Ordering::Relaxed)));
+-        }
+-        self.read_position.store(to, Ordering::Release);
+-
+-        if self.overflowed.swap(false, Ordering::Relaxed) {
+-            return Err(AudioCaptureError::new(RECORDING_LIMIT_ERROR));
+-        }
+-        Ok(samples)
++        Ok(vec![0.0]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Discard pending audio between dictations without reallocating the ring.
+     fn clear(&self) {
+         use std::sync::atomic::Ordering;
+ 
+         let write_position = self.write_position.load(Ordering::Acquire);
+         self.read_position.store(write_position, Ordering::Release);

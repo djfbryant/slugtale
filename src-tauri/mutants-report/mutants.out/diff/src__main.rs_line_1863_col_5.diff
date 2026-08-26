@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace save_current_settings -> Result<(), String> with Ok(())
+@@ -1855,17 +1855,17 @@
+     let settings = load_current_settings(app);
+     current_diagnostic_log(app, &settings).record(event);
+ }
+ 
+ fn save_current_settings(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> Result<(), String> {
+-    app_files(app).save_settings(settings)
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
+     fn microphone_granted(&self) -> bool {
+         #[cfg(target_os = "macos")]
+         {
+             return self.macos_platform().microphone_granted();
+         }

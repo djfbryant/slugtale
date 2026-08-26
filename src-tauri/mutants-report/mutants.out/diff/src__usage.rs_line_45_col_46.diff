@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ replace < with == in LocalDate::parse
+@@ -37,17 +37,17 @@
+     pub fn parse(text: &str) -> Option<Self> {
+         let bytes = text.as_bytes();
+         if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+             return None;
+         }
+         let year = text[0..4].parse::<i32>().ok()?;
+         let month = text[5..7].parse::<u32>().ok()?;
+         let day = text[8..10].parse::<u32>().ok()?;
+-        if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
++        if !(1..=12).contains(&month) || day == /* ~ changed by cargo-mutants ~ */ 1 || day > days_in_month(year, month) {
+             return None;
+         }
+         Some(Self { year, month, day })
+     }
+ 
+     pub fn to_iso(self) -> String {
+         format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
+     }

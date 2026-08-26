@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace - with / in window_average
+@@ -78,17 +78,17 @@
+ fn window_average(mono: &[f32], start: f64, end: f64) -> f32 {
+     let len = mono.len();
+     if len == 0 {
+         return 0.0;
+     }
+     let start = start.max(0.0);
+     let end = end.min(len as f64);
+     if end <= start {
+-        return mono[(start as usize).min(len - 1)];
++        return mono[(start as usize).min(len / /* ~ changed by cargo-mutants ~ */ 1)];
+     }
+ 
+     let first = start.floor() as usize;
+     let last = (end.ceil() as usize).min(len);
+     let mut weighted = 0.0f64;
+     let mut total = 0.0f64;
+     for (offset, &value) in mono[first..last].iter().enumerate() {
+         let cell_start = (first + offset) as f64;

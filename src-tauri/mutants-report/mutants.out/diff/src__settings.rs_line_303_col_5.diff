@@ -1,0 +1,24 @@
+--- src/settings.rs
++++ replace load_settings -> Settings with Default::default()
+@@ -295,20 +295,17 @@
+             Err(error)
+         }
+     }
+ }
+ 
+ /// Load the Settings File, falling back to defaults when it is missing or
+ /// unreadable (e.g. first run).
+ pub fn load_settings(path: &std::path::Path) -> Settings {
+-    std::fs::read_to_string(path)
+-        .ok()
+-        .and_then(|json| serde_json::from_str(&json).ok())
+-        .unwrap_or_default()
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use std::cell::RefCell;
+ 
+     #[test]
+     fn a_failed_persist_rolls_the_side_effect_back_onto_current() {

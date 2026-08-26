@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace <impl Drop for VoiceActivationCapture<R>>::drop with ()
+@@ -982,17 +982,17 @@
+         }
+         let _ = self.recorder.cancel();
+         self.open = false;
+     }
+ }
+ 
+ impl<R: AudioRecorder> Drop for VoiceActivationCapture<R> {
+     fn drop(&mut self) {
+-        self.close();
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]

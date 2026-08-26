@@ -1,0 +1,29 @@
+--- src/settings.rs
++++ replace apply_hotkey_settings with ()
+@@ -215,25 +215,17 @@
+ /// Update the user-configurable hotkey preferences that live in the Settings
+ /// File. Empty input clears the hotkey so Dictation Readiness reflects that the
+ /// user has not configured one.
+ pub fn apply_hotkey_settings(
+     settings: &mut Settings,
+     hotkey: Option<String>,
+     activation_mode: ActivationMode,
+ ) {
+-    settings.hotkey = hotkey.and_then(|value| {
+-        let trimmed = value.trim();
+-        if trimmed.is_empty() {
+-            None
+-        } else {
+-            Some(trimmed.to_string())
+-        }
+-    });
+-    settings.activation_mode = activation_mode;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Update the Transcription Speed Profile stored in the Settings File. The user
+ /// sets this once in the Transcription section of settings and it persists across
+ /// restarts, applying to all future transcriptions (CONTEXT.md).
+ pub fn apply_transcription_settings(settings: &mut Settings, speed_profile: SpeedProfile) {
+     settings.speed_profile = speed_profile;
+ }

@@ -1,0 +1,35 @@
+--- src/audio_capture.rs
++++ replace RealtimeCaptureBuffer::drain_through -> Result<Vec<f32>, AudioCaptureError> with Ok(vec![1.0])
+@@ -389,31 +389,17 @@
+     ///
+     /// - A cut already handed over (at or behind the read position) yields
+     ///   nothing; the guard never rewinds into drained audio.
+     /// - A cut ahead of production (only possible for a stale job) drains
+     ///   through whatever exists rather than blocking.
+     /// - The producer having lapped the consumer is an overflow, exactly as in
+     ///   [`Self::drain`].
+     fn drain_through(&self, cut: u64, guard: u64) -> Result<Vec<f32>, AudioCaptureError> {
+-        let read_position = self
+-            .read_position
+-            .load(std::sync::atomic::Ordering::Relaxed);
+-        let write_position = self
+-            .write_position
+-            .load(std::sync::atomic::Ordering::Acquire);
+-
+-        let cut = cut.min(usize::MAX as u64) as usize;
+-        // Never read later samples than exist, and never rewind into audio a
+-        // previous segment already took.
+-        let end = write_position.min(cut.saturating_add(guard as usize));
+-        if end <= read_position {
+-            return Ok(Vec::new());
+-        }
+-        self.read_range(read_position, end)
++        Ok(vec![1.0]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read `[from, to)` and advance the read position to `to`. Shared by
+     /// [`Self::drain`] and [`Self::drain_through`]; both callers have already
+     /// clamped their range.
+     fn read_range(&self, from: usize, to: usize) -> Result<Vec<f32>, AudioCaptureError> {
+         use std::sync::atomic::Ordering;
+ 

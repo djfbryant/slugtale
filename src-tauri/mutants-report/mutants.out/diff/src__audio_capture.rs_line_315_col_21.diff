@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace == with != in RealtimeCaptureBuffer::for_sample_rate
+@@ -307,17 +307,17 @@
+ }
+ 
+ impl RealtimeCaptureBuffer {
+     fn for_sample_rate(sample_rate_hz: u32) -> Result<Self, AudioCaptureError> {
+         let capacity = usize::try_from(sample_rate_hz)
+             .ok()
+             .and_then(|rate| rate.checked_mul(MAX_RECORDING_SECONDS))
+             .ok_or_else(|| AudioCaptureError::new("audio capture capacity is too large"))?;
+-        if capacity == 0 {
++        if capacity != /* ~ changed by cargo-mutants ~ */ 0 {
+             return Err(AudioCaptureError::new("input sample rate must be non-zero"));
+         }
+         Ok(Self::with_capacity(capacity))
+     }
+ 
+     fn with_capacity(capacity: usize) -> Self {
+         assert!(capacity > 0, "capture buffer capacity must be non-zero");
+         Self {

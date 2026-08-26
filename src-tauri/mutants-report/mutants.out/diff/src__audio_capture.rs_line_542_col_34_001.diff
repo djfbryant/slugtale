@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace > with < in CpalAudioRecorder::build_stream
+@@ -534,17 +534,17 @@
+                     }
+                     if !data.is_empty() {
+                         let rms = (sum_of_squares / data.len() as f32).sqrt().clamp(0.0, 1.0);
+                         let level = voice_level_from_rms(rms);
+                         // Pair the perceptual level with the ring position it
+                         // belongs to: the watermark a Pause Flush cuts at.
+                         // One extra atomic store on voiced buffers only — the
+                         // callback stays lock-free and allocation-free.
+-                        if level > crate::SEGMENT_VOICE_LEVEL {
++                        if level < /* ~ changed by cargo-mutants ~ */ crate::SEGMENT_VOICE_LEVEL {
+                             callback_buffer.mark_voice();
+                         }
+                         level_bits.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                     }
+                 },
+                 move |error| {
+                     eprintln!("audio input stream error: {error}");
+                 },

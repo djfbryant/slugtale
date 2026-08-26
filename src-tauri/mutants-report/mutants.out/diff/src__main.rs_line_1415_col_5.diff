@@ -1,0 +1,46 @@
+--- src/main.rs
++++ replace remove_engine_assets -> Result<EngineView, String> with Ok(Default::default())
+@@ -1407,42 +1407,17 @@
+ /// (slugtale-vjs.4). Apple SpeechTranscriber's assets are macOS's, not
+ /// Slugtale's, so there is nothing here to delete — the branch refuses rather
+ /// than pretending to free space Slugtale never claimed.
+ #[tauri::command]
+ fn remove_engine_assets(
+     app: tauri::AppHandle,
+     engine: slugtale_lib::TranscriptionEngine,
+ ) -> Result<EngineView, String> {
+-    match engine {
+-        slugtale_lib::TranscriptionEngine::Whisper => {
+-            model_manager(&app)?
+-                .delete_default()
+-                .map_err(|error| error.to_string())?;
+-        }
+-        slugtale_lib::TranscriptionEngine::Parakeet => {
+-            let provider = app
+-                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+-                .parakeet_provider()
+-                .ok_or_else(|| "transcription engines are not ready yet".to_string())?;
+-            slugtale_lib::delete_parakeet_assets(provider.asset_dir())
+-                .map_err(|error| error.to_string())?;
+-            provider.refresh_availability();
+-        }
+-        slugtale_lib::TranscriptionEngine::AppleSpeech => {
+-            return Err(
+-                "Apple SpeechTranscriber's assets are installed and managed by macOS; \
+-                 Slugtale cannot remove them."
+-                    .to_string(),
+-            );
+-        }
+-    }
+-
+-    let settings = load_current_settings(&app);
+-    build_engine_view(&app, &settings, engine)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// One span of the Usage pane — today, this week, or all time — with Time Saved
+ /// already computed and already worded.
+ ///
+ /// Time Saved is sent as text rather than a number the frontend rounds, because
+ /// there is exactly one right way to say it (ADR-0025: prefix About, no
+ /// decimals) and duplicating that rule in JavaScript is how the two drift apart.

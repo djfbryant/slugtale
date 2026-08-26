@@ -1,0 +1,33 @@
+--- src/audio_capture.rs
++++ replace LevelEmitter::spawn -> std::io::Result<Self> with Ok(Default::default())
+@@ -241,29 +241,17 @@
+ 
+ impl LevelEmitter {
+     const EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+ 
+     fn spawn(
+         level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+         callback: AudioLevelCallback,
+     ) -> std::io::Result<Self> {
+-        use std::sync::atomic::Ordering;
+-
+-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+-        let thread_running = running.clone();
+-        let handle = std::thread::Builder::new()
+-            .name("slugtale-audio-level".to_string())
+-            .spawn(move || {
+-                while thread_running.load(Ordering::Relaxed) {
+-                    callback(f32::from_bits(level_bits.load(Ordering::Relaxed)));
+-                    std::thread::sleep(Self::EMIT_INTERVAL);
+-                }
+-            })?;
+-        Ok(Self { running, handle })
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Stop and join the emitter so no stale level is emitted after the
+     /// recording ends (the Tauri layer resets the waveform to zero right after).
+     fn stop(self) {
+         self.running
+             .store(false, std::sync::atomic::Ordering::Relaxed);
+         let _ = self.handle.join();

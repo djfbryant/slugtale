@@ -1,0 +1,63 @@
+--- src/diagnostics.rs
++++ replace render_diagnostic_event -> String with String::new()
+@@ -105,59 +105,17 @@
+     /// failed.
+     pub fn insertion_rescued() -> Self {
+         Self::InsertionRescued
+     }
+ }
+ 
+ /// Format one [`DiagnosticEvent`] as a single redacted Local Diagnostic Log line.
+ pub fn render_diagnostic_event(event: &DiagnosticEvent) -> String {
+-    match event {
+-        DiagnosticEvent::ReadinessIncomplete { missing } => {
+-            format!("readiness: not ready (missing: {})", missing.join(", "))
+-        }
+-        DiagnosticEvent::TranscriptionCompleted { characters } => {
+-            format!("asr: final transcription completed ({characters} chars)")
+-        }
+-        DiagnosticEvent::TranscriptionFailed { reason } => {
+-            format!("asr: transcription failed ({reason})")
+-        }
+-        DiagnosticEvent::AudioCaptureFailed { reason } => {
+-            format!("audio: capture failed ({reason})")
+-        }
+-        DiagnosticEvent::HotkeyTransition { event } => {
+-            format!("hotkey: dictation {event:?}")
+-        }
+-        DiagnosticEvent::InsertionFailed { reason } => {
+-            format!("insertion: failed ({reason})")
+-        }
+-        DiagnosticEvent::InsertionRescued => {
+-            "insertion: rescued transcription to clipboard".to_string()
+-        }
+-        DiagnosticEvent::RoutingDecision { routing } => {
+-            // Rendered from the reason codes alone. `escalation: none` is the
+-            // normal, healthy dictation and is worth logging explicitly: it is
+-            // the evidence that the second engine stayed asleep.
+-            let escalation = match routing.escalation {
+-                Some(reason) => format!("{reason:?}"),
+-                None => "none".to_string(),
+-            };
+-            let second = match routing.second_opinion_engine {
+-                Some(engine) => engine.id(),
+-                None => "none",
+-            };
+-            format!(
+-                "asr: routed via {} (escalation: {escalation}, second opinion: {second}, \
+-                 selection: {:?}, {} ms)",
+-                routing.selected_engine.id(),
+-                routing.selection,
+-                routing.total_latency_ms,
+-            )
+-        }
+-    }
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Destination for rendered Local Diagnostic Log lines. An `FnMut(&str)` works as
+ /// a sink, matching the [`DictationEventSink`](crate::DictationEventSink) idiom.
+ pub trait DiagnosticSink {
+     fn write_line(&mut self, line: &str);
+ }
+ 

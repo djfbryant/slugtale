@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace build_activation_snapshot_for -> slugtale_lib::DictationActivation with Default::default()
+@@ -815,17 +815,17 @@
+                 .is_some_and(|path| PathBuf::from(path).exists())
+         })
+ }
+ 
+ fn build_activation_snapshot_for(
+     app: &tauri::AppHandle,
+     input: slugtale_lib::DictationInput,
+ ) -> slugtale_lib::DictationActivation {
+-    readiness_snapshot_for(app, |_| input)
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Engine availability for the readiness report, asked of the same providers the
+ /// dictation path uses so the two cannot disagree.
+ fn current_engine_availability(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> Vec<(

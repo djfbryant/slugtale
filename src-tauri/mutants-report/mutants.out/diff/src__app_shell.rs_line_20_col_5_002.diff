@@ -1,0 +1,21 @@
+--- src/app_shell.rs
++++ replace build_tray_menu_items -> Vec<(&'static str, &'static str)> with vec![("", "xyzzy")]
+@@ -12,17 +12,17 @@
+     I: IntoIterator<Item = S>,
+     S: AsRef<str>,
+ {
+     args.into_iter()
+         .any(|arg| arg.as_ref() == REAUTHORIZE_PERMISSIONS_ARGUMENT)
+ }
+ 
+ pub fn build_tray_menu_items() -> Vec<(&'static str, &'static str)> {
+-    vec![("settings", "Settings\u{2026}"), ("quit", "Quit Slugtale")]
++    vec![("", "xyzzy")] /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Whether a window should hide (stay alive) on a close request rather than be
+ /// destroyed. Slugtale is a tray resident app (ADR-0008): the settings window is
+ /// reopened from the tray, so closing it must hide it — destroying it both kills
+ /// the only reopen path and, as the last window, would quit the whole app.
+ pub fn hides_on_close(window_label: &str) -> bool {
+     window_label == "settings"

@@ -1,0 +1,42 @@
+--- src/main.rs
++++ replace show_dictation_bar with ()
+@@ -612,38 +612,17 @@
+     }
+ }
+ 
+ fn show_dictation_bar(
+     app: &tauri::AppHandle,
+     phase: DictationPhase,
+     settings: &slugtale_lib::Settings,
+ ) {
+-    if let Some(window) = app.get_webview_window("dictation-bar") {
+-        let appearance = DictationBarAppearance::from_settings(settings);
+-        let bar_display = settings.bar_display.clone();
+-        push_dictation_bar_render_state(&window, phase, &appearance);
+-        // Placing the bar reads monitor geometry, and those reads block until the
+-        // main thread answers them. The global-key worker calls this while holding
+-        // the hotkey registration lock, and the main thread takes that same lock on
+-        // the next key transition — doing the work inline deadlocks both threads and
+-        // freezes the tray. Hand the window work to the main thread instead of
+-        // waiting on it (slugtale-1n4).
+-        let _ = app.run_on_main_thread(move || {
+-            position_dictation_bar(&window, appearance.position, &bar_display);
+-            // Start click-through: at rest the orb covers a seventh of the window,
+-            // and the pointer is somewhere else entirely. The bar takes input back
+-            // only when the hit test says the pointer is genuinely over the paint.
+-            let _ = window.set_ignore_cursor_events(true);
+-            let _ = window.show();
+-            if slugtale_lib::dictation_bar_should_take_focus() {
+-                let _ = window.set_focus();
+-            }
+-        });
+-    }
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The bar's render-state protocol, written once (slugtale-s2g): every fact the
+ /// frontend renders is pushed before the window can appear, so the bar never
+ /// flashes a stale "recording" pill when it reappears for transcription, nor an
+ /// old accent or edge alignment. Phase first, appearance second, visibility last.
+ fn push_dictation_bar_render_state(
+     window: &tauri::WebviewWindow,

@@ -1,0 +1,30 @@
+--- src/audio_capture.rs
++++ replace RealtimeCaptureBuffer::with_capacity -> Self with Default::default()
+@@ -314,26 +314,17 @@
+             .ok_or_else(|| AudioCaptureError::new("audio capture capacity is too large"))?;
+         if capacity == 0 {
+             return Err(AudioCaptureError::new("input sample rate must be non-zero"));
+         }
+         Ok(Self::with_capacity(capacity))
+     }
+ 
+     fn with_capacity(capacity: usize) -> Self {
+-        assert!(capacity > 0, "capture buffer capacity must be non-zero");
+-        Self {
+-            slots: (0..capacity)
+-                .map(|_| std::sync::atomic::AtomicU32::new(0f32.to_bits()))
+-                .collect(),
+-            write_position: std::sync::atomic::AtomicUsize::new(0),
+-            read_position: std::sync::atomic::AtomicUsize::new(0),
+-            overflowed: std::sync::atomic::AtomicBool::new(false),
+-            last_voice_position: std::sync::atomic::AtomicUsize::new(0),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Called only by the real-time audio thread. This performs one bounded
+     /// atomic write and never allocates, locks, waits, or overwrites old audio.
+     fn push_sample(&self, sample: f32) {
+         use std::sync::atomic::Ordering;
+ 
+         let write_position = self.write_position.load(Ordering::Relaxed);

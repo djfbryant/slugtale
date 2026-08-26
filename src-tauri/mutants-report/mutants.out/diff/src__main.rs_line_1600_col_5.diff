@@ -1,0 +1,39 @@
+--- src/main.rs
++++ replace submit_typing_challenge -> Result<TypingChallengeState, String> with Ok(Default::default())
+@@ -1592,35 +1592,17 @@
+ /// The window sends the text as it finally stood, so backspacing is free — which
+ /// is how people type, and the point is to measure that.
+ #[tauri::command]
+ fn submit_typing_challenge(
+     app: tauri::AppHandle,
+     passage_index: usize,
+     typed: String,
+ ) -> Result<TypingChallengeState, String> {
+-    let passage = slugtale_lib::TYPING_CHALLENGE_PASSAGES
+-        .get(passage_index)
+-        .ok_or_else(|| format!("there is no typing challenge passage {passage_index}"))?;
+-    let words_per_minute = slugtale_lib::score_typing_challenge(
+-        passage,
+-        &typed,
+-        slugtale_lib::TYPING_CHALLENGE_SECONDS,
+-    );
+-
+-    let mut settings = load_current_settings(&app);
+-    slugtale_lib::record_typing_challenge(
+-        &mut settings.typing_baseline,
+-        passage_index,
+-        words_per_minute,
+-    );
+-    save_current_settings(&app, &settings)?;
+-
+-    notify_usage_changed(&app);
+-    Ok(typing_challenge_state(&settings.typing_baseline))
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Clear all three challenge results so the user can sit them again. Historical
+ /// Time Saved moves with the new baseline, because it was never stored.
+ #[tauri::command]
+ fn redo_typing_challenges(app: tauri::AppHandle) -> Result<TypingChallengeState, String> {
+     let mut settings = load_current_settings(&app);
+     slugtale_lib::redo_typing_challenges(&mut settings.typing_baseline);

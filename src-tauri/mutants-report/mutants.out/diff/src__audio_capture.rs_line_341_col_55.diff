@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace >= with < in RealtimeCaptureBuffer::push_sample
+@@ -333,17 +333,17 @@
+ 
+     /// Called only by the real-time audio thread. This performs one bounded
+     /// atomic write and never allocates, locks, waits, or overwrites old audio.
+     fn push_sample(&self, sample: f32) {
+         use std::sync::atomic::Ordering;
+ 
+         let write_position = self.write_position.load(Ordering::Relaxed);
+         let read_position = self.read_position.load(Ordering::Acquire);
+-        if write_position.wrapping_sub(read_position) >= self.slots.len() {
++        if write_position.wrapping_sub(read_position) < /* ~ changed by cargo-mutants ~ */ self.slots.len() {
+             self.overflowed.store(true, Ordering::Relaxed);
+             return;
+         }
+ 
+         let slot = write_position % self.slots.len();
+         self.slots[slot].store(sample.to_bits(), Ordering::Relaxed);
+         self.write_position
+             .store(write_position.wrapping_add(1), Ordering::Release);

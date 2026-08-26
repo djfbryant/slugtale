@@ -1,0 +1,48 @@
+--- src/main.rs
++++ replace open_text_insertion_settings -> Result<(), String> with Ok(())
+@@ -961,44 +961,17 @@
+     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+     {
+         Err("microphone settings shortcut is not implemented for this platform".to_string())
+     }
+ }
+ 
+ #[tauri::command]
+ fn open_text_insertion_settings() -> Result<(), String> {
+-    #[cfg(target_os = "macos")]
+-    {
+-        return slugtale_lib::run_text_insertion_permission_setup(
+-            &slugtale_lib::MacosTextInsertionPermissionSetup,
+-        )
+-        .map(|_| ());
+-    }
+-
+-    #[cfg(target_os = "windows")]
+-    {
+-        return slugtale_lib::run_text_insertion_permission_setup(
+-            &slugtale_lib::WindowsTextInsertionPermissionSetup,
+-        )
+-        .map(|_| ());
+-    }
+-
+-    #[cfg(target_os = "linux")]
+-    {
+-        return slugtale_lib::run_text_insertion_permission_setup(
+-            &slugtale_lib::LinuxTextInsertionPermissionSetup,
+-        )
+-        .map(|_| ());
+-    }
+-
+-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+-    {
+-        Err("text insertion settings shortcut is not implemented for this platform".to_string())
+-    }
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn save_hotkey_settings(
+     app: tauri::AppHandle,
+     hotkey: Option<String>,
+     activation_mode: slugtale_lib::ActivationMode,
+ ) -> Result<slugtale_lib::Settings, String> {

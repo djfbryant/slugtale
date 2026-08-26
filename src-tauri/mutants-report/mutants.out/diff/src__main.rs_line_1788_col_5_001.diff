@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace usage_path -> Option<PathBuf> with Some(Default::default())
+@@ -1780,17 +1780,17 @@
+         model_dir(app)?,
+         settings_path,
+     ))
+ }
+ 
+ /// The Usage File (CONTEXT.md): a sibling of the Settings File, so opting out
+ /// deletes one obvious file and nothing else.
+ fn usage_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+-    app_files(app).usage_path()
++    Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn load_current_usage(app: &tauri::AppHandle) -> slugtale_lib::UsageFile {
+     app_files(app).usage()
+ }
+ 
+ /// Which week the Usage pane means by "this week", asked of the OS rather than
+ /// assumed (ADR-0021: locale is platform behaviour).

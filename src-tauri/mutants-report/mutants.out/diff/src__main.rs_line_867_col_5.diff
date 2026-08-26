@@ -1,0 +1,39 @@
+--- src/main.rs
++++ replace get_settings_readiness -> slugtale_lib::SettingsReadinessReport with Default::default()
+@@ -859,35 +859,17 @@
+         );
+     }
+     slugtale_lib::show_settings(app.clone());
+     true
+ }
+ 
+ #[tauri::command]
+ fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
+-    let report = current_settings_readiness(&app);
+-    let local_model_ready = report
+-        .items
+-        .iter()
+-        .find(|item| item.id == "local_model")
+-        .is_some_and(|item| item.ready);
+-    if local_model_ready {
+-        warm_effective_primary_engine(&app);
+-    }
+-    if !report.dictation_available {
+-        let missing = slugtale_lib::missing_required_items(&report);
+-        if !missing.is_empty() {
+-            record_diagnostic_event(
+-                &app,
+-                slugtale_lib::DiagnosticEvent::readiness_incomplete(&missing),
+-            );
+-        }
+-    }
+-    report
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn get_settings(app: tauri::AppHandle) -> slugtale_lib::Settings {
+     load_current_settings(&app)
+ }
+ 
+ /// One selectable display in the Settings UI. The stable monitor name is stored

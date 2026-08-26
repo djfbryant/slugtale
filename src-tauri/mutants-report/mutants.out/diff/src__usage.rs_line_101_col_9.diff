@@ -1,0 +1,35 @@
+--- src/usage.rs
++++ replace LocalDate::from_days_from_epoch -> Self with Default::default()
+@@ -93,31 +93,17 @@
+         self.minus_days(back as i64)
+     }
+ 
+     fn minus_days(self, days: i64) -> Self {
+         Self::from_days_from_epoch(self.days_from_epoch() - days)
+     }
+ 
+     fn from_days_from_epoch(days: i64) -> Self {
+-        let z = days + 719_468;
+-        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+-        let day_of_era = z - era * 146_097;
+-        let year_of_era =
+-            (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+-        let year = year_of_era + era * 400;
+-        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+-        let month_index = (5 * day_of_year + 2) / 153;
+-        let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+-        let month = month_index + if month_index < 10 { 3 } else { -9 };
+-        Self {
+-            year: (year + i64::from(month <= 2)) as i32,
+-            month: month as u32,
+-            day: day as u32,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Today's date in the machine's local timezone.
+ ///
+ /// Local, not UTC, and resolved at the moment a Counted Segment lands rather
+ /// than cached: a dictation at 00:05 belongs to the new day, and a user who
+ /// flies somewhere else gets the local date there without their earlier days

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ delete ! in set_usage_storing
+@@ -1523,17 +1523,17 @@
+ /// unread: "stop storing this" has to mean the stored thing is gone. The Typing
+ /// Baseline is in the Settings File and is untouched.
+ #[tauri::command]
+ fn set_usage_storing(app: tauri::AppHandle, enabled: bool) -> Result<UsageSummary, String> {
+     let mut settings = load_current_settings(&app);
+     slugtale_lib::apply_usage_settings(&mut settings, enabled);
+     save_current_settings(&app, &settings)?;
+ 
+-    if !enabled {
++    if  /* ~ changed by cargo-mutants ~ */enabled {
+         if let Some(path) = usage_path(&app) {
+             slugtale_lib::delete_usage(&path).map_err(|error| error.to_string())?;
+         }
+     }
+ 
+     Ok(get_usage_summary(app))
+ }
+ 

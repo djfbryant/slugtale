@@ -1,0 +1,25 @@
+--- src/main.rs
++++ replace transcription_engines -> Result<Vec<EngineView>, String> with Ok(vec![])
+@@ -1300,21 +1300,17 @@
+         assets,
+     })
+ }
+ 
+ /// Every Transcription Engine Settings can show, in [`slugtale_lib::TranscriptionEngine::ALL`]
+ /// order. Read-only and non-blocking: see [`build_engine_view`].
+ #[tauri::command]
+ fn transcription_engines(app: tauri::AppHandle) -> Result<Vec<EngineView>, String> {
+-    let settings = load_current_settings(&app);
+-    slugtale_lib::TranscriptionEngine::ALL
+-        .into_iter()
+-        .map(|engine| build_engine_view(&app, &settings, engine))
+-        .collect()
++    Ok(vec![]) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Persist the chosen primary engine and Second Opinion mode (slugtale-vjs.4).
+ /// Mirrors [`save_transcription_settings`]: no check that the chosen engine can
+ /// actually run, because availability can change after the choice is made and
+ /// is resolved fresh by `transcription_router` on the next dictation instead
+ /// (see [`slugtale_lib::apply_engine_settings`]).
+ #[tauri::command]

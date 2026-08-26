@@ -1,0 +1,21 @@
+--- src/diagnostics.rs
++++ replace FileDiagnosticSink::unavailable -> Self with Default::default()
+@@ -201,17 +201,17 @@
+ }
+ 
+ impl FileDiagnosticSink {
+     pub fn new(path: PathBuf) -> Self {
+         Self { path: Some(path) }
+     }
+ 
+     pub fn unavailable() -> Self {
+-        Self { path: None }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl DiagnosticSink for FileDiagnosticSink {
+     fn write_line(&mut self, line: &str) {
+         let Some(path) = &self.path else {
+             return;
+         };

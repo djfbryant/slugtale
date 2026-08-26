@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace - with + in captured_audio_from_interleaved_input
+@@ -57,17 +57,17 @@
+         }
+     } else {
+         // Upsampling (sub-16 kHz mics, rare). Linear interpolation is smooth and
+         // adds no aliasing when moving to a higher rate.
+         for index in 0..target_len {
+             let source_position = index as f64 * ratio;
+             let left = source_position.floor() as usize;
+             let right = (left + 1).min(mono.len().saturating_sub(1));
+-            let fraction = (source_position - left as f64) as f32;
++            let fraction = (source_position + /* ~ changed by cargo-mutants ~ */ left as f64) as f32;
+             let sample = mono[left] + (mono[right] - mono[left]) * fraction;
+             resampled.push(sample);
+         }
+     }
+ 
+     Ok(CapturedAudio::mono_16khz(resampled))
+ }
+ 

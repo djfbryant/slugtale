@@ -1,0 +1,49 @@
+--- src/audio_capture.rs
++++ replace AudioCaptureSession<R>::on_event -> Result<Option<AudioCaptureOutcome>, AudioCaptureError> with Ok(None)
+@@ -887,45 +887,17 @@
+         self.flushed_a_segment = true;
+         Ok(Some(audio))
+     }
+ 
+     pub fn on_event(
+         &mut self,
+         event: DictationEvent,
+     ) -> Result<Option<AudioCaptureOutcome>, AudioCaptureError> {
+-        match event {
+-            DictationEvent::Start => {
+-                self.recorder.start()?;
+-                self.active = true;
+-                self.flushed_a_segment = false;
+-                Ok(None)
+-            }
+-            DictationEvent::Stop if self.active => {
+-                self.active = false;
+-                let audio = self.recorder.stop()?;
+-                // The digital-silence guard catches a denied microphone, which
+-                // supplies perfectly timed silence rather than failing. It can
+-                // only speak for a dictation that flushed nothing: once a
+-                // Segment Pause has handed real speech off, ending on silence is
+-                // exactly what a user who paused and then pressed Stop produces.
+-                // A denied microphone never reaches that state, because a level
+-                // pinned at zero never opens a Segment Pause in the first place.
+-                if !self.flushed_a_segment {
+-                    require_captured_microphone_signal(&audio)?;
+-                }
+-                Ok(Some(AudioCaptureOutcome::Completed(audio)))
+-            }
+-            DictationEvent::Cancel if self.active => {
+-                self.active = false;
+-                self.recorder.cancel()?;
+-                Ok(Some(AudioCaptureOutcome::Discarded))
+-            }
+-            DictationEvent::Stop | DictationEvent::Cancel => Ok(None),
+-        }
++        Ok(None) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn recorder(&self) -> &R {
+         &self.recorder
+     }
+ 
+     pub fn recorder_mut(&mut self) -> &mut R {
+         &mut self.recorder

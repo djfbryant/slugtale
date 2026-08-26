@@ -280,4 +280,13 @@ mod tests {
             Ok(())
         }
     }
+
+    #[test]
+    fn insertion_rescue_error_includes_the_failure_reason() {
+        let error = InsertionRescueError::new("clipboard busy");
+        assert_eq!(
+            error.to_string(),
+            "insertion rescue failed: clipboard busy"
+        );
+    }
 }

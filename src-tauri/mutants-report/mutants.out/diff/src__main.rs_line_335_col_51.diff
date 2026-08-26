@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace == with != in setup_configured_hotkey
+@@ -327,17 +327,17 @@
+                 }
+             };
+ 
+             let state = app.state::<HotkeyRegistrationState>();
+             let registration = state.0.lock();
+             match registration {
+                 Ok(registration) => {
+                     if let Some(commands) = registration.key_commands.as_ref() {
+-                        let key = if shortcut.key == tauri_plugin_global_shortcut::Code::Escape
++                        let key = if shortcut.key != /* ~ changed by cargo-mutants ~ */ tauri_plugin_global_shortcut::Code::Escape
+                             && shortcut.mods.is_empty()
+                         {
+                             slugtale_lib::DictationKey::Escape
+                         } else {
+                             slugtale_lib::DictationKey::Hotkey
+                         };
+                         let _ = commands.send(GlobalKeyCommand::Input(key, input));
+                     }

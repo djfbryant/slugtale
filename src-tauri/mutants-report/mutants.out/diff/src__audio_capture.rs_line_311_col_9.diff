@@ -1,0 +1,28 @@
+--- src/audio_capture.rs
++++ replace RealtimeCaptureBuffer::for_sample_rate -> Result<Self, AudioCaptureError> with Ok(Default::default())
+@@ -303,24 +303,17 @@
+     /// level was above the Segment threshold. Written by the real-time audio
+     /// callback (one atomic store on voiced buffers only), read when a Pause
+     /// Flush names its cut (slugtale-g1o.4).
+     last_voice_position: std::sync::atomic::AtomicUsize,
+ }
+ 
+ impl RealtimeCaptureBuffer {
+     fn for_sample_rate(sample_rate_hz: u32) -> Result<Self, AudioCaptureError> {
+-        let capacity = usize::try_from(sample_rate_hz)
+-            .ok()
+-            .and_then(|rate| rate.checked_mul(MAX_RECORDING_SECONDS))
+-            .ok_or_else(|| AudioCaptureError::new("audio capture capacity is too large"))?;
+-        if capacity == 0 {
+-            return Err(AudioCaptureError::new("input sample rate must be non-zero"));
+-        }
+-        Ok(Self::with_capacity(capacity))
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn with_capacity(capacity: usize) -> Self {
+         assert!(capacity > 0, "capture buffer capacity must be non-zero");
+         Self {
+             slots: (0..capacity)
+                 .map(|_| std::sync::atomic::AtomicU32::new(0f32.to_bits()))
+                 .collect(),

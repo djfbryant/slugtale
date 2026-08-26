@@ -1,0 +1,23 @@
+--- src/diagnostics.rs
++++ replace DiagnosticEvent::audio_capture_failed -> Self with Default::default()
+@@ -71,19 +71,17 @@
+         Self::TranscriptionFailed {
+             reason: error.to_string(),
+         }
+     }
+ 
+     /// Record an [`AudioCaptureError`] by its technical description; captured audio
+     /// samples are never carried.
+     pub fn audio_capture_failed(error: &AudioCaptureError) -> Self {
+-        Self::AudioCaptureFailed {
+-            reason: error.to_string(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Record a hotkey-driven dictation lifecycle transition.
+     pub fn hotkey_transition(event: DictationEvent) -> Self {
+         Self::HotkeyTransition { event }
+     }
+ 
+     /// Record how the Second Opinion router decided a dictation. Takes the

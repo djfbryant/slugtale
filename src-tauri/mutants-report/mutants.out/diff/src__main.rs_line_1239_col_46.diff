@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace == with != in build_engine_view
+@@ -1231,17 +1231,17 @@
+ /// already constructed (Whisper) or already registered at startup (Parakeet,
+ /// Apple SpeechTranscriber), matching how the dictation path itself asks these
+ /// questions.
+ fn build_engine_view(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+     engine: slugtale_lib::TranscriptionEngine,
+ ) -> Result<EngineView, String> {
+-    let is_primary = settings.primary_engine == engine;
++    let is_primary = settings.primary_engine != /* ~ changed by cargo-mutants ~ */ engine;
+ 
+     let (metadata, availability, assets) = match engine {
+         slugtale_lib::TranscriptionEngine::Whisper => {
+             let provider = whisper_engine_provider(app, settings)?;
+             let status = model_manager(app)?.status();
+             (
+                 provider.metadata(),
+                 provider.availability(),

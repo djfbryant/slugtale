@@ -1,0 +1,26 @@
+--- src/audio_capture.rs
++++ replace RealtimeCaptureBuffer::mark_voice with ()
+@@ -348,22 +348,17 @@
+         self.write_position
+             .store(write_position.wrapping_add(1), Ordering::Release);
+     }
+ 
+     /// Record, from the real-time callback, that the sample just written was
+     /// voiced. One relaxed atomic store on voiced buffers only: lock-free,
+     /// allocation-free, and skipped entirely on quiet buffers.
+     fn mark_voice(&self) {
+-        use std::sync::atomic::Ordering;
+-
+-        self.last_voice_position.store(
+-            self.write_position.load(Ordering::Relaxed),
+-            Ordering::Relaxed,
+-        );
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// The ring position of the most recent voiced sample, as a stable
+     /// monotonic watermark a queued Pause Flush can cut at.
+     pub fn voice_watermark(&self) -> u64 {
+         self.last_voice_position
+             .load(std::sync::atomic::Ordering::Acquire) as u64
+     }

@@ -1,0 +1,24 @@
+--- src/main.rs
++++ replace save_transcription_settings -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+@@ -1011,20 +1011,17 @@
+     )
+ }
+ 
+ #[tauri::command]
+ fn save_transcription_settings(
+     app: tauri::AppHandle,
+     speed_profile: slugtale_lib::SpeedProfile,
+ ) -> Result<slugtale_lib::Settings, String> {
+-    let mut settings = load_current_settings(&app);
+-    slugtale_lib::apply_transcription_settings(&mut settings, speed_profile);
+-    save_current_settings(&app, &settings)?;
+-    Ok(settings)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn save_transcript_cleanup_settings(
+     app: tauri::AppHandle,
+     cleanup_mode: slugtale_lib::TranscriptCleanupMode,
+ ) -> Result<slugtale_lib::Settings, String> {
+     let mut settings = load_current_settings(&app);

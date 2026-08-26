@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace || with && in <impl AudioRecorder for CpalAudioRecorder>::prepare
+@@ -608,17 +608,17 @@
+     /// Validate the default input device, allocate the capture ring, and build
+     /// the input stream stopped while the app is idle, so the first Hotkey only
+     /// pays for `play`. Never plays the stream (that is what activates the
+     /// microphone) and never requests permission — see [`AudioRecorder::prepare`].
+     fn prepare(&mut self) -> Result<(), AudioCaptureError> {
+         use cpal::traits::{DeviceTrait, HostTrait};
+ 
+         // Already prepared, or further along than preparation goes.
+-        if matches!(self.prepare_state, PrepareState::Prepared { .. }) || self.stream.is_some() {
++        if matches!(self.prepare_state, PrepareState::Prepared { .. }) && /* ~ changed by cargo-mutants ~ */ self.stream.is_some() {
+             return Ok(());
+         }
+ 
+         let prepared = (|| -> Result<InputStreamIdentity, AudioCaptureError> {
+             let host = cpal::default_host();
+             let device = host
+                 .default_input_device()
+                 .ok_or_else(|| AudioCaptureError::new("no default input device is available"))?;

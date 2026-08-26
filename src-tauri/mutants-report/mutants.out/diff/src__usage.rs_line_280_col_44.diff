@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ replace == with != in record_counted_segment
+@@ -272,17 +272,17 @@
+     let record = match usage.days.iter_mut().find(|record| record.date == iso) {
+         Some(record) => record,
+         None => {
+             usage.days.push(DailyUsageRecord::empty(date));
+             usage.days.sort_by(|a, b| a.date.cmp(&b.date));
+             usage
+                 .days
+                 .iter_mut()
+-                .find(|record| record.date == iso)
++                .find(|record| record.date != /* ~ changed by cargo-mutants ~ */ iso)
+                 .expect("the record was just inserted")
+         }
+     };
+ 
+     if segment.starts_dictation {
+         record.dictations = record.dictations.saturating_add(1);
+     }
+     record.words = record.words.saturating_add(segment.words);

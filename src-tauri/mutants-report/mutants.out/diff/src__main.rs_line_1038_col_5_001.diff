@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace voice_activation_supported -> bool with false
+@@ -1030,17 +1030,17 @@
+     let mut settings = load_current_settings(&app);
+     slugtale_lib::apply_transcript_cleanup_settings(&mut settings, cleanup_mode);
+     save_current_settings(&app, &settings)?;
+     Ok(settings)
+ }
+ 
+ #[tauri::command]
+ fn voice_activation_supported() -> bool {
+-    voice_activation::supported()
++    false /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Save the Voice Activation opt-in and bring the listener in line immediately.
+ /// Change the worker first, then persist. A failed worker must not leave a saved
+ /// "on" value while nothing is listening.
+ #[tauri::command]
+ fn save_voice_activation_settings(
+     app: tauri::AppHandle,

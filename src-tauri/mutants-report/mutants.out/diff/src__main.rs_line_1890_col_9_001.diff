@@ -1,0 +1,39 @@
+--- src/main.rs
++++ replace <impl slugtale_lib::PlatformReadiness for CurrentPlatform>::insertion_granted -> bool with false
+@@ -1882,35 +1882,17 @@
+ 
+         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+         {
+             false
+         }
+     }
+ 
+     fn insertion_granted(&self) -> bool {
+-        #[cfg(target_os = "macos")]
+-        {
+-            return self.macos_platform().insertion_granted();
+-        }
+-
+-        #[cfg(target_os = "windows")]
+-        {
+-            return self.windows_platform().insertion_granted();
+-        }
+-
+-        #[cfg(target_os = "linux")]
+-        {
+-            return self.linux_platform().insertion_granted();
+-        }
+-
+-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+-        {
+-            false
+-        }
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ fn main() {
+     let reauthorize_permissions =
+         slugtale_lib::permission_reauthorization_requested(std::env::args());
+     let app = tauri::Builder::default()
+         .manage(slugtale_lib::TranscriptionEngineCatalogue::default())

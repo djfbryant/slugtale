@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace TypingChallengeOpen::get -> bool with true
+@@ -33,17 +33,17 @@
+ struct TypingChallengeOpen(std::sync::atomic::AtomicBool);
+ 
+ impl TypingChallengeOpen {
+     fn set(&self, open: bool) {
+         self.0.store(open, std::sync::atomic::Ordering::SeqCst);
+     }
+ 
+     fn get(&self) -> bool {
+-        self.0.load(std::sync::atomic::Ordering::SeqCst)
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ use slugtale_lib::{FileDiagnosticSink, SharedDiagnosticLog, TranscriptionProvider};
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ #[derive(Default)]
+ struct HotkeyRegistrationState(Mutex<HotkeyRegistration>);

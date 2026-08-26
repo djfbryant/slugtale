@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ replace * with + in time_saved_seconds
+@@ -333,17 +333,17 @@
+ /// and a short dictation of one word can easily take longer to say than to type.
+ /// Returns `None` when there is no baseline at all, which is the hole the pane
+ /// shows with a take-the-baseline action rather than an invented default WPM.
+ pub fn time_saved_seconds(totals: &UsageTotals, words_per_minute: Option<u32>) -> Option<f64> {
+     let wpm = words_per_minute?;
+     if wpm == 0 {
+         return None;
+     }
+-    let typing_seconds = f64::from(totals.words) / f64::from(wpm) * 60.0;
++    let typing_seconds = f64::from(totals.words) / f64::from(wpm) + /* ~ changed by cargo-mutants ~ */ 60.0;
+     Some((typing_seconds - totals.speaking_seconds).max(0.0))
+ }
+ 
+ /// Render Time Saved the way the Usage pane states it: prefixed with "About",
+ /// no decimals, and never a false precision the estimate cannot support.
+ ///
+ /// `None` is the hole — the user has no Typing Baseline yet, so there is no
+ /// honest number to show.

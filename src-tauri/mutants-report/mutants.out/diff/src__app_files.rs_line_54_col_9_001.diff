@@ -1,0 +1,21 @@
+--- src/app_files.rs
++++ replace AppFiles::usage_path -> Option<PathBuf> with Some(Default::default())
+@@ -46,17 +46,17 @@
+     }
+ 
+     pub fn settings_path(&self) -> Option<PathBuf> {
+         self.config_dir.as_ref().map(|dir| dir.join(SETTINGS_FILE))
+     }
+ 
+     /// The Usage File (CONTEXT.md): a sibling of the Settings File.
+     pub fn usage_path(&self) -> Option<PathBuf> {
+-        self.config_dir.as_ref().map(|dir| dir.join(USAGE_FILE))
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn diagnostic_log_path(&self) -> Option<PathBuf> {
+         self.config_dir
+             .as_ref()
+             .map(|dir| dir.join(DIAGNOSTIC_LOG_FILE))
+     }
+ 

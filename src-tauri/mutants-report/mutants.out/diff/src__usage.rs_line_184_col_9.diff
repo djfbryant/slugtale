@@ -1,0 +1,24 @@
+--- src/usage.rs
++++ replace WeekStart::weekday -> Weekday with Default::default()
+@@ -176,20 +176,17 @@
+     /// ISO-8601, which is the safe answer when the OS will not say.
+     fn default() -> Self {
+         Self::Monday
+     }
+ }
+ 
+ impl WeekStart {
+     fn weekday(self) -> Weekday {
+-        match self {
+-            Self::Sunday => Weekday::Sunday,
+-            Self::Monday => Weekday::Monday,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// One local day's counted dictation totals (CONTEXT.md). This is the whole of
+ /// what Usage stores per day, and it is deliberately impossible to reconstruct
+ /// anything the user said from it.
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+ pub struct DailyUsageRecord {

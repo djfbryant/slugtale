@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace <impl std::fmt::Display for AudioCaptureError>::fmt -> std::fmt::Result with Ok(Default::default())
+@@ -165,17 +165,17 @@
+         Self {
+             message: message.into(),
+         }
+     }
+ }
+ 
+ impl std::fmt::Display for AudioCaptureError {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+-        write!(f, "audio capture failed: {}", self.message)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl std::error::Error for AudioCaptureError {}
+ 
+ pub trait AudioRecorder {
+     /// Do the safe part of starting capture ahead of the first Hotkey.
+     ///

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace <impl DictationSurface for TauriSurface>::show_dictation_bar with ()
+@@ -230,17 +230,17 @@
+         load_current_settings(&self.app)
+     }
+ 
+     fn record_diagnostic_event(&self, event: slugtale_lib::DiagnosticEvent) {
+         record_diagnostic_event(&self.app, event);
+     }
+ 
+     fn show_dictation_bar(&self, phase: DictationPhase, settings: &slugtale_lib::Settings) {
+-        show_dictation_bar(&self.app, phase, settings);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn hide_dictation_bar(&self) {
+         hide_dictation_bar(&self.app);
+     }
+ 
+     fn emit_dictation_audio_level(&self, level: f32) {
+         if let Some(window) = self.app.get_webview_window("dictation-bar") {

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::settings -> slugtale_lib::Settings with Default::default()
+@@ -753,17 +753,17 @@
+ /// The app's answers to the five readiness facts, probed through one
+ /// interface so both snapshot paths see identical state (slugtale-g1o.6).
+ struct AppReadinessProbes<'a> {
+     app: &'a tauri::AppHandle,
+ }
+ 
+ impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_> {
+     fn settings(&self) -> slugtale_lib::Settings {
+-        load_current_settings(self.app)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn microphone_granted(&self) -> bool {
+         slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new())
+     }
+ 
+     fn insertion_granted(&self) -> bool {
+         slugtale_lib::PlatformReadiness::insertion_granted(&CurrentPlatform::new())

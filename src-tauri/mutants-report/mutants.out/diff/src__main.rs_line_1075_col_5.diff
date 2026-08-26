@@ -1,0 +1,35 @@
+--- src/main.rs
++++ replace apply_dictation_bar_appearance with ()
+@@ -1067,31 +1067,17 @@
+     apply_dictation_bar_appearance(&app, &settings);
+     Ok(settings)
+ }
+ 
+ /// Push a saved appearance change to a bar that is already on screen, so the user
+ /// sees the choice they just made instead of waiting for the next dictation.
+ /// Does nothing visible when the bar is hidden — showing it re-sends both.
+ fn apply_dictation_bar_appearance(app: &tauri::AppHandle, settings: &slugtale_lib::Settings) {
+-    let Some(window) = app.get_webview_window("dictation-bar") else {
+-        return;
+-    };
+-    let appearance = DictationBarAppearance::from_settings(settings);
+-    let _ = window.emit("dictation-appearance", appearance.clone());
+-
+-    if !window.is_visible().unwrap_or(false) {
+-        return;
+-    }
+-    // Repositioning reads monitor geometry, which blocks on the main thread;
+-    // hand it over rather than waiting on it from here (slugtale-1n4).
+-    let bar_display = settings.bar_display.clone();
+-    let _ = app.run_on_main_thread(move || {
+-        position_dictation_bar(&window, appearance.position, &bar_display);
+-    });
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Register or unregister the app as an OS login item to match the desired state.
+ /// Backed by tauri-plugin-autostart (a macOS LaunchAgent), which keeps this off the
+ /// dictation hot path and gives the Windows port the same abstraction for free.
+ fn set_launch_at_login_state(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+     let autolaunch = app.autolaunch();
+     if enabled {

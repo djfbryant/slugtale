@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace load_current_settings -> slugtale_lib::Settings with Default::default()
+@@ -1836,17 +1836,17 @@
+         // or a notification (ADR-0025).
+         if let Some(window) = app.get_webview_window("settings") {
+             let _ = window.emit("usage-changed", ());
+         }
+     })
+ }
+ 
+ fn load_current_settings(app: &tauri::AppHandle) -> slugtale_lib::Settings {
+-    app_files(app).settings()
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn current_diagnostic_log(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> SharedDiagnosticLog<FileDiagnosticSink> {
+     app_files(app).diagnostic_log(settings.diagnostic_logging)
+ }

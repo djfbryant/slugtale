@@ -1,0 +1,24 @@
+--- src/app_files.rs
++++ replace AppFiles::model_dir -> Result<PathBuf, String> with Ok(Default::default())
+@@ -56,20 +56,17 @@
+ 
+     pub fn diagnostic_log_path(&self) -> Option<PathBuf> {
+         self.config_dir
+             .as_ref()
+             .map(|dir| dir.join(DIAGNOSTIC_LOG_FILE))
+     }
+ 
+     pub fn model_dir(&self) -> Result<PathBuf, String> {
+-        self.data_dir
+-            .as_ref()
+-            .map(|dir| dir.join(MODELS_DIR))
+-            .ok_or_else(|| "could not resolve model directory".to_string())
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Current Settings, or defaults when no file exists yet.
+     pub fn settings(&self) -> Settings {
+         self.settings_path()
+             .map(|path| load_settings(&path))
+             .unwrap_or_default()
+     }

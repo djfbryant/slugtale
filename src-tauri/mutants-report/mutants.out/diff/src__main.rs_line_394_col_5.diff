@@ -1,0 +1,140 @@
+--- src/main.rs
++++ replace start_global_key_worker -> Result<(), String> with Ok(())
+@@ -386,136 +386,17 @@
+ 
+ /// Bare Escape must only be global while recording; otherwise Slugtale would
+ /// steal Escape from the user's current application. A dedicated worker first
+ /// registers Escape and only then starts recording, so there is no active but
+ /// uncancellable window. It also keeps registration outside the plugin callback,
+ /// which holds the plugin's key map while invoking us.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
+-    let (commands, events) = std::sync::mpsc::channel::<GlobalKeyCommand>();
+-    {
+-        let state = app.state::<HotkeyRegistrationState>();
+-        let mut registration = state
+-            .0
+-            .lock()
+-            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+-        registration.key_commands = Some(commands);
+-    }
+-
+-    let app = app.clone();
+-    std::thread::Builder::new()
+-        .name("dictation-global-keys".to_string())
+-        .spawn(move || {
+-            // The one owner of bare Escape's armed state on this thread.
+-            let mut escape_arbiter = slugtale_lib::EscapeArbiter::new();
+-            for event in events {
+-                match event {
+-                    GlobalKeyCommand::SyncEscape(command) => {
+-                        if let Err(error) =
+-                            sync_escape_registration(&app, &mut escape_arbiter, command)
+-                        {
+-                            eprintln!("could not update global Escape key: {error}");
+-                        }
+-                    }
+-                    GlobalKeyCommand::Input(key, input) => {
+-                        // The Typing Challenge guard also lives inside
+-                        // begin_dictation; this early check keeps the release of
+-                        // a swallowed key from reaching the lifecycle at all.
+-                        if typing_challenge_is_open(&app) {
+-                            continue;
+-                        }
+-
+-                        let is_dictating = app
+-                            .state::<HotkeyRegistrationState>()
+-                            .0
+-                            .lock()
+-                            .ok()
+-                            .map(|registration| registration.control.is_dictating())
+-                            .unwrap_or(false);
+-
+-                        let pressed_start = matches!(
+-                            (key, input),
+-                            (
+-                                slugtale_lib::DictationKey::Hotkey,
+-                                slugtale_lib::HotkeyInput::Pressed
+-                            )
+-                        );
+-
+-                        // A start goes through the shared readiness-gated begin
+-                        // sequence, identical to the Voice Activation path.
+-                        // One snapshot for this press: the readiness gate and
+-                        // the Start path share the same Settings value and
+-                        // permission probes (slugtale-g1o.6).
+-                        if pressed_start && !is_dictating {
+-                            let mut set_escape = |should_register: bool| {
+-                                sync_escape_registration(
+-                                    &app,
+-                                    &mut escape_arbiter,
+-                                    escape_command(should_register),
+-                                )
+-                            };
+-                            if let Err(error) = begin_dictation(
+-                                &app,
+-                                slugtale_lib::DictationInput::Hotkey,
+-                                &mut set_escape,
+-                            ) {
+-                                eprintln!("dictation did not start: {error}");
+-                            }
+-                            continue;
+-                        }
+-
+-                        let transition = app
+-                            .state::<HotkeyRegistrationState>()
+-                            .0
+-                            .lock()
+-                            .ok()
+-                            .and_then(|mut registration| {
+-                                let event = match (key, input) {
+-                                    (slugtale_lib::DictationKey::Hotkey, input) => {
+-                                        registration.control.on_hotkey(input)
+-                                    }
+-                                    (
+-                                        slugtale_lib::DictationKey::Escape,
+-                                        slugtale_lib::HotkeyInput::Pressed,
+-                                    ) => registration.control.cancel(),
+-                                    (
+-                                        slugtale_lib::DictationKey::Escape,
+-                                        slugtale_lib::HotkeyInput::Released,
+-                                    ) => None,
+-                                };
+-                                Some((event, registration.control.is_dictating()))
+-                            });
+-                        if let Some((event, should_register)) = transition {
+-                            // The shared registration mutex is no longer held:
+-                            // recording, transcription, and window work may block
+-                            // without preventing the main-thread shortcut handler
+-                            // from forwarding the next key transition (slugtale-pil).
+-                            if let Some(event) = event {
+-                                if let Err(error) =
+-                                    dictation_host(&app).handle_dictation_event(event)
+-                                {
+-                                    eprintln!("dictation event failed: {error}");
+-                                }
+-                            }
+-                            if let Err(error) = sync_escape_registration(
+-                                &app,
+-                                &mut escape_arbiter,
+-                                slugtale_lib::EscapeCommand::MatchDictation(should_register),
+-                            ) {
+-                                eprintln!("could not update global Escape key: {error}");
+-                            }
+-                        }
+-                    }
+-                }
+-            }
+-        })
+-        .map_err(|error| error.to_string())?;
+-
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn sync_escape_registration(
+     app: &tauri::AppHandle,
+     arbiter: &mut slugtale_lib::EscapeArbiter,
+     command: slugtale_lib::EscapeCommand,
+ ) -> Result<(), String> {

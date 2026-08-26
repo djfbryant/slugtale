@@ -1,0 +1,24 @@
+--- src/audio_capture.rs
++++ replace <impl AudioRecorder for CpalAudioRecorder>::voice_watermark -> u64 with 1
+@@ -811,20 +811,17 @@
+             .ok_or_else(|| AudioCaptureError::new("audio capture buffer is unavailable"))?;
+         let guard = (QUIET_TAIL_GUARD.as_secs_f64() * f64::from(self.sample_rate_hz)) as u64;
+         let samples = buffer.drain_through(cut, guard)?;
+ 
+         captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
+     }
+ 
+     fn voice_watermark(&self) -> u64 {
+-        self.buffer
+-            .as_ref()
+-            .map(|buffer| buffer.voice_watermark())
+-            .unwrap_or(0)
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[derive(Debug, Clone, PartialEq)]
+ pub enum AudioCaptureOutcome {
+     Completed(CapturedAudio),
+     Discarded,
+ }

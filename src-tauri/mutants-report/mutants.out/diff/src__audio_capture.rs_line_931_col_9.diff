@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace AudioCaptureSession<R>::recorder_mut -> &mut R with Box::leak(Box::new(Default::default()))
+@@ -923,17 +923,17 @@
+         }
+     }
+ 
+     pub fn recorder(&self) -> &R {
+         &self.recorder
+     }
+ 
+     pub fn recorder_mut(&mut self) -> &mut R {
+-        &mut self.recorder
++        Box::leak(Box::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Always-on microphone used by Voice Activation.
+ ///
+ /// Dictation's [`CpalAudioRecorder`] keeps a paused CoreAudio stream so the next
+ /// hotkey only pays for `play`. The listener cannot share that trick: after
+ /// dictation or digital silence, `play` on the retained stream can succeed while

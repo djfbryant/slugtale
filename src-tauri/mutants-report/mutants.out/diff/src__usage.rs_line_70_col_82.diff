@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ replace + with - in LocalDate::days_from_epoch
+@@ -62,17 +62,17 @@
+         } else {
+             self.year
+         } as i64;
+         let era = if year >= 0 { year } else { year - 399 } / 400;
+         let year_of_era = year - era * 400;
+         let month = self.month as i64;
+         let day = self.day as i64;
+         let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+-        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
++        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 - /* ~ changed by cargo-mutants ~ */ day_of_year;
+         era * 146_097 + day_of_era - 719_468
+     }
+ 
+     /// Which day of the week this date falls on.
+     pub fn weekday(self) -> Weekday {
+         // 1970-01-01 was a Thursday.
+         let index = (self.days_from_epoch() + 4).rem_euclid(7);
+         match index {

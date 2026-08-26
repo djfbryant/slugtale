@@ -1,0 +1,21 @@
+--- src/platform_execution.rs
++++ delete ! in make_text_insertion
+@@ -109,17 +109,17 @@
+         insertion: SettledTextInsertion { inner: insertion, ready_at },
+         rescue: make_insertion_rescue(),
+     })
+ }
+ 
+ fn make_text_insertion() -> Result<Box<dyn TextInsertion>, String> {
+     #[cfg(target_os = "macos")]
+     {
+-        if !crate::accessibility_trusted() {
++        if  /* ~ changed by cargo-mutants ~ */crate::accessibility_trusted() {
+             let _ = crate::notify(
+                 "Slugtale needs Accessibility access",
+                 "Turn on Slugtale under System Settings → Privacy & Security → Accessibility so it can type into other apps. Until then your transcription is copied to the clipboard — paste it with Cmd+V.",
+             );
+         }
+         return Ok(Box::new(crate::MacosTextInsertion::new()));
+     }
+ 

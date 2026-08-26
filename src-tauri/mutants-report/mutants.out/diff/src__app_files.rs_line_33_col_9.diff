@@ -1,0 +1,25 @@
+--- src/app_files.rs
++++ replace AppFiles::from_app -> Self with Default::default()
+@@ -25,21 +25,17 @@
+     /// and the Usage File sit side by side so opting out deletes one obvious
+     /// file and nothing else.
+     config_dir: Option<PathBuf>,
+     data_dir: Option<PathBuf>,
+ }
+ 
+ impl AppFiles {
+     pub fn from_app(app: &tauri::AppHandle) -> Self {
+-        use tauri::Manager;
+-        Self {
+-            config_dir: app.path().app_config_dir().ok(),
+-            data_dir: app.path().app_data_dir().ok(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     #[cfg(test)]
+     fn from_dirs(config_dir: Option<PathBuf>, data_dir: Option<PathBuf>) -> Self {
+         Self {
+             config_dir,
+             data_dir,
+         }

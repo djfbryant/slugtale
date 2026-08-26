@@ -1,0 +1,21 @@
+--- src/recording_feedback.rs
++++ replace play_sound -> std::io::Result<()> with Ok(())
+@@ -113,17 +113,17 @@
+     Ok(())
+ }
+ 
+ #[cfg(target_os = "windows")]
+ fn play_sound(sound: DictationSound) -> std::io::Result<()> {
+     // The Win32 call lives in the platform adapter (ADR-0021) so this module
+     // stays free of OS bindings; slugtale-yn9 tracks moving the afplay arm
+     // above behind the same boundary.
+-    crate::windows::play_dictation_sound(sound)
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(target_os = "linux")]
+ fn play_sound(sound: DictationSound) -> std::io::Result<()> {
+     // The XDG sound-theme call lives in the platform adapter (ADR-0021) so this
+     // module stays free of OS specifics, matching the Windows arm above.
+     crate::linux::play_dictation_sound(sound)
+ }

@@ -1,0 +1,22 @@
+--- src/main.rs
++++ replace record_diagnostic_event with ()
+@@ -1847,18 +1847,17 @@
+ fn current_diagnostic_log(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> SharedDiagnosticLog<FileDiagnosticSink> {
+     app_files(app).diagnostic_log(settings.diagnostic_logging)
+ }
+ 
+ fn record_diagnostic_event(app: &tauri::AppHandle, event: slugtale_lib::DiagnosticEvent) {
+-    let settings = load_current_settings(app);
+-    current_diagnostic_log(app, &settings).record(event);
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn save_current_settings(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> Result<(), String> {
+     app_files(app).save_settings(settings)
+ }

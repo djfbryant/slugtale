@@ -1,0 +1,40 @@
+--- src/main.rs
++++ replace end_active_dictation -> Result<(), String> with Ok(())
+@@ -106,36 +106,17 @@
+ /// registration yet, or nothing active — the fallback event still runs so a
+ /// leftover Dictation Bar never outlives its dictation.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn end_active_dictation(
+     app: &tauri::AppHandle,
+     end: impl FnOnce(&mut slugtale_lib::DictationControl) -> Option<slugtale_lib::DictationEvent>,
+     fallback: slugtale_lib::DictationEvent,
+ ) -> Result<(), String> {
+-    let event = {
+-        let state = app.state::<HotkeyRegistrationState>();
+-        let mut registration = state
+-            .0
+-            .lock()
+-            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+-        let event = end(&mut registration.control);
+-        if event.is_some() {
+-            // Disarm failures only matter when the worker is gone entirely,
+-            // which means the app is shutting down; dropping the request is
+-            // then the honest outcome.
+-            let _ = request_escape_registration(&registration, false);
+-        }
+-        event
+-    };
+-
+-    match event {
+-        Some(event) => dictation_host(app).handle_dictation_event(event),
+-        None => dictation_host(app).handle_dictation_event(fallback),
+-    }
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Begin a dictation from any activation input — a Hotkey press or a Voice
+ /// Activation wake phrase — through one readiness-gated sequence. The hotkey
+ /// worker and Voice Activation used to run two private copies of this dance
+ /// and had already drifted on the typing-challenge guard and the rollback.
+ ///
+ /// `set_escape(true)` arms bare Escape before recording starts, so there is no

@@ -1,0 +1,35 @@
+--- src/settings.rs
++++ replace save_settings -> std::io::Result<()> with Ok(())
+@@ -275,31 +275,17 @@
+ /// its lifetime depends on platform audio support.
+ pub fn apply_voice_activation_settings(settings: &mut Settings, enabled: bool) {
+     settings.voice_activation_enabled = enabled;
+ }
+ 
+ /// Write the Settings File as human-readable JSON so it can be inspected
+ /// during development (ADR-0018).
+ pub fn save_settings(path: &std::path::Path, settings: &Settings) -> std::io::Result<()> {
+-    let json = serde_json::to_string_pretty(settings)?;
+-    let file_name = path
+-        .file_name()
+-        .and_then(|name| name.to_str())
+-        .unwrap_or("settings.json");
+-    let temp_path = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+-
+-    std::fs::write(&temp_path, json)?;
+-    match std::fs::rename(&temp_path, path) {
+-        Ok(()) => Ok(()),
+-        Err(error) => {
+-            let _ = std::fs::remove_file(&temp_path);
+-            Err(error)
+-        }
+-    }
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Load the Settings File, falling back to defaults when it is missing or
+ /// unreadable (e.g. first run).
+ pub fn load_settings(path: &std::path::Path) -> Settings {
+     std::fs::read_to_string(path)
+         .ok()
+         .and_then(|json| serde_json::from_str(&json).ok())

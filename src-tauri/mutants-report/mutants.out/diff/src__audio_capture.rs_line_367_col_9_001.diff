@@ -1,0 +1,22 @@
+--- src/audio_capture.rs
++++ replace RealtimeCaptureBuffer::voice_watermark -> u64 with 1
+@@ -359,18 +359,17 @@
+             self.write_position.load(Ordering::Relaxed),
+             Ordering::Relaxed,
+         );
+     }
+ 
+     /// The ring position of the most recent voiced sample, as a stable
+     /// monotonic watermark a queued Pause Flush can cut at.
+     pub fn voice_watermark(&self) -> u64 {
+-        self.last_voice_position
+-            .load(std::sync::atomic::Ordering::Acquire) as u64
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Called after the input stream is paused, outside the audio callback.
+     fn drain(&self) -> Result<Vec<f32>, AudioCaptureError> {
+         let read_position = self
+             .read_position
+             .load(std::sync::atomic::Ordering::Relaxed);
+         let write_position = self

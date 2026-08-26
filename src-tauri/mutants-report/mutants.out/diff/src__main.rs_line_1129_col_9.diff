@@ -1,0 +1,24 @@
+--- src/main.rs
++++ replace AppUpdateView::none -> Self with Default::default()
+@@ -1121,20 +1121,17 @@
+ #[derive(Debug, Clone, serde::Serialize)]
+ struct AppUpdateView {
+     available: bool,
+     version: Option<String>,
+ }
+ 
+ impl AppUpdateView {
+     fn none() -> Self {
+-        Self {
+-            available: false,
+-            version: None,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn available(version: String) -> Self {
+         Self {
+             available: true,
+             version: Some(version),
+         }
+     }

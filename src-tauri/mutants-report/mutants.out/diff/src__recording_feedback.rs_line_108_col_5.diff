@@ -1,0 +1,26 @@
+--- src/recording_feedback.rs
++++ replace play_sound -> std::io::Result<()> with Ok(())
+@@ -100,22 +100,17 @@
+ pub fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
+     play_sound(sound)
+ }
+ 
+ #[cfg(target_os = "macos")]
+ fn play_sound(sound: DictationSound) -> std::io::Result<()> {
+     // Reuse the built-in system sounds so v1 ships no bundled audio assets. Tink
+     // marks the start of recording; Pop marks the end.
+-    let file = match sound {
+-        DictationSound::Start => "/System/Library/Sounds/Tink.aiff",
+-        DictationSound::Stop => "/System/Library/Sounds/Pop.aiff",
+-    };
+-    std::process::Command::new("afplay").arg(file).spawn()?;
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(target_os = "windows")]
+ fn play_sound(sound: DictationSound) -> std::io::Result<()> {
+     // The Win32 call lives in the platform adapter (ADR-0021) so this module
+     // stays free of OS bindings; slugtale-yn9 tracks moving the afplay arm
+     // above behind the same boundary.
+     crate::windows::play_dictation_sound(sound)

@@ -1,0 +1,49 @@
+--- src/main.rs
++++ replace dictation_bar_displays -> Vec<DictationBarDisplayOption> with vec![]
+@@ -899,45 +899,17 @@
+     label: String,
+ }
+ 
+ /// Return the displays that can host the Dictation Bar right now. Displays with
+ /// no stable name cannot be selected safely across app launches, but the main
+ /// display is always available as the fallback choice.
+ #[tauri::command]
+ fn dictation_bar_displays(app: tauri::AppHandle) -> Vec<DictationBarDisplayOption> {
+-    let primary = app.primary_monitor().ok().flatten();
+-    let primary_label = primary
+-        .as_ref()
+-        .and_then(|monitor| monitor.name())
+-        .map(|name| format!("Main display ({name})"))
+-        .unwrap_or_else(|| "Main display".to_string());
+-    let mut displays = vec![DictationBarDisplayOption {
+-        value: slugtale_lib::BarDisplay::Primary,
+-        label: primary_label,
+-    }];
+-
+-    let monitors = app.available_monitors().unwrap_or_default();
+-    for monitor in monitors {
+-        if primary.as_ref().is_some_and(|primary| {
+-            monitor.position() == primary.position() && monitor.size() == primary.size()
+-        }) {
+-            continue;
+-        }
+-        let Some(name) = monitor.name().cloned() else {
+-            continue;
+-        };
+-        let size = monitor.size();
+-        displays.push(DictationBarDisplayOption {
+-            value: slugtale_lib::BarDisplay::Monitor(name.clone()),
+-            label: format!("{name} ({} × {})", size.width, size.height),
+-        });
+-    }
+-
+-    displays
++    vec![] /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn open_microphone_settings() -> Result<(), String> {
+     #[cfg(target_os = "macos")]
+     {
+         return slugtale_lib::run_microphone_permission_setup(
+             &slugtale_lib::MacosMicrophonePermissionSetup,

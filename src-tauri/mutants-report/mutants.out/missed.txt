@@ -1,0 +1,209 @@
+src/main.rs:37:9: replace TypingChallengeOpen::set with ()
+src/main.rs:41:9: replace TypingChallengeOpen::get -> bool with true
+src/main.rs:41:9: replace TypingChallengeOpen::get -> bool with false
+src/main.rs:73:5: replace dictation_event -> Result<(), String> with Ok(())
+src/main.rs:86:5: replace stop_active_dictation -> Result<(), String> with Ok(())
+src/main.rs:97:5: replace cancel_active_dictation -> Result<(), String> with Ok(())
+src/main.rs:114:5: replace end_active_dictation -> Result<(), String> with Ok(())
+src/main.rs:157:5: replace begin_dictation -> Result<(), String> with Ok(())
+src/main.rs:164:12: delete ! in begin_dictation
+src/main.rs:208:5: replace warm_effective_primary_engine with ()
+src/main.rs:230:9: replace <impl DictationSurface for TauriSurface>::settings -> slugtale_lib::Settings with Default::default()
+src/main.rs:234:9: replace <impl DictationSurface for TauriSurface>::record_diagnostic_event with ()
+src/main.rs:238:9: replace <impl DictationSurface for TauriSurface>::show_dictation_bar with ()
+src/main.rs:242:9: replace <impl DictationSurface for TauriSurface>::hide_dictation_bar with ()
+src/main.rs:246:9: replace <impl DictationSurface for TauriSurface>::emit_dictation_audio_level with ()
+src/main.rs:252:9: replace <impl DictationSurface for TauriSurface>::notify_capture_failure with ()
+src/main.rs:257:9: replace <impl DictationSurface for TauriSurface>::play_dictation_sound with ()
+src/main.rs:296:9: replace <impl slugtale_lib::DictationRuntimeHost for AppHost>::take_pause_segment -> Option<slugtale_lib::CapturedAudio> with None
+src/main.rs:311:9: replace <impl slugtale_lib::DictationRuntimeHost for AppHost>::last_job_settled with ()
+src/main.rs:317:5: replace setup_configured_hotkey -> Result<(), Box<dyn std::error::Error>> with Ok(())
+src/main.rs:336:29: replace && with || in setup_configured_hotkey
+src/main.rs:335:51: replace == with != in setup_configured_hotkey
+src/main.rs:364:5: replace request_escape_registration -> Result<(), String> with Ok(())
+src/main.rs:394:5: replace start_global_key_worker -> Result<(), String> with Ok(())
+src/main.rs:448:42: replace && with || in start_global_key_worker
+src/main.rs:448:45: delete ! in start_global_key_worker
+src/main.rs:522:5: replace sync_escape_registration -> Result<(), String> with Ok(())
+src/main.rs:543:5: replace set_hotkey_registration_state -> Result<(), String> with Ok(())
+src/main.rs:560:5: replace update_registered_hotkey -> Result<(), String> with Ok(())
+src/main.rs:570:17: replace != with == in update_registered_hotkey
+src/main.rs:620:5: replace show_dictation_bar with ()
+src/main.rs:653:5: replace push_dictation_bar_render_state with ()
+src/main.rs:661:5: replace hide_dictation_bar with ()
+src/main.rs:674:5: replace dictation_bar_monitor -> Option<slugtale_lib::MonitorGeometry> with None
+src/main.rs:683:52: replace == with != in dictation_bar_monitor
+src/main.rs:709:5: replace position_dictation_bar with ()
+src/main.rs:730:5: replace dictation_bar_pointer_over -> Result<bool, String> with Ok(true)
+src/main.rs:730:5: replace dictation_bar_pointer_over -> Result<bool, String> with Ok(false)
+src/main.rs:747:35: delete ! in dictation_bar_pointer_over
+src/main.rs:761:9: replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::settings -> slugtale_lib::Settings with Default::default()
+src/main.rs:765:9: replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::microphone_granted -> bool with true
+src/main.rs:765:9: replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::microphone_granted -> bool with false
+src/main.rs:769:9: replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::insertion_granted -> bool with true
+src/main.rs:769:9: replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::insertion_granted -> bool with false
+src/main.rs:773:9: replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::local_model_ready -> bool with true
+src/main.rs:773:9: replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::local_model_ready -> bool with false
+src/main.rs:783:9: replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::engine_availability -> Vec<(slugtale_lib::TranscriptionEngine, slugtale_lib::EngineAvailability,)> with vec![]
+src/main.rs:789:42: replace && with || in current_settings_readiness
+src/main.rs:809:5: replace local_model_ready -> bool with true
+src/main.rs:809:5: replace local_model_ready -> bool with false
+src/main.rs:835:5: replace current_engine_availability -> Vec<(slugtale_lib::TranscriptionEngine, slugtale_lib::EngineAvailability,)> with vec![]
+src/main.rs:845:5: replace report_not_ready -> bool with true
+src/main.rs:845:5: replace report_not_ready -> bool with false
+src/main.rs:846:8: delete ! in report_not_ready
+src/main.rs:871:30: replace == with != in get_settings_readiness
+src/main.rs:876:8: delete ! in get_settings_readiness
+src/main.rs:878:12: delete ! in get_settings_readiness
+src/main.rs:890:5: replace get_settings -> slugtale_lib::Settings with Default::default()
+src/main.rs:907:5: replace dictation_bar_displays -> Vec<DictationBarDisplayOption> with vec![]
+src/main.rs:921:54: replace && with || in dictation_bar_displays
+src/main.rs:921:32: replace == with != in dictation_bar_displays
+src/main.rs:921:72: replace == with != in dictation_bar_displays
+src/main.rs:940:5: replace open_microphone_settings -> Result<(), String> with Ok(())
+src/main.rs:969:5: replace open_text_insertion_settings -> Result<(), String> with Ok(())
+src/main.rs:1005:5: replace save_hotkey_settings -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+src/main.rs:1019:5: replace save_transcription_settings -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+src/main.rs:1030:5: replace save_transcript_cleanup_settings -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+src/main.rs:1038:5: replace voice_activation_supported -> bool with true
+src/main.rs:1038:5: replace voice_activation_supported -> bool with false
+src/main.rs:1049:5: replace save_voice_activation_settings -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+src/main.rs:1059:5: replace save_dictation_bar_settings -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+src/main.rs:1075:5: replace apply_dictation_bar_appearance with ()
+src/main.rs:1081:8: delete ! in apply_dictation_bar_appearance
+src/main.rs:1096:5: replace set_launch_at_login_state -> Result<(), String> with Ok(())
+src/main.rs:1109:5: replace save_launch_at_login -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+src/main.rs:1161:5: replace install_app_update -> Result<(), String> with Ok(())
+src/main.rs:1239:46: replace == with != in build_engine_view
+src/main.rs:1308:5: replace transcription_engines -> Result<Vec<EngineView>, String> with Ok(vec![])
+src/main.rs:1326:5: replace set_transcription_engines -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+src/main.rs:1531:8: delete ! in set_usage_storing
+src/main.rs:1642:5: replace open_typing_challenge -> Result<(), String> with Ok(())
+src/main.rs:1672:5: replace close_typing_challenge -> Result<(), String> with Ok(())
+src/main.rs:1682:5: replace notify_usage_changed with ()
+src/main.rs:1694:5: replace typing_challenge_is_open -> bool with true
+src/main.rs:1694:5: replace typing_challenge_is_open -> bool with false
+src/main.rs:1735:5: replace reveal_model_location -> Result<(), String> with Ok(())
+src/main.rs:1750:9: replace CurrentPlatform::macos_platform -> slugtale_lib::MacosPlatform with Default::default()
+src/main.rs:1755:9: replace CurrentPlatform::windows_platform -> slugtale_lib::WindowsPlatform with Default::default()
+src/main.rs:1760:9: replace CurrentPlatform::linux_platform -> slugtale_lib::LinuxPlatform with Default::default()
+src/main.rs:1769:5: replace settings_path -> Option<PathBuf> with None
+src/main.rs:1769:5: replace settings_path -> Option<PathBuf> with Some(Default::default())
+src/main.rs:1773:5: replace model_dir -> Result<PathBuf, String> with Ok(Default::default())
+src/main.rs:1788:5: replace usage_path -> Option<PathBuf> with None
+src/main.rs:1788:5: replace usage_path -> Option<PathBuf> with Some(Default::default())
+src/main.rs:1792:5: replace load_current_usage -> slugtale_lib::UsageFile with Default::default()
+src/main.rs:1798:5: replace locale_week_start -> slugtale_lib::WeekStart with Default::default()
+src/main.rs:1815:12: delete ! in usage_writer
+src/main.rs:1844:5: replace load_current_settings -> slugtale_lib::Settings with Default::default()
+src/main.rs:1855:5: replace record_diagnostic_event with ()
+src/main.rs:1863:5: replace save_current_settings -> Result<(), String> with Ok(())
+src/main.rs:1868:9: replace <impl slugtale_lib::PlatformReadiness for CurrentPlatform>::microphone_granted -> bool with true
+src/main.rs:1868:9: replace <impl slugtale_lib::PlatformReadiness for CurrentPlatform>::microphone_granted -> bool with false
+src/main.rs:1890:9: replace <impl slugtale_lib::PlatformReadiness for CurrentPlatform>::insertion_granted -> bool with true
+src/main.rs:1890:9: replace <impl slugtale_lib::PlatformReadiness for CurrentPlatform>::insertion_granted -> bool with false
+src/main.rs:1913:5: replace main with ()
+src/main.rs:2003:17: replace && with || in main
+src/main.rs:2002:31: replace == with != in main
+src/main.rs:2061:18: replace != with == in main
+src/app_shell.rs:36:5: replace show_settings with ()
+src/app_shell.rs:43:5: replace setup_tray -> Result<(), Box<dyn std::error::Error>> with Ok(())
+src/app_shell.rs:63:13: delete match arm "settings" in setup_tray
+src/app_shell.rs:66:13: delete match arm "quit" in setup_tray
+src/app_files.rs:88:9: replace AppFiles::usage -> UsageFile with Default::default()
+src/recording_feedback.rs:101:5: replace play_dictation_sound -> std::io::Result<()> with Ok(())
+src/recording_feedback.rs:108:5: replace play_sound -> std::io::Result<()> with Ok(())
+src/recording_feedback.rs:121:5: replace play_sound -> std::io::Result<()> with Ok(())
+src/recording_feedback.rs:128:5: replace play_sound -> std::io::Result<()> with Ok(())
+src/audio_capture.rs:47:23: replace > with >= in captured_audio_from_interleaved_input
+src/audio_capture.rs:62:48: replace * with + in captured_audio_from_interleaved_input
+src/audio_capture.rs:62:48: replace * with / in captured_audio_from_interleaved_input
+src/audio_capture.rs:64:31: replace + with - in captured_audio_from_interleaved_input
+src/audio_capture.rs:64:31: replace + with * in captured_audio_from_interleaved_input
+src/audio_capture.rs:65:45: replace - with + in captured_audio_from_interleaved_input
+src/audio_capture.rs:65:45: replace - with / in captured_audio_from_interleaved_input
+src/audio_capture.rs:66:37: replace + with - in captured_audio_from_interleaved_input
+src/audio_capture.rs:66:37: replace + with * in captured_audio_from_interleaved_input
+src/audio_capture.rs:66:66: replace * with + in captured_audio_from_interleaved_input
+src/audio_capture.rs:66:66: replace * with / in captured_audio_from_interleaved_input
+src/audio_capture.rs:66:52: replace - with + in captured_audio_from_interleaved_input
+src/audio_capture.rs:66:52: replace - with / in captured_audio_from_interleaved_input
+src/audio_capture.rs:86:46: replace - with + in window_average
+src/audio_capture.rs:86:46: replace - with / in window_average
+src/audio_capture.rs:97:20: replace > with >= in window_average
+src/audio_capture.rs:98:38: replace * with / in window_average
+src/audio_capture.rs:103:14: replace > with >= in window_average
+src/audio_capture.rs:106:28: replace - with + in window_average
+src/audio_capture.rs:106:28: replace - with / in window_average
+src/audio_capture.rs:135:39: replace && with || in require_captured_microphone_signal
+src/audio_capture.rs:220:9: replace AudioRecorder::voice_watermark -> u64 with 1
+src/audio_capture.rs:267:9: replace LevelEmitter::stop with ()
+src/audio_capture.rs:273:40: replace * with +
+src/audio_capture.rs:273:40: replace * with /
+src/audio_capture.rs:315:21: replace == with != in RealtimeCaptureBuffer::for_sample_rate
+src/audio_capture.rs:436:9: replace RealtimeCaptureBuffer::clear with ()
+src/audio_capture.rs:492:9: replace CpalAudioRecorder::set_level_callback with ()
+src/audio_capture.rs:508:21: replace == with != in CpalAudioRecorder::build_stream
+src/audio_capture.rs:530:44: replace += with -= in CpalAudioRecorder::build_stream
+src/audio_capture.rs:530:44: replace += with *= in CpalAudioRecorder::build_stream
+src/audio_capture.rs:530:60: delete - in CpalAudioRecorder::build_stream
+src/audio_capture.rs:531:38: replace += with -= in CpalAudioRecorder::build_stream
+src/audio_capture.rs:531:38: replace += with *= in CpalAudioRecorder::build_stream
+src/audio_capture.rs:533:62: replace / with % in CpalAudioRecorder::build_stream
+src/audio_capture.rs:533:62: replace / with * in CpalAudioRecorder::build_stream
+src/audio_capture.rs:535:24: delete ! in CpalAudioRecorder::build_stream
+src/audio_capture.rs:536:51: replace / with % in CpalAudioRecorder::build_stream
+src/audio_capture.rs:536:51: replace / with * in CpalAudioRecorder::build_stream
+src/audio_capture.rs:542:34: replace > with == in CpalAudioRecorder::build_stream
+src/audio_capture.rs:542:34: replace > with < in CpalAudioRecorder::build_stream
+src/audio_capture.rs:542:34: replace > with >= in CpalAudioRecorder::build_stream
+src/audio_capture.rs:580:9: replace CpalAudioRecorder::pause_active_stream with ()
+src/audio_capture.rs:582:12: delete ! in CpalAudioRecorder::pause_active_stream
+src/audio_capture.rs:599:9: replace CpalAudioRecorder::stop_level_emitter with ()
+src/audio_capture.rs:613:9: replace <impl AudioRecorder for CpalAudioRecorder>::prepare -> Result<(), AudioCaptureError> with Ok(())
+src/audio_capture.rs:616:72: replace || with && in <impl AudioRecorder for CpalAudioRecorder>::prepare
+src/audio_capture.rs:672:9: replace <impl AudioRecorder for CpalAudioRecorder>::start -> Result<(), AudioCaptureError> with Ok(())
+src/audio_capture.rs:709:13: replace && with || in <impl AudioRecorder for CpalAudioRecorder>::start
+src/audio_capture.rs:708:13: replace && with || in <impl AudioRecorder for CpalAudioRecorder>::start
+src/audio_capture.rs:709:46: replace == with != in <impl AudioRecorder for CpalAudioRecorder>::start
+src/audio_capture.rs:710:12: delete ! in <impl AudioRecorder for CpalAudioRecorder>::start
+src/audio_capture.rs:725:16: delete ! in <impl AudioRecorder for CpalAudioRecorder>::start
+src/audio_capture.rs:778:9: replace <impl AudioRecorder for CpalAudioRecorder>::cancel -> Result<(), AudioCaptureError> with Ok(())
+src/audio_capture.rs:812:53: replace * with + in <impl AudioRecorder for CpalAudioRecorder>::take_segment_through
+src/audio_capture.rs:812:53: replace * with / in <impl AudioRecorder for CpalAudioRecorder>::take_segment_through
+src/audio_capture.rs:819:9: replace <impl AudioRecorder for CpalAudioRecorder>::voice_watermark -> u64 with 0
+src/audio_capture.rs:819:9: replace <impl AudioRecorder for CpalAudioRecorder>::voice_watermark -> u64 with 1
+src/audio_capture.rs:878:9: replace AudioCaptureSession<R>::flush_segment_through -> Result<Option<CapturedAudio>, AudioCaptureError> with Ok(None)
+src/audio_capture.rs:878:12: delete ! in AudioCaptureSession<R>::flush_segment_through
+src/audio_capture.rs:902:37: replace match guard self.active with true in AudioCaptureSession<R>::on_event
+src/audio_capture.rs:917:39: replace match guard self.active with true in AudioCaptureSession<R>::on_event
+src/audio_capture.rs:956:9: replace VoiceActivationCapture<R>::is_open -> bool with true
+src/audio_capture.rs:990:9: replace <impl Drop for VoiceActivationCapture<R>>::drop with ()
+src/text_insertion.rs:104:9: replace <impl std::fmt::Display for InsertionRescueError>::fmt -> std::fmt::Result with Ok(Default::default())
+src/platform_execution.rs:15:5: replace capture_text_target -> Option<i32> with None
+src/platform_execution.rs:15:5: replace capture_text_target -> Option<i32> with Some(0)
+src/platform_execution.rs:15:5: replace capture_text_target -> Option<i32> with Some(1)
+src/platform_execution.rs:15:5: replace capture_text_target -> Option<i32> with Some(-1)
+src/platform_execution.rs:61:9: replace SettledTextInsertion::settle_remaining_at -> std::time::Duration with Default::default()
+src/platform_execution.rs:74:12: delete ! in <impl TextInsertion for SettledTextInsertion>::insert
+src/platform_execution.rs:117:12: delete ! in make_text_insertion
+src/platform_execution.rs:133:12: delete ! in make_text_insertion
+src/usage.rs:39:50: replace || with && in LocalDate::parse
+src/usage.rs:45:39: replace || with && in LocalDate::parse
+src/usage.rs:65:53: replace - with + in LocalDate::days_from_epoch
+src/usage.rs:65:53: replace - with / in LocalDate::days_from_epoch
+src/usage.rs:82:13: delete match arm 3 in LocalDate::weekday
+src/usage.rs:102:44: replace - with + in LocalDate::from_days_from_epoch
+src/usage.rs:102:44: replace - with / in LocalDate::from_days_from_epoch
+src/usage.rs:105:67: replace - with + in LocalDate::from_days_from_epoch
+src/usage.rs:105:67: replace - with / in LocalDate::from_days_from_epoch
+src/usage.rs:105:45: replace + with - in LocalDate::from_days_from_epoch
+src/usage.rs:107:77: replace - with + in LocalDate::from_days_from_epoch
+src/usage.rs:108:44: replace + with - in LocalDate::from_days_from_epoch
+src/usage.rs:110:50: replace < with <= in LocalDate::from_days_from_epoch
+src/usage.rs:134:9: delete match arm 4 | 6 | 9 | 11 in days_in_month
+src/usage.rs:136:9: delete match arm 2 in days_in_month
+src/usage.rs:135:37: replace % with / in days_in_month
+src/usage.rs:135:37: replace % with + in days_in_month
+src/usage.rs:135:57: replace % with / in days_in_month
+src/usage.rs:135:57: replace % with + in days_in_month

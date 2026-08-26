@@ -1,0 +1,23 @@
+--- src/usage.rs
++++ replace UsageTotals::add with ()
+@@ -229,19 +229,17 @@
+ pub struct UsageTotals {
+     pub dictations: u32,
+     pub words: u32,
+     pub speaking_seconds: f64,
+ }
+ 
+ impl UsageTotals {
+     fn add(&mut self, record: &DailyUsageRecord) {
+-        self.dictations = self.dictations.saturating_add(record.dictations);
+-        self.words = self.words.saturating_add(record.words);
+-        self.speaking_seconds += record.speaking_seconds;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// One Counted Segment's contribution to Usage: a segment that was inserted or
+ /// rescued, and therefore actually reached the user's document.
+ ///
+ /// `starts_dictation` is what makes the dictation count a count of dictations
+ /// rather than of segments. The first Counted Segment of a start-to-stop sets

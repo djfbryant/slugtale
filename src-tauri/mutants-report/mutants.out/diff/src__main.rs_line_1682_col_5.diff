@@ -1,0 +1,23 @@
+--- src/main.rs
++++ replace notify_usage_changed with ()
+@@ -1674,19 +1674,17 @@
+         window.close().map_err(|error| error.to_string())?;
+     }
+     Ok(())
+ }
+ 
+ /// Tell an open Usage pane that its numbers moved. Redoing the challenges shifts
+ /// every Time Saved on screen, so the pane cannot be left showing the old ones.
+ fn notify_usage_changed(app: &tauri::AppHandle) {
+-    if let Some(window) = app.get_webview_window("settings") {
+-        let _ = window.emit("usage-changed", ());
+-    }
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Whether the Typing Challenge window is on screen right now.
+ ///
+ /// While it is, the dictation Hotkey does nothing at all (ADR-0025): the user is
+ /// typing a passage, and their hotkey is very likely inside it. Doing nothing —
+ /// rather than starting a dictation, or refusing with a notification — is what
+ /// keeps the thirty seconds being a measurement of typing.

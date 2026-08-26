@@ -1,0 +1,21 @@
+--- src/main.rs
++++ delete ! in get_settings_readiness
+@@ -868,17 +868,17 @@
+     let local_model_ready = report
+         .items
+         .iter()
+         .find(|item| item.id == "local_model")
+         .is_some_and(|item| item.ready);
+     if local_model_ready {
+         warm_effective_primary_engine(&app);
+     }
+-    if !report.dictation_available {
++    if  /* ~ changed by cargo-mutants ~ */report.dictation_available {
+         let missing = slugtale_lib::missing_required_items(&report);
+         if !missing.is_empty() {
+             record_diagnostic_event(
+                 &app,
+                 slugtale_lib::DiagnosticEvent::readiness_incomplete(&missing),
+             );
+         }
+     }

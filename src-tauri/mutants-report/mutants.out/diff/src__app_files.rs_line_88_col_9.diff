@@ -1,0 +1,23 @@
+--- src/app_files.rs
++++ replace AppFiles::usage -> UsageFile with Default::default()
+@@ -80,19 +80,17 @@
+             .ok_or_else(|| "could not resolve settings path".to_string())?;
+         if let Some(parent) = path.parent() {
+             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+         }
+         save_settings(&path, settings).map_err(|error| error.to_string())
+     }
+ 
+     pub fn usage(&self) -> UsageFile {
+-        self.usage_path()
+-            .map(|path| load_usage(&path))
+-            .unwrap_or_default()
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// A log handle gated by the user's diagnostic-logging preference; an
+     /// unresolvable path degrades to a no-op sink rather than failing dictation.
+     pub fn diagnostic_log(&self, enabled: bool) -> SharedDiagnosticLog<FileDiagnosticSink> {
+         let sink = self
+             .diagnostic_log_path()
+             .map(FileDiagnosticSink::new)

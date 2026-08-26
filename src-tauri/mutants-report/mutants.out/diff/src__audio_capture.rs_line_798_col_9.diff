@@ -1,0 +1,27 @@
+--- src/audio_capture.rs
++++ replace <impl AudioRecorder for CpalAudioRecorder>::take_segment -> Result<CapturedAudio, AudioCaptureError> with Ok(Default::default())
+@@ -790,23 +790,17 @@
+         // ring whose Acquire/Release pairs already order the audio thread's
+         // writes against this drain — the caller is simply becoming the consumer
+         // earlier than `stop` would.
+         //
+         // The one cost is that the resampler's window cannot span the cut, so a
+         // segment boundary loses sub-millisecond accuracy at the join. Boundaries
+         // only ever fall in the middle of a five-second silence, so there is no
+         // speech there to damage.
+-        let samples = self
+-            .buffer
+-            .as_ref()
+-            .ok_or_else(|| AudioCaptureError::new("audio capture buffer is unavailable"))?
+-            .drain()?;
+-
+-        captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn take_segment_through(&mut self, cut: u64) -> Result<CapturedAudio, AudioCaptureError> {
+         let buffer = self
+             .buffer
+             .as_ref()
+             .ok_or_else(|| AudioCaptureError::new("audio capture buffer is unavailable"))?;
+         let guard = (QUIET_TAIL_GUARD.as_secs_f64() * f64::from(self.sample_rate_hz)) as u64;

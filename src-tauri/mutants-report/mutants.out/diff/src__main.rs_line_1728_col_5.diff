@@ -1,0 +1,23 @@
+--- src/main.rs
++++ replace delete_local_model -> Result<slugtale_lib::LocalModelStatus, String> with Ok(Default::default())
+@@ -1720,19 +1720,17 @@
+     if status.present {
+         warm_effective_primary_engine(&app);
+     }
+     Ok(status)
+ }
+ 
+ #[tauri::command]
+ fn delete_local_model(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelStatus, String> {
+-    model_manager(&app)?
+-        .delete_default()
+-        .map_err(|error| error.to_string())
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn reveal_model_location(app: tauri::AppHandle) -> Result<(), String> {
+     model_manager(&app)?
+         .open_in_file_manager()
+         .map_err(|error| error.to_string())
+ }

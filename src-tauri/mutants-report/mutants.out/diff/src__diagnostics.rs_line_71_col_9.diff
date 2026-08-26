@@ -1,0 +1,23 @@
+--- src/diagnostics.rs
++++ replace DiagnosticEvent::transcription_failed -> Self with Default::default()
+@@ -63,19 +63,17 @@
+         Self::TranscriptionCompleted {
+             characters: transcription.text.chars().count(),
+         }
+     }
+ 
+     /// Record an [`AsrError`] by its technical description; AsrError never carries
+     /// transcript text.
+     pub fn transcription_failed(error: &AsrError) -> Self {
+-        Self::TranscriptionFailed {
+-            reason: error.to_string(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Record an [`AudioCaptureError`] by its technical description; captured audio
+     /// samples are never carried.
+     pub fn audio_capture_failed(error: &AudioCaptureError) -> Self {
+         Self::AudioCaptureFailed {
+             reason: error.to_string(),
+         }

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::microphone_granted -> bool with false
+@@ -757,17 +757,17 @@
+ }
+ 
+ impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_> {
+     fn settings(&self) -> slugtale_lib::Settings {
+         load_current_settings(self.app)
+     }
+ 
+     fn microphone_granted(&self) -> bool {
+-        slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new())
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn insertion_granted(&self) -> bool {
+         slugtale_lib::PlatformReadiness::insertion_granted(&CurrentPlatform::new())
+     }
+ 
+     fn local_model_ready(&self) -> bool {
+         local_model_ready(self.app)

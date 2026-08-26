@@ -1,0 +1,111 @@
+--- src/audio_capture.rs
++++ replace <impl AudioRecorder for CpalAudioRecorder>::start -> Result<(), AudioCaptureError> with Ok(())
+@@ -664,107 +664,17 @@
+             Err(error) => {
+                 self.prepare_state = PrepareState::Failed(error.to_string());
+                 Err(error)
+             }
+         }
+     }
+ 
+     fn start(&mut self) -> Result<(), AudioCaptureError> {
+-        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+-
+-        self.pause_active_stream();
+-        self.stop_level_emitter();
+-
+-        let host = cpal::default_host();
+-        let device = host
+-            .default_input_device()
+-            .ok_or_else(|| AudioCaptureError::new("no default input device is available"))?;
+-        let supported_config = device
+-            .default_input_config()
+-            .map_err(|error| AudioCaptureError::new(error.to_string()))?;
+-        let sample_format = supported_config.sample_format();
+-        let config: cpal::StreamConfig = supported_config.into();
+-        let identity = InputStreamIdentity {
+-            device_id: device.id().ok(),
+-            sample_format,
+-            sample_rate_hz: config.sample_rate,
+-            channels: config.channels,
+-        };
+-
+-        self.sample_rate_hz = config.sample_rate;
+-        // The callback downmixes each input frame before placing it in the ring.
+-        self.channels = 1;
+-        if let Some(buffer) = self.buffer.as_ref() {
+-            buffer.clear();
+-        }
+-
+-        self.level_bits
+-            .store(0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+-
+-        // Building a CoreAudio stream costs hundreds of milliseconds and was
+-        // paid on every hotkey press. Keep the paused stream when the default
+-        // device and format are unchanged; `stop`/`cancel` pause it, and `play`
+-        // resumes it in roughly 40 ms on the reference Mac (slugtale-op3).
+-        let reused_stream = self.stream.is_some()
+-            && self.buffer.is_some()
+-            && self.stream_identity.as_ref() == Some(&identity);
+-        if !reused_stream {
+-            self.stream.take();
+-            self.buffer = None;
+-            let (stream, buffer) = Self::build_stream_for_format(
+-                &device,
+-                &config,
+-                sample_format,
+-                self.level_bits.clone(),
+-            )?;
+-            self.stream = Some(stream);
+-            self.buffer = Some(buffer);
+-            self.stream_identity = Some(identity.clone());
+-        }
+-
+-        if let Err(error) = self.stream.as_ref().expect("audio stream exists").play() {
+-            if !reused_stream {
+-                return Err(AudioCaptureError::new(error.to_string()));
+-            }
+-
+-            // A retained stream can become unusable after a device interruption
+-            // without its identity changing. Fall back to a cold start once so a
+-            // stale stream never strands dictation.
+-            self.stream.take();
+-            self.buffer = None;
+-            let (stream, buffer) = Self::build_stream_for_format(
+-                &device,
+-                &config,
+-                sample_format,
+-                self.level_bits.clone(),
+-            )?;
+-            self.stream = Some(stream);
+-            self.buffer = Some(buffer);
+-            self.stream_identity = Some(identity.clone());
+-            self.stream
+-                .as_ref()
+-                .expect("rebuilt audio stream exists")
+-                .play()
+-                .map_err(|error| AudioCaptureError::new(error.to_string()))?;
+-        }
+-        self.stream_active = true;
+-        // Start has validated the device and format right now, which is the
+-        // freshest preparation there is: record it so a later `prepare` call
+-        // knows the work is already done.
+-        self.prepare_state = PrepareState::Prepared { identity };
+-
+-        if let Some(callback) = self.level_callback.clone() {
+-            match LevelEmitter::spawn(self.level_bits.clone(), callback) {
+-                Ok(emitter) => self.level_emitter = Some(emitter),
+-                // The waveform is cosmetic; capture must not fail without it.
+-                Err(error) => eprintln!("could not start audio level emitter: {error}"),
+-            }
+-        }
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
+         self.pause_active_stream();
+         self.stop_level_emitter();
+         let samples = self
+             .buffer
+             .as_ref()

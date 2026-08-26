@@ -1,0 +1,27 @@
+--- src/main.rs
++++ replace save_hotkey_settings -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+@@ -997,23 +997,17 @@
+ }
+ 
+ #[tauri::command]
+ fn save_hotkey_settings(
+     app: tauri::AppHandle,
+     hotkey: Option<String>,
+     activation_mode: slugtale_lib::ActivationMode,
+ ) -> Result<slugtale_lib::Settings, String> {
+-    let previous = load_current_settings(&app);
+-    slugtale_lib::apply_and_persist(
+-        &previous,
+-        |settings| slugtale_lib::apply_hotkey_settings(settings, hotkey, activation_mode),
+-        |settings| update_registered_hotkey(&app, settings),
+-        |settings| save_current_settings(&app, settings),
+-    )
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn save_transcription_settings(
+     app: tauri::AppHandle,
+     speed_profile: slugtale_lib::SpeedProfile,
+ ) -> Result<slugtale_lib::Settings, String> {
+     let mut settings = load_current_settings(&app);

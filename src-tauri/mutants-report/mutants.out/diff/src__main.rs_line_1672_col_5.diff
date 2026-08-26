@@ -1,0 +1,25 @@
+--- src/main.rs
++++ replace close_typing_challenge -> Result<(), String> with Ok(())
+@@ -1664,21 +1664,17 @@
+             app.state::<TypingChallengeOpen>().set(false);
+             Err(error.to_string())
+         }
+     }
+ }
+ 
+ #[tauri::command]
+ fn close_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
+-    app.state::<TypingChallengeOpen>().set(false);
+-    if let Some(window) = app.get_webview_window(TYPING_CHALLENGE_WINDOW) {
+-        window.close().map_err(|error| error.to_string())?;
+-    }
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Tell an open Usage pane that its numbers moved. Redoing the challenges shifts
+ /// every Time Saved on screen, so the pane cannot be left showing the old ones.
+ fn notify_usage_changed(app: &tauri::AppHandle) {
+     if let Some(window) = app.get_webview_window("settings") {
+         let _ = window.emit("usage-changed", ());
+     }

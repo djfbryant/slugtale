@@ -1,0 +1,25 @@
+--- src/usage.rs
++++ replace totals_all_time -> UsageTotals with Default::default()
+@@ -314,21 +314,17 @@
+             totals.add(record);
+         }
+     }
+     totals
+ }
+ 
+ /// Totals across every Daily Usage Record in the file.
+ pub fn totals_all_time(usage: &UsageFile) -> UsageTotals {
+-    let mut totals = UsageTotals::default();
+-    for record in &usage.days {
+-        totals.add(record);
+-    }
+-    totals
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Time Saved in seconds: how long these words would have taken to type at the
+ /// user's Typing Baseline, minus how long they actually spent speaking them.
+ ///
+ /// Floored at zero, because "you lost time" is not a number this pane is for —
+ /// and a short dictation of one word can easily take longer to say than to type.
+ /// Returns `None` when there is no baseline at all, which is the hole the pane

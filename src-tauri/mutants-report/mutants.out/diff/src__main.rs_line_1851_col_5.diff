@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace current_diagnostic_log -> SharedDiagnosticLog<FileDiagnosticSink> with SharedDiagnosticLog::new()
+@@ -1843,17 +1843,17 @@
+ fn load_current_settings(app: &tauri::AppHandle) -> slugtale_lib::Settings {
+     app_files(app).settings()
+ }
+ 
+ fn current_diagnostic_log(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> SharedDiagnosticLog<FileDiagnosticSink> {
+-    app_files(app).diagnostic_log(settings.diagnostic_logging)
++    SharedDiagnosticLog::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn record_diagnostic_event(app: &tauri::AppHandle, event: slugtale_lib::DiagnosticEvent) {
+     let settings = load_current_settings(app);
+     current_diagnostic_log(app, &settings).record(event);
+ }
+ 
+ fn save_current_settings(

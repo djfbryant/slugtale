@@ -730,4 +730,55 @@ mod tests {
             10
         );
     }
+
+    #[test]
+    fn iso_parse_requires_fixed_hyphen_positions() {
+        for text in ["2026/08/17", "202608-17", "2026-0817", "2026-8-17"] {
+            assert_eq!(LocalDate::parse(text), None, "{text} should not parse");
+        }
+    }
+
+    #[test]
+    fn february_respects_leap_years() {
+        assert!(LocalDate::parse("2024-02-29").is_some());
+        assert_eq!(LocalDate::parse("2025-02-29"), None);
+        assert_eq!(
+            LocalDate::parse("2025-02-28").unwrap().to_iso(),
+            "2025-02-28"
+        );
+    }
+
+    #[test]
+    fn month_lengths_are_enforced_at_parse_time() {
+        assert_eq!(LocalDate::parse("2026-04-31"), None);
+        assert_eq!(LocalDate::parse("2026-06-31"), None);
+        assert_eq!(LocalDate::parse("2026-11-31"), None);
+    }
+
+    #[test]
+    fn days_from_epoch_is_consistent_for_known_anchors() {
+        assert_eq!(date(1970, 1, 1).days_from_epoch(), 0);
+        assert_eq!(date(1970, 1, 2).days_from_epoch(), 1);
+        assert_eq!(date(2024, 2, 29).days_from_epoch(), 19_782);
+    }
+
+    #[test]
+    fn every_weekday_is_returned_by_some_calendar_date() {
+        let mut seen = Vec::new();
+        for offset in 0..14 {
+            let weekday = date(2026, 1, 4 + offset).weekday();
+            if !seen.contains(&weekday) {
+                seen.push(weekday);
+            }
+        }
+        assert_eq!(seen.len(), 7);
+    }
+
+    #[test]
+    fn stepping_one_day_forward_increments_days_from_epoch() {
+        assert_eq!(
+            date(2026, 4, 1).days_from_epoch() - date(2026, 3, 31).days_from_epoch(),
+            1
+        );
+    }
 }

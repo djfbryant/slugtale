@@ -1,0 +1,25 @@
+--- src/main.rs
++++ replace push_dictation_bar_render_state with ()
+@@ -645,21 +645,17 @@
+ /// frontend renders is pushed before the window can appear, so the bar never
+ /// flashes a stale "recording" pill when it reappears for transcription, nor an
+ /// old accent or edge alignment. Phase first, appearance second, visibility last.
+ fn push_dictation_bar_render_state(
+     window: &tauri::WebviewWindow,
+     phase: DictationPhase,
+     appearance: &DictationBarAppearance,
+ ) {
+-    let _ = window.emit("dictation-phase", phase.as_str());
+-    let _ = window.emit("dictation-appearance", appearance.clone());
+-    // The bar polls for the pointer only while it is on screen; the webview
+-    // stays alive between dictations and has no other way to know.
+-    let _ = window.emit("dictation-visibility", true);
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn hide_dictation_bar(app: &tauri::AppHandle) {
+     if let Some(window) = app.get_webview_window("dictation-bar") {
+         let _ = window.hide();
+         let _ = window.emit("dictation-visibility", false);
+     }
+ }

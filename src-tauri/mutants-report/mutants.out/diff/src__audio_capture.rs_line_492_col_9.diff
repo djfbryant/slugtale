@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace CpalAudioRecorder::set_level_callback with ()
+@@ -484,17 +484,17 @@
+ }
+ 
+ impl CpalAudioRecorder {
+     pub fn new() -> Self {
+         Self::default()
+     }
+ 
+     pub fn set_level_callback(&mut self, callback: Option<AudioLevelCallback>) {
+-        self.level_callback = callback;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn build_stream<T>(
+         device: &cpal::Device,
+         config: &cpal::StreamConfig,
+         level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+     ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError>
+     where

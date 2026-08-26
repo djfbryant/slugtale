@@ -1,0 +1,24 @@
+--- src/platform_execution.rs
++++ replace SettledTextInsertion::settle_remaining_at -> std::time::Duration with Default::default()
+@@ -53,20 +53,17 @@
+     ready_at: Option<std::time::Instant>,
+ }
+ 
+ impl SettledTextInsertion {
+     /// How much of the settlement window is still owed at `now`. Injected-clock
+     /// seam for tests: shorter than the window leaves time to wait, equal or
+     /// longer leaves none.
+     pub fn settle_remaining_at(&self, now: std::time::Instant) -> std::time::Duration {
+-        match self.ready_at {
+-            Some(ready_at) => ready_at.saturating_duration_since(now),
+-            None => std::time::Duration::ZERO,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl TextInsertion for SettledTextInsertion {
+     fn insert(
+         &self,
+         transcription: &crate::FinalTranscription,
+     ) -> Result<crate::TextInsertionOutcome, crate::TextInsertionError> {

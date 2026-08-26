@@ -1,0 +1,25 @@
+--- src/diagnostics.rs
++++ replace <impl TextInsertion for DiagnosticTextInsertion<'_, S>>::insert -> Result<TextInsertionOutcome, TextInsertionError> with Ok(Default::default())
+@@ -320,21 +320,17 @@
+ impl<S> TextInsertion for DiagnosticTextInsertion<'_, S>
+ where
+     S: DiagnosticSink,
+ {
+     fn insert(
+         &self,
+         transcription: &FinalTranscription,
+     ) -> Result<TextInsertionOutcome, TextInsertionError> {
+-        let result = self.insertion.insert(transcription);
+-        if let Err(error) = &result {
+-            self.log.record(DiagnosticEvent::insertion_failed(error));
+-        }
+-        result
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Decorates an [`InsertionRescue`], logging successful rescues without
+ /// changing its behavior.
+ pub struct DiagnosticInsertionRescue<'a, S> {
+     rescue: &'a dyn InsertionRescue,
+     log: SharedDiagnosticLog<S>,

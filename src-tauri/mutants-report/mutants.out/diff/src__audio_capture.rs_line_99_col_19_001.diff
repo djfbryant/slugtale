@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace += with *= in window_average
+@@ -91,17 +91,17 @@
+     let mut weighted = 0.0f64;
+     let mut total = 0.0f64;
+     for (offset, &value) in mono[first..last].iter().enumerate() {
+         let cell_start = (first + offset) as f64;
+         let cell_end = cell_start + 1.0;
+         let overlap = cell_end.min(end) - cell_start.max(start);
+         if overlap > 0.0 {
+             weighted += value as f64 * overlap;
+-            total += overlap;
++            total *= /* ~ changed by cargo-mutants ~ */ overlap;
+         }
+     }
+ 
+     if total > 0.0 {
+         (weighted / total) as f32
+     } else {
+         mono[first.min(len - 1)]
+     }

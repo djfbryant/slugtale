@@ -1,0 +1,30 @@
+--- src/main.rs
++++ replace save_dictation_bar_settings -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+@@ -1051,26 +1051,17 @@
+ 
+ #[tauri::command]
+ fn save_dictation_bar_settings(
+     app: tauri::AppHandle,
+     bar_position: slugtale_lib::BarPosition,
+     accent_color: slugtale_lib::AccentColor,
+     bar_display: slugtale_lib::BarDisplay,
+ ) -> Result<slugtale_lib::Settings, String> {
+-    let mut settings = load_current_settings(&app);
+-    slugtale_lib::apply_dictation_bar_settings(
+-        &mut settings,
+-        bar_position,
+-        accent_color,
+-        bar_display,
+-    );
+-    save_current_settings(&app, &settings)?;
+-    apply_dictation_bar_appearance(&app, &settings);
+-    Ok(settings)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Push a saved appearance change to a bar that is already on screen, so the user
+ /// sees the choice they just made instead of waiting for the next dictation.
+ /// Does nothing visible when the bar is hidden — showing it re-sends both.
+ fn apply_dictation_bar_appearance(app: &tauri::AppHandle, settings: &slugtale_lib::Settings) {
+     let Some(window) = app.get_webview_window("dictation-bar") else {
+         return;

@@ -1,0 +1,54 @@
+--- src/recording_feedback.rs
++++ replace RecordingFeedback::on_event -> RecordingFeedbackEffect with Default::default()
+@@ -52,50 +52,17 @@
+         self.bar_visible
+     }
+ 
+     pub fn on_event(&mut self, event: DictationEvent) -> RecordingFeedbackEffect {
+         // Stop and Cancel only matter while a dictation is on screen. Ignoring
+         // them once the bar is hidden keeps a stray terminal event (e.g. a
+         // hold-mode key release arriving after Escape) from replaying a sound or
+         // re-ending the session.
+-        if matches!(event, DictationEvent::Stop | DictationEvent::Cancel) && !self.bar_visible {
+-            return RecordingFeedbackEffect {
+-                sound: None,
+-                bar_visible: false,
+-                outcome: None,
+-            };
+-        }
+-
+-        match event {
+-            DictationEvent::Start => {
+-                self.bar_visible = true;
+-                RecordingFeedbackEffect {
+-                    sound: Some(DictationSound::Start),
+-                    bar_visible: true,
+-                    outcome: None,
+-                }
+-            }
+-            DictationEvent::Stop => {
+-                self.bar_visible = false;
+-                RecordingFeedbackEffect {
+-                    sound: Some(DictationSound::Stop),
+-                    bar_visible: false,
+-                    outcome: Some(DictationOutcome::Completed),
+-                }
+-            }
+-            DictationEvent::Cancel => {
+-                self.bar_visible = false;
+-                RecordingFeedbackEffect {
+-                    sound: None,
+-                    bar_visible: false,
+-                    outcome: Some(DictationOutcome::Discarded),
+-                }
+-            }
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Play the audible cue for a dictation edge (ADR-0014) through the OS sound
+ /// service. Like [`crate::open_in_file_manager`], the spawned helper returns
+ /// immediately so the recording lifecycle is never blocked waiting on audio.
+ pub fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
+     play_sound(sound)

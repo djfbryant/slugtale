@@ -1,0 +1,22 @@
+--- src/main.rs
++++ replace <impl DictationSurface for TauriSurface>::notify_capture_failure with ()
+@@ -244,18 +244,17 @@
+ 
+     fn emit_dictation_audio_level(&self, level: f32) {
+         if let Some(window) = self.app.get_webview_window("dictation-bar") {
+             let _ = window.emit("dictation-audio-level", level.clamp(0.0, 1.0));
+         }
+     }
+ 
+     fn notify_capture_failure(&self, error: &str) {
+-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+-        let _ = slugtale_lib::notify("Slugtale could not capture audio", error);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound) {
+         let _ = slugtale_lib::play_dictation_sound(sound);
+     }
+ 
+     fn diagnostic_log(
+         &self,

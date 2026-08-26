@@ -1,0 +1,24 @@
+--- src/main.rs
++++ replace hide_dictation_bar with ()
+@@ -653,20 +653,17 @@
+     let _ = window.emit("dictation-phase", phase.as_str());
+     let _ = window.emit("dictation-appearance", appearance.clone());
+     // The bar polls for the pointer only while it is on screen; the webview
+     // stays alive between dictations and has no other way to know.
+     let _ = window.emit("dictation-visibility", true);
+ }
+ 
+ fn hide_dictation_bar(app: &tauri::AppHandle) {
+-    if let Some(window) = app.get_webview_window("dictation-bar") {
+-        let _ = window.hide();
+-        let _ = window.emit("dictation-visibility", false);
+-    }
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Read the usable work area for the selected Dictation Bar display, in the
+ /// form the pure geometry wants. A disconnected named display falls back to the
+ /// main display so the bar never gets stranded off-screen.
+ fn dictation_bar_monitor(
+     window: &tauri::WebviewWindow,
+     display: &slugtale_lib::BarDisplay,

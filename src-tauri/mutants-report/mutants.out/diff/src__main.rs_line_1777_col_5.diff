@@ -1,0 +1,26 @@
+--- src/main.rs
++++ replace model_manager -> Result<slugtale_lib::LocalModelManager, String> with Ok(Default::default())
+@@ -1769,22 +1769,17 @@
+     app_files(app).settings_path()
+ }
+ 
+ fn model_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+     app_files(app).model_dir()
+ }
+ 
+ fn model_manager(app: &tauri::AppHandle) -> Result<slugtale_lib::LocalModelManager, String> {
+-    let settings_path =
+-        settings_path(app).ok_or_else(|| "could not resolve settings path".to_string())?;
+-    Ok(slugtale_lib::LocalModelManager::new(
+-        model_dir(app)?,
+-        settings_path,
+-    ))
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The Usage File (CONTEXT.md): a sibling of the Settings File, so opting out
+ /// deletes one obvious file and nothing else.
+ fn usage_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+     app_files(app).usage_path()
+ }
+ 

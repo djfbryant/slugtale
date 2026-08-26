@@ -1,0 +1,22 @@
+--- src/audio_capture.rs
++++ replace VoiceActivationCapture<R>::rebuild with ()
+@@ -967,18 +967,17 @@
+ 
+     pub fn take_segment(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
+         self.recorder.take_segment()
+     }
+ 
+     /// Stop capture if it is running, then replace the recorder so the next
+     /// start cannot resume a paused stream.
+     pub fn rebuild(&mut self, next: R) {
+-        self.close();
+-        self.recorder = next;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn close(&mut self) {
+         if !self.open {
+             return;
+         }
+         let _ = self.recorder.cancel();
+         self.open = false;

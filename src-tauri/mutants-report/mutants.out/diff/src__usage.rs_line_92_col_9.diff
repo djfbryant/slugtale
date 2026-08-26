@@ -1,0 +1,22 @@
+--- src/usage.rs
++++ replace LocalDate::week_start -> Self with Default::default()
+@@ -84,18 +84,17 @@
+             5 => Weekday::Friday,
+             _ => Weekday::Saturday,
+         }
+     }
+ 
+     /// The first date of the calendar week containing this date, given where the
+     /// user's locale starts its weeks.
+     pub fn week_start(self, week_start: WeekStart) -> Self {
+-        let back = (self.weekday().index() + 7 - week_start.weekday().index()) % 7;
+-        self.minus_days(back as i64)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn minus_days(self, days: i64) -> Self {
+         Self::from_days_from_epoch(self.days_from_epoch() - days)
+     }
+ 
+     fn from_days_from_epoch(days: i64) -> Self {
+         let z = days + 719_468;

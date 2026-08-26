@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace CurrentPlatform::linux_platform -> slugtale_lib::LinuxPlatform with Default::default()
+@@ -1752,17 +1752,17 @@
+ 
+     #[cfg(target_os = "windows")]
+     fn windows_platform(&self) -> slugtale_lib::WindowsPlatform {
+         slugtale_lib::WindowsPlatform::new()
+     }
+ 
+     #[cfg(target_os = "linux")]
+     fn linux_platform(&self) -> slugtale_lib::LinuxPlatform {
+-        slugtale_lib::LinuxPlatform::new()
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ fn app_files(app: &tauri::AppHandle) -> AppFiles {
+     app.state::<AppFiles>().inner().clone()
+ }
+ 
+ fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {

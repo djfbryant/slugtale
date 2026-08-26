@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace get_local_model_status -> Result<slugtale_lib::LocalModelStatus, String> with Ok(Default::default())
+@@ -1691,17 +1691,17 @@
+ /// rather than starting a dictation, or refusing with a notification — is what
+ /// keeps the thirty seconds being a measurement of typing.
+ fn typing_challenge_is_open(app: &tauri::AppHandle) -> bool {
+     app.state::<TypingChallengeOpen>().get()
+ }
+ 
+ #[tauri::command]
+ fn get_local_model_status(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelStatus, String> {
+-    Ok(model_manager(&app)?.status())
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ async fn download_local_model(
+     app: tauri::AppHandle,
+     on_progress: tauri::ipc::Channel<slugtale_lib::DownloadProgress>,
+ ) -> Result<slugtale_lib::LocalModelStatus, String> {
+     let manager = model_manager(&app)?;

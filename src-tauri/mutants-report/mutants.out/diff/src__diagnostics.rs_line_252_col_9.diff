@@ -1,0 +1,23 @@
+--- src/diagnostics.rs
++++ replace <impl Clone for SharedDiagnosticLog<S>>::clone -> Self with Default::default()
+@@ -244,19 +244,17 @@
+ /// A cheaply cloneable handle to a [`LocalDiagnosticLog`], shared across the
+ /// diagnostic decorator adapters below so they can all record to the same log.
+ pub struct SharedDiagnosticLog<S> {
+     inner: Arc<Mutex<LocalDiagnosticLog<S>>>,
+ }
+ 
+ impl<S> Clone for SharedDiagnosticLog<S> {
+     fn clone(&self) -> Self {
+-        Self {
+-            inner: Arc::clone(&self.inner),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl<S> SharedDiagnosticLog<S>
+ where
+     S: DiagnosticSink,
+ {
+     pub fn new(enabled: bool, sink: S) -> Self {

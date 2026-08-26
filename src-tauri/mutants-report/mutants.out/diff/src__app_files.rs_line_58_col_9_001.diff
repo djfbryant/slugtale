@@ -1,0 +1,23 @@
+--- src/app_files.rs
++++ replace AppFiles::diagnostic_log_path -> Option<PathBuf> with Some(Default::default())
+@@ -50,19 +50,17 @@
+     }
+ 
+     /// The Usage File (CONTEXT.md): a sibling of the Settings File.
+     pub fn usage_path(&self) -> Option<PathBuf> {
+         self.config_dir.as_ref().map(|dir| dir.join(USAGE_FILE))
+     }
+ 
+     pub fn diagnostic_log_path(&self) -> Option<PathBuf> {
+-        self.config_dir
+-            .as_ref()
+-            .map(|dir| dir.join(DIAGNOSTIC_LOG_FILE))
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn model_dir(&self) -> Result<PathBuf, String> {
+         self.data_dir
+             .as_ref()
+             .map(|dir| dir.join(MODELS_DIR))
+             .ok_or_else(|| "could not resolve model directory".to_string())
+     }

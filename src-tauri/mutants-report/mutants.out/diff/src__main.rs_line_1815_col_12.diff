@@ -1,0 +1,21 @@
+--- src/main.rs
++++ delete ! in usage_writer
+@@ -1807,17 +1807,17 @@
+ }
+ 
+ /// Start the Dictation Runtime's Usage writer body (ADR-0025): the opt-in is
+ /// checked here, at the last possible moment, so a segment that was in flight
+ /// when the user turned storing off does not land in a file they just asked to
+ /// be deleted. Every failure below is a skip, not an error.
+ fn usage_writer(app: tauri::AppHandle) -> std::sync::Arc<slugtale_lib::UsageSink> {
+     std::sync::Arc::new(move |date, segment| {
+-        if !load_current_settings(&app).store_usage {
++        if  /* ~ changed by cargo-mutants ~ */load_current_settings(&app).store_usage {
+             return;
+         }
+         let Some(path) = usage_path(&app) else {
+             return;
+         };
+         if let Some(parent) = path.parent() {
+             if std::fs::create_dir_all(parent).is_err() {
+                 return;

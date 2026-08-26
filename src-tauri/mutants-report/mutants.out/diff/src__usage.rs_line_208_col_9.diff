@@ -1,0 +1,26 @@
+--- src/usage.rs
++++ replace DailyUsageRecord::empty -> Self with Default::default()
+@@ -200,22 +200,17 @@
+     /// Words across every Counted Segment of those dictations.
+     pub words: u32,
+     /// Captured audio duration, in seconds, for those Counted Segments.
+     pub speaking_seconds: f64,
+ }
+ 
+ impl DailyUsageRecord {
+     fn empty(date: LocalDate) -> Self {
+-        Self {
+-            date: date.to_iso(),
+-            dictations: 0,
+-            words: 0,
+-            speaking_seconds: 0.0,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// The Usage File (CONTEXT.md): a sibling of the Settings File that exists only
+ /// while the user has chosen to store Usage.
+ #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+ pub struct UsageFile {
+     #[serde(default)]

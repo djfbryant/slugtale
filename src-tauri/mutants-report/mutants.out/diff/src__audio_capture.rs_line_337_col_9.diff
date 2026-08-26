@@ -1,0 +1,33 @@
+--- src/audio_capture.rs
++++ replace RealtimeCaptureBuffer::push_sample with ()
+@@ -329,29 +329,17 @@
+             overflowed: std::sync::atomic::AtomicBool::new(false),
+             last_voice_position: std::sync::atomic::AtomicUsize::new(0),
+         }
+     }
+ 
+     /// Called only by the real-time audio thread. This performs one bounded
+     /// atomic write and never allocates, locks, waits, or overwrites old audio.
+     fn push_sample(&self, sample: f32) {
+-        use std::sync::atomic::Ordering;
+-
+-        let write_position = self.write_position.load(Ordering::Relaxed);
+-        let read_position = self.read_position.load(Ordering::Acquire);
+-        if write_position.wrapping_sub(read_position) >= self.slots.len() {
+-            self.overflowed.store(true, Ordering::Relaxed);
+-            return;
+-        }
+-
+-        let slot = write_position % self.slots.len();
+-        self.slots[slot].store(sample.to_bits(), Ordering::Relaxed);
+-        self.write_position
+-            .store(write_position.wrapping_add(1), Ordering::Release);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Record, from the real-time callback, that the sample just written was
+     /// voiced. One relaxed atomic store on voiced buffers only: lock-free,
+     /// allocation-free, and skipped entirely on quiet buffers.
+     fn mark_voice(&self) {
+         use std::sync::atomic::Ordering;
+ 

@@ -1,0 +1,21 @@
+--- src/recording_feedback.rs
++++ replace RecordingFeedback::bar_visible -> bool with false
+@@ -44,17 +44,17 @@
+ }
+ 
+ impl RecordingFeedback {
+     pub fn new() -> Self {
+         Self { bar_visible: false }
+     }
+ 
+     pub fn bar_visible(&self) -> bool {
+-        self.bar_visible
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn on_event(&mut self, event: DictationEvent) -> RecordingFeedbackEffect {
+         // Stop and Cancel only matter while a dictation is on screen. Ignoring
+         // them once the bar is hidden keeps a stray terminal event (e.g. a
+         // hold-mode key release arriving after Escape) from replaying a sound or
+         // re-ending the session.
+         if matches!(event, DictationEvent::Stop | DictationEvent::Cancel) && !self.bar_visible {

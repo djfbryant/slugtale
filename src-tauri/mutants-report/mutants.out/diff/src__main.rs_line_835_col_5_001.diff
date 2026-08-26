@@ -1,0 +1,22 @@
+--- src/main.rs
++++ replace current_engine_availability -> Vec<(slugtale_lib::TranscriptionEngine, slugtale_lib::EngineAvailability,)> with vec![(Default::default(), Default::default())]
+@@ -827,18 +827,17 @@
+ /// dictation path uses so the two cannot disagree.
+ fn current_engine_availability(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> Vec<(
+     slugtale_lib::TranscriptionEngine,
+     slugtale_lib::EngineAvailability,
+ )> {
+-    app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+-        .availability(settings)
++    vec![(Default::default(), Default::default())] /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Tell the user which required items are missing and open Settings, where
+ /// they can act on each one.
+ fn report_not_ready(
+     app: &tauri::AppHandle,
+     report: &slugtale_lib::SettingsReadinessReport,
+ ) -> bool {

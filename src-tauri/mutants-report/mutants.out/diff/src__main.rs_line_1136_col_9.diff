@@ -1,0 +1,24 @@
+--- src/main.rs
++++ replace AppUpdateView::available -> Self with Default::default()
+@@ -1128,20 +1128,17 @@
+     fn none() -> Self {
+         Self {
+             available: false,
+             version: None,
+         }
+     }
+ 
+     fn available(version: String) -> Self {
+-        Self {
+-            available: true,
+-            version: Some(version),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Ask GitHub Releases whether a newer signed build exists (ADR-0022). The
+ /// endpoint and public key live in tauri.conf.json; signature verification is
+ /// enforced by the plugin before anything is staged.
+ #[tauri::command]
+ async fn check_for_app_update(app: tauri::AppHandle) -> Result<AppUpdateView, String> {

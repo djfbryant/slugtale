@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace / with % in captured_audio_from_interleaved_input
+@@ -36,17 +36,17 @@
+         mono.push(frame.iter().copied().sum::<f32>() / channels as f32);
+     }
+ 
+     if sample_rate_hz == 16_000 {
+         return Ok(CapturedAudio::mono_16khz(mono));
+     }
+ 
+     let ratio = sample_rate_hz as f64 / 16_000.0;
+-    let target_len = ((mono.len() as f64) / ratio).round() as usize;
++    let target_len = ((mono.len() as f64) % /* ~ changed by cargo-mutants ~ */ ratio).round() as usize;
+     let mut resampled = Vec::with_capacity(target_len);
+ 
+     if sample_rate_hz > 16_000 {
+         // Downsampling. Average each output sample over its whole source window
+         // (a box filter) so content above the 8 kHz Nyquist limit is band-limited
+         // away instead of aliasing into the speech band. Point/linear sampling
+         // here folds high-frequency mic content down as noise and garbles Whisper
+         // on 44.1/48 kHz mics (slugtale-8dj).

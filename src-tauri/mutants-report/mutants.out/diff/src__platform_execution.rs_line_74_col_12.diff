@@ -1,0 +1,21 @@
+--- src/platform_execution.rs
++++ delete ! in <impl TextInsertion for SettledTextInsertion>::insert
+@@ -66,17 +66,17 @@
+ }
+ 
+ impl TextInsertion for SettledTextInsertion {
+     fn insert(
+         &self,
+         transcription: &crate::FinalTranscription,
+     ) -> Result<crate::TextInsertionOutcome, crate::TextInsertionError> {
+         let remaining = self.settle_remaining_at(std::time::Instant::now());
+-        if !remaining.is_zero() {
++        if  /* ~ changed by cargo-mutants ~ */remaining.is_zero() {
+             std::thread::sleep(remaining);
+         }
+         self.inner.insert(transcription)
+     }
+ }
+ 
+ /// Prepare the current Platform Adapter for Text Insertion into the segment's
+ /// target.

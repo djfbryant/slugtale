@@ -1,0 +1,21 @@
+--- src/settings.rs
++++ replace apply_transcript_cleanup_settings with ()
+@@ -240,17 +240,17 @@
+ 
+ /// Update the Transcript Cleanup mode stored in the Settings File (slugtale-kyc).
+ /// Applies to every future Dictation Segment; nothing about it needs the model
+ /// reloaded or the platform asked.
+ pub fn apply_transcript_cleanup_settings(
+     settings: &mut Settings,
+     transcript_cleanup: crate::TranscriptCleanupMode,
+ ) {
+-    settings.transcript_cleanup = transcript_cleanup;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Update the Dictation Bar's appearance: where it sits on screen and which
+ /// accent it paints. Both apply to the bar currently on screen as well as to
+ /// future dictations, so the user can judge the choice while making it.
+ pub fn apply_dictation_bar_settings(
+     settings: &mut Settings,
+     bar_position: BarPosition,

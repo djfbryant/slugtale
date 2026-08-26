@@ -1,0 +1,23 @@
+--- src/main.rs
++++ replace reveal_model_location -> Result<(), String> with Ok(())
+@@ -1727,19 +1727,17 @@
+ fn delete_local_model(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelStatus, String> {
+     model_manager(&app)?
+         .delete_default()
+         .map_err(|error| error.to_string())
+ }
+ 
+ #[tauri::command]
+ fn reveal_model_location(app: tauri::AppHandle) -> Result<(), String> {
+-    model_manager(&app)?
+-        .open_in_file_manager()
+-        .map_err(|error| error.to_string())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[derive(Default)]
+ struct CurrentPlatform;
+ 
+ impl CurrentPlatform {
+     fn new() -> Self {
+         Self

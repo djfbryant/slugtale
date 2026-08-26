@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace app_files -> AppFiles with Default::default()
+@@ -1757,17 +1757,17 @@
+ 
+     #[cfg(target_os = "linux")]
+     fn linux_platform(&self) -> slugtale_lib::LinuxPlatform {
+         slugtale_lib::LinuxPlatform::new()
+     }
+ }
+ 
+ fn app_files(app: &tauri::AppHandle) -> AppFiles {
+-    app.state::<AppFiles>().inner().clone()
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+     app_files(app).settings_path()
+ }
+ 
+ fn model_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+     app_files(app).model_dir()

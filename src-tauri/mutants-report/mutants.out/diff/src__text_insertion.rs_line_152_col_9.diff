@@ -1,0 +1,26 @@
+--- src/text_insertion.rs
++++ replace <impl InsertionRescue for ClipboardInsertionRescue<S>>::rescue -> Result<InsertionRescueOutcome, InsertionRescueError> with Ok(Default::default())
+@@ -144,22 +144,17 @@
+ impl<S> InsertionRescue for ClipboardInsertionRescue<S>
+ where
+     S: InsertionRescueSystem,
+ {
+     fn rescue(
+         &self,
+         transcription: &FinalTranscription,
+     ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+-        self.system.copy_to_clipboard(&transcription.text)?;
+-        self.system.notify_user(
+-            "Text insertion failed",
+-            "Your transcription was copied to the clipboard.",
+-        )?;
+-        Ok(InsertionRescueOutcome::CopiedToClipboardAndNotified)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use crate::FinalTranscription;
+ 

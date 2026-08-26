@@ -1,0 +1,45 @@
+--- src/main.rs
++++ replace dictation_bar_monitor -> Option<slugtale_lib::MonitorGeometry> with None
+@@ -666,41 +666,17 @@
+ 
+ /// Read the usable work area for the selected Dictation Bar display, in the
+ /// form the pure geometry wants. A disconnected named display falls back to the
+ /// main display so the bar never gets stranded off-screen.
+ fn dictation_bar_monitor(
+     window: &tauri::WebviewWindow,
+     display: &slugtale_lib::BarDisplay,
+ ) -> Option<slugtale_lib::MonitorGeometry> {
+-    let primary = window.primary_monitor().ok().flatten();
+-    let monitor = match display {
+-        slugtale_lib::BarDisplay::Primary => primary,
+-        slugtale_lib::BarDisplay::Monitor(name) => window
+-            .available_monitors()
+-            .ok()
+-            .and_then(|monitors| {
+-                monitors
+-                    .into_iter()
+-                    .find(|monitor| monitor.name() == Some(name))
+-            })
+-            .or(primary),
+-    };
+-
+-    let monitor = monitor?;
+-
+-    let work_area = monitor.work_area();
+-
+-    Some(slugtale_lib::MonitorGeometry {
+-        origin_x: work_area.position.x,
+-        origin_y: work_area.position.y,
+-        width: work_area.size.width,
+-        height: work_area.size.height,
+-        scale_factor: monitor.scale_factor(),
+-    })
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Place the Dictation Bar along the bottom edge of the selected display's work
+ /// area, at the corner the user chose. The geometry itself lives in lib.rs;
+ /// this only supplies the live monitor and window reads.
+ fn position_dictation_bar(
+     window: &tauri::WebviewWindow,
+     position: slugtale_lib::BarPosition,

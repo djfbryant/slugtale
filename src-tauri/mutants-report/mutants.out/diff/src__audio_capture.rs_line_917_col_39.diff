@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace match guard self.active with true in AudioCaptureSession<R>::on_event
+@@ -909,17 +909,17 @@
+                 // exactly what a user who paused and then pressed Stop produces.
+                 // A denied microphone never reaches that state, because a level
+                 // pinned at zero never opens a Segment Pause in the first place.
+                 if !self.flushed_a_segment {
+                     require_captured_microphone_signal(&audio)?;
+                 }
+                 Ok(Some(AudioCaptureOutcome::Completed(audio)))
+             }
+-            DictationEvent::Cancel if self.active => {
++            DictationEvent::Cancel if true /* ~ changed by cargo-mutants ~ */ => {
+                 self.active = false;
+                 self.recorder.cancel()?;
+                 Ok(Some(AudioCaptureOutcome::Discarded))
+             }
+             DictationEvent::Stop | DictationEvent::Cancel => Ok(None),
+         }
+     }
+ 

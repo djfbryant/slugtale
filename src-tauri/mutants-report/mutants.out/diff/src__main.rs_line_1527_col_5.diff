@@ -1,0 +1,31 @@
+--- src/main.rs
++++ replace set_usage_storing -> Result<UsageSummary, String> with Ok(Default::default())
+@@ -1519,27 +1519,17 @@
+ 
+ /// Turn storing Daily Usage Records on or off.
+ ///
+ /// Turning it off deletes the Usage File outright rather than leaving it to rot
+ /// unread: "stop storing this" has to mean the stored thing is gone. The Typing
+ /// Baseline is in the Settings File and is untouched.
+ #[tauri::command]
+ fn set_usage_storing(app: tauri::AppHandle, enabled: bool) -> Result<UsageSummary, String> {
+-    let mut settings = load_current_settings(&app);
+-    slugtale_lib::apply_usage_settings(&mut settings, enabled);
+-    save_current_settings(&app, &settings)?;
+-
+-    if !enabled {
+-        if let Some(path) = usage_path(&app) {
+-            slugtale_lib::delete_usage(&path).map_err(|error| error.to_string())?;
+-        }
+-    }
+-
+-    Ok(get_usage_summary(app))
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Set or clear the typed typing-speed estimate. Refused once the three Typing
+ /// Challenges have produced a measurement.
+ #[tauri::command]
+ fn set_typing_estimate(
+     app: tauri::AppHandle,
+     estimate: Option<u32>,

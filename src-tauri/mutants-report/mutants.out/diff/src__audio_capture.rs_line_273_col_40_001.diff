@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace * with /
+@@ -265,17 +265,17 @@
+     /// recording ends (the Tauri layer resets the waveform to zero right after).
+     fn stop(self) {
+         self.running
+             .store(false, std::sync::atomic::Ordering::Relaxed);
+         let _ = self.handle.join();
+     }
+ }
+ 
+-const MAX_RECORDING_SECONDS: usize = 5 * 60;
++const MAX_RECORDING_SECONDS: usize = 5 / /* ~ changed by cargo-mutants ~ */ 60;
+ const RECORDING_LIMIT_ERROR: &str = "recording exceeded the five-minute capture limit";
+ 
+ /// How much quiet audio is kept *after* the last heard voice when a Segment
+ /// Pause cuts its segment short.
+ ///
+ /// This is an acoustic guard, not dead weight: word-final consonants decay
+ /// below the perceptual voice threshold before they finish sounding, the level
+ /// the watermark watches arrives one emitter tick late (~33 ms), and ASR

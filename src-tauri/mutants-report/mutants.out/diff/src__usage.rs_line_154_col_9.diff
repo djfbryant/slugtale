@@ -1,0 +1,29 @@
+--- src/usage.rs
++++ replace Weekday::index -> usize with 0
+@@ -146,25 +146,17 @@
+     Wednesday,
+     Thursday,
+     Friday,
+     Saturday,
+ }
+ 
+ impl Weekday {
+     fn index(self) -> usize {
+-        match self {
+-            Self::Sunday => 0,
+-            Self::Monday => 1,
+-            Self::Tuesday => 2,
+-            Self::Wednesday => 3,
+-            Self::Thursday => 4,
+-            Self::Friday => 5,
+-            Self::Saturday => 6,
+-        }
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Which day the user's locale calls the first of the week. Resolved from the OS
+ /// at the platform boundary rather than assumed here, because "this week" means
+ /// a different set of days to a user in London and a user in Chicago.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum WeekStart {

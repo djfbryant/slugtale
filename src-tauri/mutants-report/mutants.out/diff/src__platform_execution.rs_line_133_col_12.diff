@@ -1,0 +1,21 @@
+--- src/platform_execution.rs
++++ delete ! in make_text_insertion
+@@ -125,17 +125,17 @@
+ 
+     #[cfg(target_os = "windows")]
+     {
+         return Ok(Box::new(crate::WindowsTextInsertion::new()));
+     }
+ 
+     #[cfg(target_os = "linux")]
+     {
+-        if !crate::detect_session().is_supported() {
++        if  /* ~ changed by cargo-mutants ~ */crate::detect_session().is_supported() {
+             let _ = crate::notify(
+                 "Slugtale needs an X11 session",
+                 "Slugtale currently types into other apps only on an X11 session. Until you switch to X11 your transcription is copied to the clipboard — paste it with Ctrl+V.",
+             );
+         }
+         return Ok(Box::new(crate::LinuxTextInsertion::new()));
+     }
+ 

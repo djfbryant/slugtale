@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace <impl slugtale_lib::DictationRuntimeHost for AppHost>::last_job_settled with ()
+@@ -303,17 +303,17 @@
+     ) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
+         self.host.run_dictation_segment(audio, position)
+     }
+ 
+     fn last_job_settled(&mut self) {
+         // The worker calls this after the final job settles whatever the
+         // outcome, so the bar stays up until every earlier Segment Pause has
+         // landed too, not just this last one (slugtale-0t4).
+-        hide_dictation_bar(&self.app);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn setup_configured_hotkey(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+     let settings = load_current_settings(app.handle());
+ 
+     let mut builder =

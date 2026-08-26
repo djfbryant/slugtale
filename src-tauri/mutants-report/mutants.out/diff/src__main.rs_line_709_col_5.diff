@@ -1,0 +1,29 @@
+--- src/main.rs
++++ replace position_dictation_bar with ()
+@@ -701,25 +701,17 @@
+ /// Place the Dictation Bar along the bottom edge of the selected display's work
+ /// area, at the corner the user chose. The geometry itself lives in lib.rs;
+ /// this only supplies the live monitor and window reads.
+ fn position_dictation_bar(
+     window: &tauri::WebviewWindow,
+     position: slugtale_lib::BarPosition,
+     display: &slugtale_lib::BarDisplay,
+ ) {
+-    let Some(monitor) = dictation_bar_monitor(window, display) else {
+-        return;
+-    };
+-    let Ok(size) = window.outer_size() else {
+-        return;
+-    };
+-
+-    let (x, y) = slugtale_lib::dictation_bar_origin(&monitor, size.width, size.height, position);
+-    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Hand the pointer to whichever of Slugtale and the app underneath it is
+ /// actually over, and tell the bar which one that is.
+ ///
+ /// The bar window is permanently sized for the expanded pill because a Tauri
+ /// window cannot grow on hover, so while collapsed most of it is transparent —
+ /// and a transparent window still swallows clicks. The frontend polls this while

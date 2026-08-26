@@ -1,0 +1,51 @@
+--- src/platform_execution.rs
++++ replace make_text_insertion -> Result<Box<dyn TextInsertion>, String> with Ok(Box::new(Default::default()))
+@@ -107,47 +107,17 @@
+ 
+     Ok(PreparedInsertion {
+         insertion: SettledTextInsertion { inner: insertion, ready_at },
+         rescue: make_insertion_rescue(),
+     })
+ }
+ 
+ fn make_text_insertion() -> Result<Box<dyn TextInsertion>, String> {
+-    #[cfg(target_os = "macos")]
+-    {
+-        if !crate::accessibility_trusted() {
+-            let _ = crate::notify(
+-                "Slugtale needs Accessibility access",
+-                "Turn on Slugtale under System Settings → Privacy & Security → Accessibility so it can type into other apps. Until then your transcription is copied to the clipboard — paste it with Cmd+V.",
+-            );
+-        }
+-        return Ok(Box::new(crate::MacosTextInsertion::new()));
+-    }
+-
+-    #[cfg(target_os = "windows")]
+-    {
+-        return Ok(Box::new(crate::WindowsTextInsertion::new()));
+-    }
+-
+-    #[cfg(target_os = "linux")]
+-    {
+-        if !crate::detect_session().is_supported() {
+-            let _ = crate::notify(
+-                "Slugtale needs an X11 session",
+-                "Slugtale currently types into other apps only on an X11 session. Until you switch to X11 your transcription is copied to the clipboard — paste it with Ctrl+V.",
+-            );
+-        }
+-        return Ok(Box::new(crate::LinuxTextInsertion::new()));
+-    }
+-
+-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+-    {
+-        Err("text insertion is not implemented for this platform".to_string())
+-    }
++    Ok(Box::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn make_insertion_rescue() -> Box<dyn InsertionRescue> {
+     #[cfg(target_os = "macos")]
+     {
+         return Box::new(crate::MacosInsertionRescue::new());
+     }
+ 

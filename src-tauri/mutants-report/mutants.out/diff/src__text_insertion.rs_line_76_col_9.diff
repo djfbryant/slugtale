@@ -1,0 +1,30 @@
+--- src/text_insertion.rs
++++ replace <impl TextInsertion for TextInsertionPipeline<S>>::insert -> Result<TextInsertionOutcome, TextInsertionError> with Ok(Default::default())
+@@ -68,26 +68,17 @@
+ impl<S> TextInsertion for TextInsertionPipeline<S>
+ where
+     S: TextInsertionSystem,
+ {
+     fn insert(
+         &self,
+         transcription: &FinalTranscription,
+     ) -> Result<TextInsertionOutcome, TextInsertionError> {
+-        if self
+-            .system
+-            .insert_clipboard_free(&transcription.text)
+-            .is_ok()
+-        {
+-            return Ok(TextInsertionOutcome::ClipboardFree);
+-        }
+-
+-        self.system.insert_from_clipboard(&transcription.text)?;
+-        Ok(TextInsertionOutcome::ClipboardFallback)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct InsertionRescueError {
+     message: String,
+ }
+ 

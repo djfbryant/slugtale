@@ -1,0 +1,72 @@
+--- src/audio_capture.rs
++++ replace CpalAudioRecorder::build_stream -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError> with Ok((Default::default(), Arc::new(Default::default())))
+@@ -496,68 +496,17 @@
+         device: &cpal::Device,
+         config: &cpal::StreamConfig,
+         level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+     ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError>
+     where
+         T: cpal::SizedSample,
+         f32: cpal::FromSample<T>,
+     {
+-        use cpal::traits::DeviceTrait;
+-        use cpal::Sample;
+-
+-        let channels = usize::from(config.channels);
+-        if channels == 0 {
+-            return Err(AudioCaptureError::new(
+-                "input channel count must be non-zero",
+-            ));
+-        }
+-        let buffer =
+-            std::sync::Arc::new(RealtimeCaptureBuffer::for_sample_rate(config.sample_rate)?);
+-        let callback_buffer = buffer.clone();
+-        let stream = device
+-            .build_input_stream(
+-                *config,
+-                move |data: &[T], _: &cpal::InputCallbackInfo| {
+-                    // Real-time audio callback: the pre-allocated ring and
+-                    // atomics below perform no allocation, locking, waiting, or
+-                    // IPC. Input is downmixed before storage so the ring's
+-                    // capacity maps exactly to five minutes of dictation rather
+-                    // than multiplying memory by the device channel count.
+-                    let mut sum_of_squares = 0.0f32;
+-                    for frame in data.chunks_exact(channels) {
+-                        let mut mono_sum = 0.0f32;
+-                        for value in frame.iter().copied() {
+-                            let sample = f32::from_sample(value);
+-                            sum_of_squares += sample.clamp(-1.0, 1.0).powi(2);
+-                            mono_sum += sample;
+-                        }
+-                        callback_buffer.push_sample(mono_sum / channels as f32);
+-                    }
+-                    if !data.is_empty() {
+-                        let rms = (sum_of_squares / data.len() as f32).sqrt().clamp(0.0, 1.0);
+-                        let level = voice_level_from_rms(rms);
+-                        // Pair the perceptual level with the ring position it
+-                        // belongs to: the watermark a Pause Flush cuts at.
+-                        // One extra atomic store on voiced buffers only — the
+-                        // callback stays lock-free and allocation-free.
+-                        if level > crate::SEGMENT_VOICE_LEVEL {
+-                            callback_buffer.mark_voice();
+-                        }
+-                        level_bits.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
+-                    }
+-                },
+-                move |error| {
+-                    eprintln!("audio input stream error: {error}");
+-                },
+-                None,
+-            )
+-            .map_err(|error| AudioCaptureError::new(error.to_string()))?;
+-
+-        Ok((stream, buffer))
++        Ok((Default::default(), Arc::new(Default::default()))) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn build_stream_for_format(
+         device: &cpal::Device,
+         config: &cpal::StreamConfig,
+         sample_format: cpal::SampleFormat,
+         level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+     ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError> {

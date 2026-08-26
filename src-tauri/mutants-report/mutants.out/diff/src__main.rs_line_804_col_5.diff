@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace readiness_snapshot_for -> slugtale_lib::DictationActivation with Default::default()
+@@ -796,17 +796,17 @@
+ }
+ 
+ /// One readiness snapshot over the app's probes. `input` decides which
+ /// activation's requirements the report reflects.
+ fn readiness_snapshot_for(
+     app: &tauri::AppHandle,
+     input: impl FnOnce(&slugtale_lib::Settings) -> slugtale_lib::DictationInput,
+ ) -> slugtale_lib::DictationActivation {
+-    slugtale_lib::readiness_snapshot(&AppReadinessProbes { app }, input)
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Whether the Whisper ggml file — or a user-selected custom model — is on disk.
+ fn local_model_ready(app: &tauri::AppHandle) -> bool {
+     model_manager(app)
+         .map(|manager| manager.ready())
+         .unwrap_or_else(|_| {
+             load_current_settings(app)

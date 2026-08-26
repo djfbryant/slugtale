@@ -1,0 +1,23 @@
+--- src/diagnostics.rs
++++ replace DiagnosticEvent::insertion_failed -> Self with Default::default()
+@@ -91,19 +91,17 @@
+     /// the transcript is not even in scope at the call site.
+     pub fn routing_decision(routing: RoutingDiagnostics) -> Self {
+         Self::RoutingDecision { routing }
+     }
+ 
+     /// Record a [`TextInsertionError`] by its technical description; the
+     /// transcription being inserted is never carried.
+     pub fn insertion_failed(error: &TextInsertionError) -> Self {
+-        Self::InsertionFailed {
+-            reason: error.to_string(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Record that Insertion Rescue preserved a transcription after insertion
+     /// failed.
+     pub fn insertion_rescued() -> Self {
+         Self::InsertionRescued
+     }
+ }

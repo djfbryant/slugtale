@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace TypingChallengeOpen::set with ()
+@@ -29,17 +29,17 @@
+ /// global key worker and that runs on every hotkey press. Querying window
+ /// visibility from a background thread costs a round trip to the main thread,
+ /// and the hotkey path is the one place in this app where latency is felt.
+ #[derive(Default)]
+ struct TypingChallengeOpen(std::sync::atomic::AtomicBool);
+ 
+ impl TypingChallengeOpen {
+     fn set(&self, open: bool) {
+-        self.0.store(open, std::sync::atomic::Ordering::SeqCst);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn get(&self) -> bool {
+         self.0.load(std::sync::atomic::Ordering::SeqCst)
+     }
+ }
+ 
+ use slugtale_lib::{FileDiagnosticSink, SharedDiagnosticLog, TranscriptionProvider};

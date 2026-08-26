@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ replace count_words -> u32 with 0
+@@ -253,17 +253,17 @@
+     pub speaking_seconds: f64,
+     pub starts_dictation: bool,
+ }
+ 
+ /// Count the words of a cleaned transcription the way Usage means them: split on
+ /// whitespace, same as the Typing Challenge scores typed words, so Time Saved
+ /// compares like with like.
+ pub fn count_words(text: &str) -> u32 {
+-    text.split_whitespace().count() as u32
++    0 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Add one Counted Segment to the day it landed on.
+ ///
+ /// A Counted Segment belongs to the local date of its insert or rescue, so a
+ /// dictation started before midnight and finished after it puts its later
+ /// segments on the later day. That is the honest answer and it means old days
+ /// are never rewritten.

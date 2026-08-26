@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace == with != in window_average
+@@ -72,17 +72,17 @@
+ }
+ 
+ /// Average the mono signal over the source-sample window `[start, end)`,
+ /// treating each input sample as covering a unit-width cell. This box filter
+ /// band-limits the signal ahead of decimation so downsampling to 16 kHz does not
+ /// alias high-frequency microphone content into the speech band.
+ fn window_average(mono: &[f32], start: f64, end: f64) -> f32 {
+     let len = mono.len();
+-    if len == 0 {
++    if len != /* ~ changed by cargo-mutants ~ */ 0 {
+         return 0.0;
+     }
+     let start = start.max(0.0);
+     let end = end.min(len as f64);
+     if end <= start {
+         return mono[(start as usize).min(len - 1)];
+     }
+ 

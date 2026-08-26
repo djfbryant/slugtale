@@ -1,0 +1,25 @@
+--- src/main.rs
++++ replace stop_active_dictation -> Result<(), String> with Ok(())
+@@ -78,21 +78,17 @@
+     };
+ 
+     dictation_host(&app).handle_dictation_event(event)
+ }
+ 
+ /// Stop from the Dictation Bar and reset the shared control at the same time.
+ /// Voice Activation can then trigger again without a stale active state.
+ fn stop_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
+-    end_active_dictation(
+-        app,
+-        |control| control.stop(),
+-        slugtale_lib::DictationEvent::Stop,
+-    )
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Cancel through the same lifecycle bridge used by the global Escape handler
+ /// so a click on the Dictation Bar cannot leave toggle/hold state believing a
+ /// discarded dictation is still active.
+ fn cancel_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
+     end_active_dictation(
+         app,

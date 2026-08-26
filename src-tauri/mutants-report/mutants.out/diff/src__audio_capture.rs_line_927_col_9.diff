@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace AudioCaptureSession<R>::recorder -> &R with Box::leak(Box::new(Default::default()))
+@@ -919,17 +919,17 @@
+                 self.recorder.cancel()?;
+                 Ok(Some(AudioCaptureOutcome::Discarded))
+             }
+             DictationEvent::Stop | DictationEvent::Cancel => Ok(None),
+         }
+     }
+ 
+     pub fn recorder(&self) -> &R {
+-        &self.recorder
++        Box::leak(Box::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn recorder_mut(&mut self) -> &mut R {
+         &mut self.recorder
+     }
+ }
+ 
+ /// Always-on microphone used by Voice Activation.

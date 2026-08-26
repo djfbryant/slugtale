@@ -1,0 +1,39 @@
+--- src/platform_execution.rs
++++ replace make_insertion_rescue -> Box<dyn InsertionRescue> with Box::new(Default::default())
+@@ -141,35 +141,17 @@
+ 
+     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+     {
+         Err("text insertion is not implemented for this platform".to_string())
+     }
+ }
+ 
+ fn make_insertion_rescue() -> Box<dyn InsertionRescue> {
+-    #[cfg(target_os = "macos")]
+-    {
+-        return Box::new(crate::MacosInsertionRescue::new());
+-    }
+-
+-    #[cfg(target_os = "windows")]
+-    {
+-        Box::new(crate::WindowsInsertionRescue::new())
+-    }
+-
+-    #[cfg(target_os = "linux")]
+-    {
+-        Box::new(crate::LinuxInsertionRescue::new())
+-    }
+-
+-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+-    {
+-        unreachable!("prepare_text_insertion errors before reaching the rescue on unsupported platforms")
+-    }
++    Box::new(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn transcription_shorter_than_the_window_leaves_settlement_to_wait() {

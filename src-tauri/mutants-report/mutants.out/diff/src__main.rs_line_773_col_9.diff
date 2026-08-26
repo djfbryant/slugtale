@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::local_model_ready -> bool with true
+@@ -765,17 +765,17 @@
+         slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new())
+     }
+ 
+     fn insertion_granted(&self) -> bool {
+         slugtale_lib::PlatformReadiness::insertion_granted(&CurrentPlatform::new())
+     }
+ 
+     fn local_model_ready(&self) -> bool {
+-        local_model_ready(self.app)
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn engine_availability(
+         &self,
+         settings: &slugtale_lib::Settings,
+     ) -> Vec<(
+         slugtale_lib::TranscriptionEngine,
+         slugtale_lib::EngineAvailability,

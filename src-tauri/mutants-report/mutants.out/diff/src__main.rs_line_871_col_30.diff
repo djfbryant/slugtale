@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace == with != in get_settings_readiness
+@@ -863,17 +863,17 @@
+ }
+ 
+ #[tauri::command]
+ fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
+     let report = current_settings_readiness(&app);
+     let local_model_ready = report
+         .items
+         .iter()
+-        .find(|item| item.id == "local_model")
++        .find(|item| item.id != /* ~ changed by cargo-mutants ~ */ "local_model")
+         .is_some_and(|item| item.ready);
+     if local_model_ready {
+         warm_effective_primary_engine(&app);
+     }
+     if !report.dictation_available {
+         let missing = slugtale_lib::missing_required_items(&report);
+         if !missing.is_empty() {
+             record_diagnostic_event(

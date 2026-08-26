@@ -1,0 +1,31 @@
+--- src/main.rs
++++ replace install_app_update -> Result<(), String> with Ok(())
+@@ -1153,27 +1153,17 @@
+     })
+ }
+ 
+ /// Download, verify, stage, and relaunch into a checked app update. The restart
+ /// never returns; the process replaces itself with the new build.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ #[tauri::command]
+ async fn install_app_update(app: tauri::AppHandle) -> Result<(), String> {
+-    let updater = app.updater().map_err(|error| error.to_string())?;
+-    let update = updater
+-        .check()
+-        .await
+-        .map_err(|error| error.to_string())?
+-        .ok_or_else(|| "no app update is available".to_string())?;
+-    update
+-        .download_and_install(|_, _| {}, || {})
+-        .await
+-        .map_err(|error| error.to_string())?;
+-    app.restart();
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// What Settings needs to render one row of the Transcription Engines list
+ /// (slugtale-vjs.4): whether it is the current primary, its licence and
+ /// provenance from [`slugtale_lib::EngineMetadata`], whether it can run right
+ /// now, and how much of its assets are actually on disk.
+ ///
+ /// This mirrors `EngineMetadata`/`EngineAvailability` rather than replacing

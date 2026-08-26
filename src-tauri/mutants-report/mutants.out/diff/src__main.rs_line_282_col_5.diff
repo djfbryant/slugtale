@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace dictation_host -> Arc<DictationHost> with Arc::new(Default::default())
+@@ -274,17 +274,17 @@
+             .dictation_stack(settings, diagnostic_log)
+             .map_err(|error| error.to_string())
+     }
+ }
+ 
+ /// The app's one dictation lifecycle host, managed by setup before any
+ /// activation input can arrive.
+ fn dictation_host(app: &tauri::AppHandle) -> Arc<DictationHost> {
+-    app.state::<Arc<DictationHost>>().inner().clone()
++    Arc::new(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The host half of the Dictation Runtime's adapter: microphone cuts, the
+ /// transcription-and-insertion workflow, the Usage handoff, and the bar hide
+ /// that follows the final job. Everything OS-touching lives here; the runtime
+ /// owns ordering, rescue suspension, and panic containment.
+ struct AppHost {
+     app: tauri::AppHandle,

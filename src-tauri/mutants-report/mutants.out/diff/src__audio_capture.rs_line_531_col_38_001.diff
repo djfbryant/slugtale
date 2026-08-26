@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace += with *= in CpalAudioRecorder::build_stream
+@@ -523,17 +523,17 @@
+                     // capacity maps exactly to five minutes of dictation rather
+                     // than multiplying memory by the device channel count.
+                     let mut sum_of_squares = 0.0f32;
+                     for frame in data.chunks_exact(channels) {
+                         let mut mono_sum = 0.0f32;
+                         for value in frame.iter().copied() {
+                             let sample = f32::from_sample(value);
+                             sum_of_squares += sample.clamp(-1.0, 1.0).powi(2);
+-                            mono_sum += sample;
++                            mono_sum *= /* ~ changed by cargo-mutants ~ */ sample;
+                         }
+                         callback_buffer.push_sample(mono_sum / channels as f32);
+                     }
+                     if !data.is_empty() {
+                         let rms = (sum_of_squares / data.len() as f32).sqrt().clamp(0.0, 1.0);
+                         let level = voice_level_from_rms(rms);
+                         // Pair the perceptual level with the ring position it
+                         // belongs to: the watermark a Pause Flush cuts at.

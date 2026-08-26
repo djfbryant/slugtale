@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace <impl DictationSurface for TauriSurface>::diagnostic_log -> slugtale_lib::SharedDiagnosticLog<slugtale_lib::FileDiagnosticSink> with SharedDiagnosticLog::new(Default::default())
+@@ -256,17 +256,17 @@
+     fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound) {
+         let _ = slugtale_lib::play_dictation_sound(sound);
+     }
+ 
+     fn diagnostic_log(
+         &self,
+         settings: &slugtale_lib::Settings,
+     ) -> slugtale_lib::SharedDiagnosticLog<slugtale_lib::FileDiagnosticSink> {
+-        current_diagnostic_log(&self.app, settings)
++        SharedDiagnosticLog::new(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn dictation_stack(
+         &self,
+         settings: &slugtale_lib::Settings,
+     ) -> Result<slugtale_lib::DictationStack<slugtale_lib::FileDiagnosticSink>, String> {
+         let diagnostic_log = self.diagnostic_log(settings);
+         self.app

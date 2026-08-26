@@ -1,0 +1,48 @@
+--- src/main.rs
++++ replace update_registered_hotkey -> Result<(), String> with Ok(())
+@@ -552,44 +552,17 @@
+     Ok(())
+ }
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn update_registered_hotkey(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> Result<(), String> {
+-    let previous = {
+-        let state = app.state::<HotkeyRegistrationState>();
+-        let registration = state
+-            .0
+-            .lock()
+-            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+-        registration.current_hotkey.clone()
+-    };
+-    let next = settings.hotkey.clone();
+-
+-    if previous != next {
+-        if let Some(hotkey) = next.as_deref() {
+-            app.global_shortcut()
+-                .register(hotkey)
+-                .map_err(|error| error.to_string())?;
+-        }
+-
+-        if let Some(hotkey) = previous.as_deref() {
+-            if let Err(error) = app.global_shortcut().unregister(hotkey) {
+-                if let Some(new_hotkey) = next.as_deref() {
+-                    let _ = app.global_shortcut().unregister(new_hotkey);
+-                }
+-                return Err(error.to_string());
+-            }
+-        }
+-    }
+-
+-    set_hotkey_registration_state(app, settings)
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(any(target_os = "android", target_os = "ios"))]
+ fn update_registered_hotkey(
+     _app: &tauri::AppHandle,
+     _settings: &slugtale_lib::Settings,
+ ) -> Result<(), String> {
+     Ok(())

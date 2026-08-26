@@ -1,0 +1,25 @@
+--- src/main.rs
++++ replace escape_command -> slugtale_lib::EscapeCommand with Default::default()
+@@ -372,21 +372,17 @@
+         .map_err(|_| "global key worker is unavailable".to_string())
+ }
+ 
+ /// A requested registration state expressed through the arbiter's vocabulary:
+ /// the caller says what it wants true/false to mean (armed or matching the
+ /// lifecycle), and the arbiter decides whether the OS must change.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn escape_command(should_register: bool) -> slugtale_lib::EscapeCommand {
+-    if should_register {
+-        slugtale_lib::EscapeCommand::Arm
+-    } else {
+-        slugtale_lib::EscapeCommand::Disarm
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Bare Escape must only be global while recording; otherwise Slugtale would
+ /// steal Escape from the user's current application. A dedicated worker first
+ /// registers Escape and only then starts recording, so there is no active but
+ /// uncancellable window. It also keeps registration outside the plugin callback,
+ /// which holds the plugin's key map while invoking us.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]

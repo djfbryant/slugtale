@@ -1,0 +1,24 @@
+--- src/main.rs
++++ replace save_transcript_cleanup_settings -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+@@ -1022,20 +1022,17 @@
+     Ok(settings)
+ }
+ 
+ #[tauri::command]
+ fn save_transcript_cleanup_settings(
+     app: tauri::AppHandle,
+     cleanup_mode: slugtale_lib::TranscriptCleanupMode,
+ ) -> Result<slugtale_lib::Settings, String> {
+-    let mut settings = load_current_settings(&app);
+-    slugtale_lib::apply_transcript_cleanup_settings(&mut settings, cleanup_mode);
+-    save_current_settings(&app, &settings)?;
+-    Ok(settings)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn voice_activation_supported() -> bool {
+     voice_activation::supported()
+ }
+ 
+ /// Save the Voice Activation opt-in and bring the listener in line immediately.

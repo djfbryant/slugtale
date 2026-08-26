@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ delete ! in AudioCaptureSession<R>::on_event
+@@ -904,17 +904,17 @@
+                 let audio = self.recorder.stop()?;
+                 // The digital-silence guard catches a denied microphone, which
+                 // supplies perfectly timed silence rather than failing. It can
+                 // only speak for a dictation that flushed nothing: once a
+                 // Segment Pause has handed real speech off, ending on silence is
+                 // exactly what a user who paused and then pressed Stop produces.
+                 // A denied microphone never reaches that state, because a level
+                 // pinned at zero never opens a Segment Pause in the first place.
+-                if !self.flushed_a_segment {
++                if  /* ~ changed by cargo-mutants ~ */self.flushed_a_segment {
+                     require_captured_microphone_signal(&audio)?;
+                 }
+                 Ok(Some(AudioCaptureOutcome::Completed(audio)))
+             }
+             DictationEvent::Cancel if self.active => {
+                 self.active = false;
+                 self.recorder.cancel()?;
+                 Ok(Some(AudioCaptureOutcome::Discarded))

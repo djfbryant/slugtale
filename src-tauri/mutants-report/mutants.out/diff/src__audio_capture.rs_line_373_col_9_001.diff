@@ -1,0 +1,27 @@
+--- src/audio_capture.rs
++++ replace RealtimeCaptureBuffer::drain -> Result<Vec<f32>, AudioCaptureError> with Ok(vec![0.0])
+@@ -365,23 +365,17 @@
+     /// monotonic watermark a queued Pause Flush can cut at.
+     pub fn voice_watermark(&self) -> u64 {
+         self.last_voice_position
+             .load(std::sync::atomic::Ordering::Acquire) as u64
+     }
+ 
+     /// Called after the input stream is paused, outside the audio callback.
+     fn drain(&self) -> Result<Vec<f32>, AudioCaptureError> {
+-        let read_position = self
+-            .read_position
+-            .load(std::sync::atomic::Ordering::Relaxed);
+-        let write_position = self
+-            .write_position
+-            .load(std::sync::atomic::Ordering::Acquire);
+-        self.read_range(read_position, write_position)
++        Ok(vec![0.0]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Drain only through `cut` plus a small acoustic guard, leaving anything
+     /// after it in the ring for the next segment (slugtale-g1o.4).
+     ///
+     /// `cut` is a stable watermark — the ring position of the last voiced
+     /// sample when a Pause Flush was queued — so worker queue delay cannot add
+     /// later speech or silence to this segment. Wrap and overrun behaviour is

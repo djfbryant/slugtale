@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ delete ! in AudioCaptureSession<R>::flush_segment
+@@ -850,17 +850,17 @@
+         }
+     }
+ 
+     /// Take the speech captured so far as a Dictation Segment, leaving the
+     /// recording running. Returns `None` when there is nothing to take — either
+     /// no dictation is active, or the ring has been drained since the last
+     /// Segment Pause.
+     pub fn flush_segment(&mut self) -> Result<Option<CapturedAudio>, AudioCaptureError> {
+-        if !self.active {
++        if  /* ~ changed by cargo-mutants ~ */self.active {
+             return Ok(None);
+         }
+ 
+         let audio = self.recorder.take_segment()?;
+         if audio.samples.is_empty() {
+             return Ok(None);
+         }
+ 

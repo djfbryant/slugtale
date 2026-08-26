@@ -163,4 +163,31 @@ mod tests {
 
         std::fs::remove_dir_all(config_dir).ok();
     }
+
+    #[test]
+    fn usage_round_trips_through_the_store() {
+        let config_dir = unique_test_dir("usage-round-trip");
+        let files = AppFiles::from_dirs(Some(config_dir.clone()), None);
+
+        let mut usage = UsageFile::default();
+        crate::record_counted_segment(
+            &mut usage,
+            crate::LocalDate::new(2026, 8, 17),
+            crate::CountedSegment {
+                words: 12,
+                speaking_seconds: 4.0,
+                starts_dictation: true,
+            },
+        );
+        let path = files.usage_path().unwrap();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        crate::save_usage(&path, &usage).unwrap();
+
+        assert_eq!(files.usage().days.len(), 1);
+        assert_eq!(files.usage().days[0].words, 12);
+
+        std::fs::remove_dir_all(config_dir).ok();
+    }
 }

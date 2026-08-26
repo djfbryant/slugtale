@@ -1,0 +1,31 @@
+--- src/main.rs
++++ replace warm_effective_primary_engine with ()
+@@ -200,27 +200,17 @@
+         }
+         return Err(error);
+     }
+ 
+     Ok(())
+ }
+ 
+ fn warm_effective_primary_engine(app: &tauri::AppHandle) {
+-    let settings = load_current_settings(app);
+-    let catalogue = app.state::<slugtale_lib::TranscriptionEngineCatalogue>();
+-    let Some(warm_up) = catalogue.prepare_primary_warm_up(&settings) else {
+-        return;
+-    };
+-    // Release before loading so switching engines never leaves two large
+-    // models resident on a memory-constrained Mac.
+-    catalogue.release_models_except(warm_up.engine());
+-    tauri::async_runtime::spawn_blocking(move || {
+-        let _ = warm_up.run();
+-    });
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The Tauri adapter for the dictation lifecycle's surface: the bar window,
+ /// Settings reads, diagnostics, and failure notifications, reached through the
+ /// one AppHandle.
+ struct TauriSurface {
+     app: tauri::AppHandle,
+ }

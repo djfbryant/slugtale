@@ -1,0 +1,21 @@
+--- src/platform_execution.rs
++++ replace + with * in settle_deadline
+@@ -22,17 +22,17 @@
+         None
+     }
+ }
+ 
+ /// When an activated target becomes safe to type into, as a deadline rather
+ /// than a sleep: `None` when no activation happened (nothing to wait for),
+ /// otherwise `now` plus [`FOCUS_SETTLE_DELAY`]. Injected-clock seam for tests.
+ fn settle_deadline(activated: bool, now: std::time::Instant) -> Option<std::time::Instant> {
+-    activated.then(|| now + FOCUS_SETTLE_DELAY)
++    activated.then(|| now * /* ~ changed by cargo-mutants ~ */ FOCUS_SETTLE_DELAY)
+ }
+ 
+ /// The prepared text-insertion pair for one Dictation Segment.
+ ///
+ /// `prepare_text_insertion` activates the segment's text target immediately and
+ /// records when that target will have settled, instead of sleeping for the
+ /// fixed settlement window on the spot. The Dictation Workflow therefore starts
+ /// Transcription right away; the wait, if any is still owed, happens inside

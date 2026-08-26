@@ -1,0 +1,21 @@
+--- src/settings.rs
++++ replace apply_usage_settings with ()
+@@ -164,17 +164,17 @@
+ }
+ 
+ /// Update whether Slugtale stores Daily Usage Records (ADR-0025).
+ ///
+ /// This only records the choice. Deleting the Usage File when the user opts out
+ /// is the caller's job, because the file's location is a platform concern and
+ /// the Settings File must not know where it lives.
+ pub fn apply_usage_settings(settings: &mut Settings, store_usage: bool) {
+-    settings.store_usage = store_usage;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The one transactional settings save: apply the change to a copy of
+ /// `current`, perform the external side effect against the changed value,
+ /// persist — and roll the side effect back onto `current` when persisting
+ /// fails, so the saved file and the outside world can never disagree.
+ ///
+ /// Every settings save with an external side effect (hotkey registration,

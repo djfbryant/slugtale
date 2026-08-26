@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace / with % in audio_level_from_samples
+@@ -111,17 +111,17 @@
+     if samples.is_empty() {
+         return 0.0;
+     }
+ 
+     let mean_square = samples
+         .iter()
+         .map(|sample| sample.clamp(-1.0, 1.0).powi(2))
+         .sum::<f32>()
+-        / samples.len() as f32;
++        % /* ~ changed by cargo-mutants ~ */ samples.len() as f32;
+     mean_square.sqrt().clamp(0.0, 1.0)
+ }
+ 
+ pub const DIGITAL_SILENCE_EPSILON: f32 = 0.000_01;
+ 
+ fn require_captured_microphone_signal(audio: &CapturedAudio) -> Result<(), AudioCaptureError> {
+     // A denied macOS microphone does not fail the CoreAudio stream. It supplies
+     // a correctly timed buffer of digital silence instead, which Whisper

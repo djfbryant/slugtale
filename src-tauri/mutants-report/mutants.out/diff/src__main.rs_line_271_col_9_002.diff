@@ -1,0 +1,25 @@
+--- src/main.rs
++++ replace <impl DictationSurface for TauriSurface>::dictation_stack -> Result<slugtale_lib::DictationStack<slugtale_lib::FileDiagnosticSink>, String> with Ok(DictationStack::new(Default::default()))
+@@ -263,21 +263,17 @@
+     ) -> slugtale_lib::SharedDiagnosticLog<slugtale_lib::FileDiagnosticSink> {
+         current_diagnostic_log(&self.app, settings)
+     }
+ 
+     fn dictation_stack(
+         &self,
+         settings: &slugtale_lib::Settings,
+     ) -> Result<slugtale_lib::DictationStack<slugtale_lib::FileDiagnosticSink>, String> {
+-        let diagnostic_log = self.diagnostic_log(settings);
+-        self.app
+-            .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+-            .dictation_stack(settings, diagnostic_log)
+-            .map_err(|error| error.to_string())
++        Ok(DictationStack::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// The app's one dictation lifecycle host, managed by setup before any
+ /// activation input can arrive.
+ fn dictation_host(app: &tauri::AppHandle) -> Arc<DictationHost> {
+     app.state::<Arc<DictationHost>>().inner().clone()
+ }

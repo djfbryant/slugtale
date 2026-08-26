@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace == with != in dictation_bar_monitor
+@@ -675,17 +675,17 @@
+     let monitor = match display {
+         slugtale_lib::BarDisplay::Primary => primary,
+         slugtale_lib::BarDisplay::Monitor(name) => window
+             .available_monitors()
+             .ok()
+             .and_then(|monitors| {
+                 monitors
+                     .into_iter()
+-                    .find(|monitor| monitor.name() == Some(name))
++                    .find(|monitor| monitor.name() != /* ~ changed by cargo-mutants ~ */ Some(name))
+             })
+             .or(primary),
+     };
+ 
+     let monitor = monitor?;
+ 
+     let work_area = monitor.work_area();
+ 

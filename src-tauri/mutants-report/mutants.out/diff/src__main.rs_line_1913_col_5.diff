@@ -1,0 +1,164 @@
+--- src/main.rs
++++ replace main with ()
+@@ -1905,160 +1905,10 @@
+         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+         {
+             false
+         }
+     }
+ }
+ 
+ fn main() {
+-    let reauthorize_permissions =
+-        slugtale_lib::permission_reauthorization_requested(std::env::args());
+-    let app = tauri::Builder::default()
+-        .manage(slugtale_lib::TranscriptionEngineCatalogue::default())
+-        .manage(HotkeyRegistrationState::default())
+-        .manage(TypingChallengeOpen::default())
+-        .manage(voice_activation::VoiceActivationState::default())
+-        .plugin(tauri_plugin_autostart::init(
+-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+-            None,
+-        ))
+-        .plugin(tauri_plugin_updater::Builder::new().build())
+-        .setup(move |app| {
+-            #[cfg(target_os = "macos")]
+-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+-            // Every local file path resolves through this one store, so it has
+-            // to exist before anything that reads or writes a file.
+-            app.manage(AppFiles::from_app(app.handle()));
+-            // The dictation lifecycle host owns its own state; it is managed
+-            // here, before the hotkey worker starts, so every activation input
+-            // finds it in place.
+-            let host = Arc::new(DictationHost::new(Arc::new(TauriSurface {
+-                app: app.handle().clone(),
+-            })));
+-            app.manage(host.clone());
+-            slugtale_lib::setup_tray(app)?;
+-            setup_configured_hotkey(app)?;
+-            // The Dictation Segment worker outlives every dictation: it is what
+-            // keeps segments landing in the order they were spoken.
+-            // The runtime probes the capture ring's voiced-sample watermark at
+-            // the moment a Pause Flush is due — the microphone half of the
+-            // watermark cut (ADR-0026).
+-            let watermark_host = host.clone();
+-            let runtime = slugtale_lib::DictationRuntime::start(
+-                AppHost {
+-                    app: app.handle().clone(),
+-                    host: host.clone(),
+-                },
+-                move || watermark_host.voice_watermark(),
+-                usage_writer(app.handle().clone()),
+-            )
+-            .map_err(std::io::Error::other)?;
+-            host.set_runtime(Arc::new(runtime))
+-                .map_err(std::io::Error::other)?;
+-            // Usage writes happen off the Dictation Workflow path (ADR-0025), so
+-            // the queue that carries them has to exist before the first segment.
+-            // The Dictation Runtime starts that writer; nothing to do here.
+-            // Reconcile the OS login item with the stored preference so a moved or
+-            // rebuilt app (dev binaries change path) does not drift out of sync.
+-            let settings = load_current_settings(app.handle());
+-            let _ = set_launch_at_login_state(app.handle(), settings.launch_at_login);
+-            if let Ok(model_dir) = model_dir(app.handle()) {
+-                app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+-                    .set_model_dir(model_dir);
+-            }
+-            warm_effective_primary_engine(app.handle());
+-            // Prepare Audio Capture while idle so the first Hotkey does not pay
+-            // for device discovery and ring allocation (slugtale-g1o.3). Only
+-            // when the microphone permission is already granted: preparation
+-            // must never prompt, and a denied microphone stays on the normal
+-            // permission path.
+-            if slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new()) {
+-                dictation_host(app.handle()).prepare_capture();
+-            }
+-            // Voice Activation is opt-in: the always-on listener only starts
+-            // when a previously saved preference asks for it (slugtale-e95).
+-            if let Err(error) = voice_activation::sync_worker(
+-                app.handle(),
+-                load_current_settings(app.handle()).voice_activation_enabled,
+-            ) {
+-                eprintln!("voice activation worker did not start: {error}");
+-            }
+-            if reauthorize_permissions {
+-                slugtale_lib::show_settings(app.handle().clone());
+-                #[cfg(target_os = "macos")]
+-                slugtale_lib::request_microphone_access().map_err(std::io::Error::other)?;
+-            }
+-            Ok(())
+-        })
+-        .on_window_event(|window, event| {
+-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+-                if slugtale_lib::hides_on_close(window.label()) {
+-                    api.prevent_close();
+-                    let _ = window.hide();
+-                }
+-            }
+-            // The Typing Challenge window can also be closed from its title bar,
+-            // which never reaches the close command. Either way, the hotkey has
+-            // to start working again the moment the window goes.
+-            if window.label() == TYPING_CHALLENGE_WINDOW
+-                && matches!(
+-                    event,
+-                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+-                )
+-            {
+-                window.state::<TypingChallengeOpen>().set(false);
+-            }
+-        })
+-        .invoke_handler(tauri::generate_handler![
+-            get_settings_readiness,
+-            get_settings,
+-            dictation_bar_displays,
+-            open_microphone_settings,
+-            open_text_insertion_settings,
+-            save_hotkey_settings,
+-            save_transcription_settings,
+-            save_transcript_cleanup_settings,
+-            voice_activation_supported,
+-            save_voice_activation_settings,
+-            save_dictation_bar_settings,
+-            dictation_bar_pointer_over,
+-            save_launch_at_login,
+-            check_for_app_update,
+-            install_app_update,
+-            get_local_model_status,
+-            download_local_model,
+-            delete_local_model,
+-            reveal_model_location,
+-            transcription_engines,
+-            set_transcription_engines,
+-            install_engine_assets,
+-            remove_engine_assets,
+-            dictation_event,
+-            get_usage_summary,
+-            set_usage_storing,
+-            set_typing_estimate,
+-            get_typing_challenge,
+-            submit_typing_challenge,
+-            redo_typing_challenges,
+-            open_typing_challenge,
+-            close_typing_challenge
+-        ])
+-        .build(tauri::generate_context!())
+-        .expect("error while building Slugtale");
+-
+-    // `App::run` terminates with `process::exit`, which skips Rust destructors.
+-    // Use the returning event loop and explicitly quiesce/drop Whisper first so
+-    // ggml's C++ Metal globals never tear down around live resources (p1u).
+-    let exit_code = app.run_return(|app, event| {
+-        if matches!(
+-            event,
+-            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+-        ) {
+-            app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
+-                .shutdown();
+-        }
+-    });
+-
+-    if exit_code != 0 {
+-        std::process::exit(exit_code);
+-    }
++    () /* ~ changed by cargo-mutants ~ */
+ }

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace && with || in main
+@@ -1995,17 +1995,17 @@
+                     api.prevent_close();
+                     let _ = window.hide();
+                 }
+             }
+             // The Typing Challenge window can also be closed from its title bar,
+             // which never reaches the close command. Either way, the hotkey has
+             // to start working again the moment the window goes.
+             if window.label() == TYPING_CHALLENGE_WINDOW
+-                && matches!(
++                || /* ~ changed by cargo-mutants ~ */ matches!(
+                     event,
+                     tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+                 )
+             {
+                 window.state::<TypingChallengeOpen>().set(false);
+             }
+         })
+         .invoke_handler(tauri::generate_handler![

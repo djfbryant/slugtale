@@ -1,0 +1,30 @@
+--- src/main.rs
++++ replace set_hotkey_registration_state -> Result<(), String> with Ok(())
+@@ -535,26 +535,17 @@
+     Ok(())
+ }
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn set_hotkey_registration_state(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> Result<(), String> {
+-    let state = app.state::<HotkeyRegistrationState>();
+-    let mut registration = state
+-        .0
+-        .lock()
+-        .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+-    registration.current_hotkey = settings.hotkey.clone();
+-    // The lifecycle belongs to dictation, not to the optional hotkey. Voice
+-    // Activation and Dictation Bar controls use it even with no hotkey set.
+-    registration.control = slugtale_lib::DictationControl::new(settings.activation_mode);
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn update_registered_hotkey(
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> Result<(), String> {
+     let previous = {

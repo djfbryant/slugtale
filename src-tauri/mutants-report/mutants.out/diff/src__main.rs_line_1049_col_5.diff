@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace save_voice_activation_settings -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+@@ -1041,17 +1041,17 @@
+ /// Save the Voice Activation opt-in and bring the listener in line immediately.
+ /// Change the worker first, then persist. A failed worker must not leave a saved
+ /// "on" value while nothing is listening.
+ #[tauri::command]
+ fn save_voice_activation_settings(
+     app: tauri::AppHandle,
+     enabled: bool,
+ ) -> Result<slugtale_lib::Settings, String> {
+-    voice_activation::save_settings(&app, enabled)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn save_dictation_bar_settings(
+     app: tauri::AppHandle,
+     bar_position: slugtale_lib::BarPosition,
+     accent_color: slugtale_lib::AccentColor,
+     bar_display: slugtale_lib::BarDisplay,

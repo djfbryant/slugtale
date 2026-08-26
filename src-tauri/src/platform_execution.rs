@@ -225,6 +225,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn capture_text_target_reports_the_frontmost_application() {
+        let pid = capture_text_target();
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            assert!(pid.is_some(), "a desktop session should have a frontmost app");
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            assert_eq!(pid, None);
+        }
+    }
+
+    #[test]
+    fn settled_insertion_waits_before_inserting_when_settlement_is_still_owed() {
+        let started = std::time::Instant::now();
+        let insertion = SettledTextInsertion {
+            inner: Box::new(RecordingInsertion),
+            ready_at: Some(started + FOCUS_SETTLE_DELAY),
+        };
+
+        let outcome = insertion
+            .insert(&crate::FinalTranscription::plain("hello".to_string()))
+            .unwrap();
+
+        assert_eq!(outcome, crate::TextInsertionOutcome::ClipboardFree);
+        assert!(
+            started.elapsed() >= FOCUS_SETTLE_DELAY,
+            "insert must honour the settlement window"
+        );
+    }
+
+    struct RecordingInsertion;
+
+    impl TextInsertion for RecordingInsertion {
+        fn insert(
+            &self,
+            _transcription: &crate::FinalTranscription,
+        ) -> Result<crate::TextInsertionOutcome, crate::TextInsertionError> {
+            Ok(crate::TextInsertionOutcome::ClipboardFree)
+        }
+    }
+
     struct UnreachableInsertion;
 
     impl TextInsertion for UnreachableInsertion {

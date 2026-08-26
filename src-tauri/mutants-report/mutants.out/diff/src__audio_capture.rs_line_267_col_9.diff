@@ -1,0 +1,23 @@
+--- src/audio_capture.rs
++++ replace LevelEmitter::stop with ()
+@@ -259,19 +259,17 @@
+                 }
+             })?;
+         Ok(Self { running, handle })
+     }
+ 
+     /// Stop and join the emitter so no stale level is emitted after the
+     /// recording ends (the Tauri layer resets the waveform to zero right after).
+     fn stop(self) {
+-        self.running
+-            .store(false, std::sync::atomic::Ordering::Relaxed);
+-        let _ = self.handle.join();
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ const MAX_RECORDING_SECONDS: usize = 5 * 60;
+ const RECORDING_LIMIT_ERROR: &str = "recording exceeded the five-minute capture limit";
+ 
+ /// How much quiet audio is kept *after* the last heard voice when a Segment
+ /// Pause cuts its segment short.

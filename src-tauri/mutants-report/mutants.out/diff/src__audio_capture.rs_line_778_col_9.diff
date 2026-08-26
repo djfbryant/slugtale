@@ -1,0 +1,26 @@
+--- src/audio_capture.rs
++++ replace <impl AudioRecorder for CpalAudioRecorder>::cancel -> Result<(), AudioCaptureError> with Ok(())
+@@ -770,22 +770,17 @@
+             .as_ref()
+             .ok_or_else(|| AudioCaptureError::new("audio capture buffer is unavailable"))?
+             .drain()?;
+ 
+         captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
+     }
+ 
+     fn cancel(&mut self) -> Result<(), AudioCaptureError> {
+-        self.pause_active_stream();
+-        self.stop_level_emitter();
+-        if let Some(buffer) = self.buffer.as_ref() {
+-            buffer.clear();
+-        }
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn take_segment(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
+         // Deliberately no pause and no emitter shutdown: the stream keeps
+         // running and the ring keeps filling behind this read. That is safe
+         // because `RealtimeCaptureBuffer` is a single-producer/single-consumer
+         // ring whose Acquire/Release pairs already order the audio thread's
+         // writes against this drain — the caller is simply becoming the consumer

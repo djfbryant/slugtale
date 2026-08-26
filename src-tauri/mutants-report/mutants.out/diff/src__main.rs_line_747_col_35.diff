@@ -1,0 +1,21 @@
+--- src/main.rs
++++ delete ! in dictation_bar_pointer_over
+@@ -739,17 +739,17 @@
+     let over = slugtale_lib::pointer_is_over_dictation_bar(
+         (pointer.x, pointer.y),
+         (origin.x, origin.y),
+         scale_factor,
+         position,
+         expanded,
+     );
+     window
+-        .set_ignore_cursor_events(!over)
++        .set_ignore_cursor_events( /* ~ changed by cargo-mutants ~ */over)
+         .map_err(|error| error.to_string())?;
+ 
+     Ok(over)
+ }
+ 
+ /// The app's answers to the five readiness facts, probed through one
+ /// interface so both snapshot paths see identical state (slugtale-g1o.6).
+ struct AppReadinessProbes<'a> {

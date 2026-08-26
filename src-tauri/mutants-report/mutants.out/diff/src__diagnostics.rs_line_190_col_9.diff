@@ -1,0 +1,23 @@
+--- src/diagnostics.rs
++++ replace LocalDiagnosticLog<S>::record with ()
+@@ -182,19 +182,17 @@
+ where
+     S: DiagnosticSink,
+ {
+     pub fn new(enabled: bool, sink: S) -> Self {
+         Self { enabled, sink }
+     }
+ 
+     pub fn record(&mut self, event: DiagnosticEvent) {
+-        if self.enabled {
+-            self.sink.write_line(&render_diagnostic_event(&event));
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// A [`DiagnosticSink`] that appends rendered lines to a file, or stays a no-op
+ /// when no path is available (e.g. the app config directory could not be
+ /// resolved).
+ pub struct FileDiagnosticSink {
+     path: Option<PathBuf>,

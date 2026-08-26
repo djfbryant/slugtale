@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace == with != in main
+@@ -1994,17 +1994,17 @@
+                 if slugtale_lib::hides_on_close(window.label()) {
+                     api.prevent_close();
+                     let _ = window.hide();
+                 }
+             }
+             // The Typing Challenge window can also be closed from its title bar,
+             // which never reaches the close command. Either way, the hotkey has
+             // to start working again the moment the window goes.
+-            if window.label() == TYPING_CHALLENGE_WINDOW
++            if window.label() != /* ~ changed by cargo-mutants ~ */ TYPING_CHALLENGE_WINDOW
+                 && matches!(
+                     event,
+                     tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+                 )
+             {
+                 window.state::<TypingChallengeOpen>().set(false);
+             }
+         })

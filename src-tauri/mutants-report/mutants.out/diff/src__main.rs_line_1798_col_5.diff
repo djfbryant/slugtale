@@ -1,0 +1,29 @@
+--- src/main.rs
++++ replace locale_week_start -> slugtale_lib::WeekStart with Default::default()
+@@ -1790,25 +1790,17 @@
+ 
+ fn load_current_usage(app: &tauri::AppHandle) -> slugtale_lib::UsageFile {
+     app_files(app).usage()
+ }
+ 
+ /// Which week the Usage pane means by "this week", asked of the OS rather than
+ /// assumed (ADR-0021: locale is platform behaviour).
+ fn locale_week_start(_app: &tauri::AppHandle) -> slugtale_lib::WeekStart {
+-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+-    {
+-        slugtale_lib::locale_week_start()
+-    }
+-
+-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+-    {
+-        slugtale_lib::WeekStart::default()
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Start the Dictation Runtime's Usage writer body (ADR-0025): the opt-in is
+ /// checked here, at the last possible moment, so a segment that was in flight
+ /// when the user turned storing off does not land in a file they just asked to
+ /// be deleted. Every failure below is a skip, not an error.
+ fn usage_writer(app: tauri::AppHandle) -> std::sync::Arc<slugtale_lib::UsageSink> {
+     std::sync::Arc::new(move |date, segment| {

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace <impl slugtale_lib::DictationRuntimeHost for AppHost>::take_pause_segment -> Option<slugtale_lib::CapturedAudio> with Some(Default::default())
+@@ -288,17 +288,17 @@
+ /// owns ordering, rescue suspension, and panic containment.
+ struct AppHost {
+     app: tauri::AppHandle,
+     host: Arc<DictationHost>,
+ }
+ 
+ impl slugtale_lib::DictationRuntimeHost for AppHost {
+     fn take_pause_segment(&mut self, cut: u64) -> Option<slugtale_lib::CapturedAudio> {
+-        self.host.take_dictation_segment(cut)
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn complete(
+         &mut self,
+         audio: slugtale_lib::CapturedAudio,
+         position: slugtale_lib::DictationSegmentPosition,
+     ) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
+         self.host.run_dictation_segment(audio, position)

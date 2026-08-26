@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace - with + in voice_level_from_rms
+@@ -146,17 +146,17 @@
+ /// waveform looked like it drifted on its own rather than reacting to the voice
+ /// (slugtale-hla). A noise floor keeps quiet rooms in the idle state, a ceiling
+ /// saturates loud speech, and a square-root curve lifts ordinary speech into a
+ /// clearly active, bouncing range.
+ pub fn voice_level_from_rms(rms: f32) -> f32 {
+     const NOISE_FLOOR: f32 = 0.012;
+     const SPEECH_CEILING: f32 = 0.18;
+ 
+-    let normalized = ((rms - NOISE_FLOOR) / (SPEECH_CEILING - NOISE_FLOOR)).clamp(0.0, 1.0);
++    let normalized = ((rms + /* ~ changed by cargo-mutants ~ */ NOISE_FLOOR) / (SPEECH_CEILING - NOISE_FLOOR)).clamp(0.0, 1.0);
+     normalized.sqrt()
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct AudioCaptureError {
+     message: String,
+ }
+ 

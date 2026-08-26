@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace % with + in RealtimeCaptureBuffer::push_sample
+@@ -338,17 +338,17 @@
+ 
+         let write_position = self.write_position.load(Ordering::Relaxed);
+         let read_position = self.read_position.load(Ordering::Acquire);
+         if write_position.wrapping_sub(read_position) >= self.slots.len() {
+             self.overflowed.store(true, Ordering::Relaxed);
+             return;
+         }
+ 
+-        let slot = write_position % self.slots.len();
++        let slot = write_position + /* ~ changed by cargo-mutants ~ */ self.slots.len();
+         self.slots[slot].store(sample.to_bits(), Ordering::Relaxed);
+         self.write_position
+             .store(write_position.wrapping_add(1), Ordering::Release);
+     }
+ 
+     /// Record, from the real-time callback, that the sample just written was
+     /// voiced. One relaxed atomic store on voiced buffers only: lock-free,
+     /// allocation-free, and skipped entirely on quiet buffers.

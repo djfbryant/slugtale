@@ -1,0 +1,26 @@
+--- src/main.rs
++++ replace set_typing_estimate -> Result<UsageSummary, String> with Ok(Default::default())
+@@ -1539,22 +1539,17 @@
+ 
+ /// Set or clear the typed typing-speed estimate. Refused once the three Typing
+ /// Challenges have produced a measurement.
+ #[tauri::command]
+ fn set_typing_estimate(
+     app: tauri::AppHandle,
+     estimate: Option<u32>,
+ ) -> Result<UsageSummary, String> {
+-    let mut settings = load_current_settings(&app);
+-    slugtale_lib::apply_typed_estimate(&mut settings.typing_baseline, estimate)
+-        .map_err(|error| error.to_string())?;
+-    save_current_settings(&app, &settings)?;
+-
+-    Ok(get_usage_summary(app))
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The state of the Typing Challenge window: which passage to show next and how
+ /// far through the three the user is.
+ #[derive(serde::Serialize)]
+ struct TypingChallengeState {
+     /// The passage to type, or `null` when all three are done.
+     passage: Option<String>,

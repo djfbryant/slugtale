@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ replace && with || in totals_for_week
+@@ -305,17 +305,17 @@
+     let first = date.week_start(week_start).days_from_epoch();
+     let last = date.days_from_epoch();
+     let mut totals = UsageTotals::default();
+     for record in &usage.days {
+         let Some(day) = LocalDate::parse(&record.date) else {
+             continue;
+         };
+         let day = day.days_from_epoch();
+-        if day >= first && day <= last {
++        if day >= first || /* ~ changed by cargo-mutants ~ */ day <= last {
+             totals.add(record);
+         }
+     }
+     totals
+ }
+ 
+ /// Totals across every Daily Usage Record in the file.
+ pub fn totals_all_time(usage: &UsageFile) -> UsageTotals {

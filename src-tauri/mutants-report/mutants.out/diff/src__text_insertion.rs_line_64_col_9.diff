@@ -1,0 +1,21 @@
+--- src/text_insertion.rs
++++ replace TextInsertionPipeline<S>::system -> &S with Box::leak(Box::new(Default::default()))
+@@ -56,17 +56,17 @@
+ where
+     S: TextInsertionSystem,
+ {
+     pub fn new(system: S) -> Self {
+         Self { system }
+     }
+ 
+     pub fn system(&self) -> &S {
+-        &self.system
++        Box::leak(Box::new(Default::default())) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl<S> TextInsertion for TextInsertionPipeline<S>
+ where
+     S: TextInsertionSystem,
+ {
+     fn insert(

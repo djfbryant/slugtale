@@ -1,0 +1,45 @@
+--- src/main.rs
++++ replace open_microphone_settings -> Result<(), String> with Ok(())
+@@ -932,41 +932,17 @@
+         });
+     }
+ 
+     displays
+ }
+ 
+ #[tauri::command]
+ fn open_microphone_settings() -> Result<(), String> {
+-    #[cfg(target_os = "macos")]
+-    {
+-        return slugtale_lib::run_microphone_permission_setup(
+-            &slugtale_lib::MacosMicrophonePermissionSetup,
+-        );
+-    }
+-
+-    #[cfg(target_os = "windows")]
+-    {
+-        return slugtale_lib::run_microphone_permission_setup(
+-            &slugtale_lib::WindowsMicrophonePermissionSetup,
+-        );
+-    }
+-
+-    #[cfg(target_os = "linux")]
+-    {
+-        return slugtale_lib::run_microphone_permission_setup(
+-            &slugtale_lib::LinuxMicrophonePermissionSetup,
+-        );
+-    }
+-
+-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+-    {
+-        Err("microphone settings shortcut is not implemented for this platform".to_string())
+-    }
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn open_text_insertion_settings() -> Result<(), String> {
+     #[cfg(target_os = "macos")]
+     {
+         return slugtale_lib::run_text_insertion_permission_setup(
+             &slugtale_lib::MacosTextInsertionPermissionSetup,

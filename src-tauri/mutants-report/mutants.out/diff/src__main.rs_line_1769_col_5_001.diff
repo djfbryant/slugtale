@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace settings_path -> Option<PathBuf> with Some(Default::default())
+@@ -1761,17 +1761,17 @@
+     }
+ }
+ 
+ fn app_files(app: &tauri::AppHandle) -> AppFiles {
+     app.state::<AppFiles>().inner().clone()
+ }
+ 
+ fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+-    app_files(app).settings_path()
++    Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn model_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+     app_files(app).model_dir()
+ }
+ 
+ fn model_manager(app: &tauri::AppHandle) -> Result<slugtale_lib::LocalModelManager, String> {
+     let settings_path =

@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ replace < with > in LocalDate::from_days_from_epoch
+@@ -102,17 +102,17 @@
+         let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+         let day_of_era = z - era * 146_097;
+         let year_of_era =
+             (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+         let year = year_of_era + era * 400;
+         let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+         let month_index = (5 * day_of_year + 2) / 153;
+         let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+-        let month = month_index + if month_index < 10 { 3 } else { -9 };
++        let month = month_index + if month_index > /* ~ changed by cargo-mutants ~ */ 10 { 3 } else { -9 };
+         Self {
+             year: (year + i64::from(month <= 2)) as i32,
+             month: month as u32,
+             day: day as u32,
+         }
+     }
+ }
+ 

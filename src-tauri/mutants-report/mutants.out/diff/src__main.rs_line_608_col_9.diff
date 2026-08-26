@@ -1,0 +1,24 @@
+--- src/main.rs
++++ replace DictationBarAppearance::from_settings -> Self with Default::default()
+@@ -600,20 +600,17 @@
+ #[derive(Clone, serde::Serialize)]
+ struct DictationBarAppearance {
+     position: slugtale_lib::BarPosition,
+     accent: slugtale_lib::AccentColor,
+ }
+ 
+ impl DictationBarAppearance {
+     fn from_settings(settings: &slugtale_lib::Settings) -> Self {
+-        Self {
+-            position: settings.bar_position,
+-            accent: settings.accent_color,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ fn show_dictation_bar(
+     app: &tauri::AppHandle,
+     phase: DictationPhase,
+     settings: &slugtale_lib::Settings,
+ ) {

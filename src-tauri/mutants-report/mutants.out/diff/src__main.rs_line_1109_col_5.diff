@@ -1,0 +1,27 @@
+--- src/main.rs
++++ replace save_launch_at_login -> Result<slugtale_lib::Settings, String> with Ok(Default::default())
+@@ -1101,23 +1101,17 @@
+     }
+ }
+ 
+ #[tauri::command]
+ fn save_launch_at_login(
+     app: tauri::AppHandle,
+     enabled: bool,
+ ) -> Result<slugtale_lib::Settings, String> {
+-    let previous = load_current_settings(&app);
+-    slugtale_lib::apply_and_persist(
+-        &previous,
+-        |settings| slugtale_lib::apply_launch_at_login_settings(settings, enabled),
+-        |settings| set_launch_at_login_state(&app, settings.launch_at_login),
+-        |settings| save_current_settings(&app, settings),
+-    )
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// What Settings renders for one app-update check (slugtale-9pr). `version` is
+ /// the newer build's version when one is available, and is what the user sees
+ /// before deciding to install.
+ #[derive(Debug, Clone, serde::Serialize)]
+ struct AppUpdateView {
+     available: bool,

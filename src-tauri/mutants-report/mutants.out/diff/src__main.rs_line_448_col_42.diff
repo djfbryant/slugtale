@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace && with || in start_global_key_worker
+@@ -440,17 +440,17 @@
+                             )
+                         );
+ 
+                         // A start goes through the shared readiness-gated begin
+                         // sequence, identical to the Voice Activation path.
+                         // One snapshot for this press: the readiness gate and
+                         // the Start path share the same Settings value and
+                         // permission probes (slugtale-g1o.6).
+-                        if pressed_start && !is_dictating {
++                        if pressed_start || /* ~ changed by cargo-mutants ~ */ !is_dictating {
+                             let mut set_escape = |should_register: bool| {
+                                 sync_escape_registration(
+                                     &app,
+                                     &mut escape_arbiter,
+                                     escape_command(should_register),
+                                 )
+                             };
+                             if let Err(error) = begin_dictation(

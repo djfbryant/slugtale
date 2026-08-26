@@ -1,0 +1,46 @@
+--- src/diagnostics.rs
++++ replace <impl DiagnosticSink for FileDiagnosticSink>::write_line with ()
+@@ -207,42 +207,17 @@
+ 
+     pub fn unavailable() -> Self {
+         Self { path: None }
+     }
+ }
+ 
+ impl DiagnosticSink for FileDiagnosticSink {
+     fn write_line(&mut self, line: &str) {
+-        let Some(path) = &self.path else {
+-            return;
+-        };
+-
+-        if let Some(parent) = path.parent() {
+-            if let Err(error) = std::fs::create_dir_all(parent) {
+-                eprintln!("could not create diagnostic log directory: {error}");
+-                return;
+-            }
+-        }
+-
+-        let mut file = match std::fs::OpenOptions::new()
+-            .create(true)
+-            .append(true)
+-            .open(path)
+-        {
+-            Ok(file) => file,
+-            Err(error) => {
+-                eprintln!("could not open diagnostic log: {error}");
+-                return;
+-            }
+-        };
+-
+-        if let Err(error) = writeln!(file, "{line}") {
+-            eprintln!("could not write diagnostic log line: {error}");
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// A cheaply cloneable handle to a [`LocalDiagnosticLog`], shared across the
+ /// diagnostic decorator adapters below so they can all record to the same log.
+ pub struct SharedDiagnosticLog<S> {
+     inner: Arc<Mutex<LocalDiagnosticLog<S>>>,
+ }

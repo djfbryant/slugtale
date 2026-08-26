@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace VoiceActivationCapture<R>::is_open -> bool with false
+@@ -948,17 +948,17 @@
+     pub fn new(recorder: R) -> Self {
+         Self {
+             recorder,
+             open: false,
+         }
+     }
+ 
+     pub fn is_open(&self) -> bool {
+-        self.open
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn start(&mut self) -> Result<(), AudioCaptureError> {
+         if self.open {
+             return Ok(());
+         }
+         self.recorder.start()?;
+         self.open = true;

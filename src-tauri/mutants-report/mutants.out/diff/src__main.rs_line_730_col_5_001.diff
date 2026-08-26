@@ -1,0 +1,41 @@
+--- src/main.rs
++++ replace dictation_bar_pointer_over -> Result<bool, String> with Ok(false)
+@@ -722,37 +722,17 @@
+ ///
+ /// The bar window is permanently sized for the expanded pill because a Tauri
+ /// window cannot grow on hover, so while collapsed most of it is transparent —
+ /// and a transparent window still swallows clicks. The frontend polls this while
+ /// the bar is visible: it cannot detect the pointer itself, because a window
+ /// ignoring cursor events receives no mouse events to detect it with.
+ #[tauri::command]
+ fn dictation_bar_pointer_over(app: tauri::AppHandle, expanded: bool) -> Result<bool, String> {
+-    let Some(window) = app.get_webview_window("dictation-bar") else {
+-        return Ok(false);
+-    };
+-
+-    let position = load_current_settings(&app).bar_position;
+-    let scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
+-    let origin = window.outer_position().map_err(|error| error.to_string())?;
+-    let pointer = app.cursor_position().map_err(|error| error.to_string())?;
+-
+-    let over = slugtale_lib::pointer_is_over_dictation_bar(
+-        (pointer.x, pointer.y),
+-        (origin.x, origin.y),
+-        scale_factor,
+-        position,
+-        expanded,
+-    );
+-    window
+-        .set_ignore_cursor_events(!over)
+-        .map_err(|error| error.to_string())?;
+-
+-    Ok(over)
++    Ok(false) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The app's answers to the five readiness facts, probed through one
+ /// interface so both snapshot paths see identical state (slugtale-g1o.6).
+ struct AppReadinessProbes<'a> {
+     app: &'a tauri::AppHandle,
+ }
+ 

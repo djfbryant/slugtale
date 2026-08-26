@@ -1,0 +1,29 @@
+--- src/audio_capture.rs
++++ replace RealtimeCaptureBuffer::clear with ()
+@@ -428,25 +428,17 @@
+         if self.overflowed.swap(false, Ordering::Relaxed) {
+             return Err(AudioCaptureError::new(RECORDING_LIMIT_ERROR));
+         }
+         Ok(samples)
+     }
+ 
+     /// Discard pending audio between dictations without reallocating the ring.
+     fn clear(&self) {
+-        use std::sync::atomic::Ordering;
+-
+-        let write_position = self.write_position.load(Ordering::Acquire);
+-        self.read_position.store(write_position, Ordering::Release);
+-        // The watermark belongs to the previous dictation; park it at the same
+-        // position so no stale cut can point into the next one.
+-        self.last_voice_position
+-            .store(write_position, Ordering::Release);
+-        self.overflowed.store(false, Ordering::Relaxed);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ struct InputStreamIdentity {
+     device_id: Option<cpal::DeviceId>,
+     sample_format: cpal::SampleFormat,
+     sample_rate_hz: u32,

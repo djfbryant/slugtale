@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace && with || in require_captured_microphone_signal
+@@ -127,17 +127,17 @@
+     // a correctly timed buffer of digital silence instead, which Whisper
+     // canonically transcribes as "You" (slugtale-d3k). Real microphones have a
+     // noise floor above this -100 dBFS threshold even in a quiet room.
+     let rms = audio_level_from_samples(&audio.samples);
+     let peak = audio
+         .samples
+         .iter()
+         .fold(0.0f32, |highest, sample| highest.max(sample.abs()));
+-    if rms <= DIGITAL_SILENCE_EPSILON && peak <= DIGITAL_SILENCE_EPSILON {
++    if rms <= DIGITAL_SILENCE_EPSILON || /* ~ changed by cargo-mutants ~ */ peak <= DIGITAL_SILENCE_EPSILON {
+         return Err(AudioCaptureError::new(
+             "no microphone signal was captured; check Slugtale under System Settings > Privacy & Security > Microphone",
+         ));
+     }
+ 
+     Ok(())
+ }
+ 

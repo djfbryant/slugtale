@@ -1,0 +1,21 @@
+--- src/settings.rs
++++ replace apply_launch_at_login_settings with ()
+@@ -261,17 +261,17 @@
+     settings.accent_color = accent_color;
+     settings.bar_display = bar_display;
+ }
+ 
+ /// Update the launch-at-login preference stored in the Settings File. The stored
+ /// bool records the user's intent; registering the app as an OS login item is a
+ /// platform concern handled at the Tauri layer (ADR-0021).
+ pub fn apply_launch_at_login_settings(settings: &mut Settings, enabled: bool) {
+-    settings.launch_at_login = enabled;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Update whether the always-listening wake phrase may start a dictation
+ /// (slugtale-e95). This only records the choice; starting or stopping the
+ /// listener that holds the microphone open is the Tauri tier's job, because
+ /// its lifetime depends on platform audio support.
+ pub fn apply_voice_activation_settings(settings: &mut Settings, enabled: bool) {
+     settings.voice_activation_enabled = enabled;

@@ -1,0 +1,21 @@
+--- src/diagnostics.rs
++++ replace DiagnosticEvent::routing_decision -> Self with Default::default()
+@@ -85,17 +85,17 @@
+     pub fn hotkey_transition(event: DictationEvent) -> Self {
+         Self::HotkeyTransition { event }
+     }
+ 
+     /// Record how the Second Opinion router decided a dictation. Takes the
+     /// already-reduced [`RoutingDiagnostics`] rather than the routed result, so
+     /// the transcript is not even in scope at the call site.
+     pub fn routing_decision(routing: RoutingDiagnostics) -> Self {
+-        Self::RoutingDecision { routing }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Record a [`TextInsertionError`] by its technical description; the
+     /// transcription being inserted is never carried.
+     pub fn insertion_failed(error: &TextInsertionError) -> Self {
+         Self::InsertionFailed {
+             reason: error.to_string(),
+         }

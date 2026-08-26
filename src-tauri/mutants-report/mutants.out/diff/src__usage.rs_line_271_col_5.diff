@@ -1,0 +1,39 @@
+--- src/usage.rs
++++ replace record_counted_segment with ()
+@@ -263,35 +263,17 @@
+ 
+ /// Add one Counted Segment to the day it landed on.
+ ///
+ /// A Counted Segment belongs to the local date of its insert or rescue, so a
+ /// dictation started before midnight and finished after it puts its later
+ /// segments on the later day. That is the honest answer and it means old days
+ /// are never rewritten.
+ pub fn record_counted_segment(usage: &mut UsageFile, date: LocalDate, segment: CountedSegment) {
+-    let iso = date.to_iso();
+-    let record = match usage.days.iter_mut().find(|record| record.date == iso) {
+-        Some(record) => record,
+-        None => {
+-            usage.days.push(DailyUsageRecord::empty(date));
+-            usage.days.sort_by(|a, b| a.date.cmp(&b.date));
+-            usage
+-                .days
+-                .iter_mut()
+-                .find(|record| record.date == iso)
+-                .expect("the record was just inserted")
+-        }
+-    };
+-
+-    if segment.starts_dictation {
+-        record.dictations = record.dictations.saturating_add(1);
+-    }
+-    record.words = record.words.saturating_add(segment.words);
+-    record.speaking_seconds += segment.speaking_seconds.max(0.0);
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Totals for exactly one local day.
+ pub fn totals_for_day(usage: &UsageFile, date: LocalDate) -> UsageTotals {
+     let iso = date.to_iso();
+     let mut totals = UsageTotals::default();
+     for record in usage.days.iter().filter(|record| record.date == iso) {
+         totals.add(record);

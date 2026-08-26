@@ -1,0 +1,21 @@
+--- src/diagnostics.rs
++++ replace DiagnosticEvent::insertion_rescued -> Self with Default::default()
+@@ -99,17 +99,17 @@
+         Self::InsertionFailed {
+             reason: error.to_string(),
+         }
+     }
+ 
+     /// Record that Insertion Rescue preserved a transcription after insertion
+     /// failed.
+     pub fn insertion_rescued() -> Self {
+-        Self::InsertionRescued
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Format one [`DiagnosticEvent`] as a single redacted Local Diagnostic Log line.
+ pub fn render_diagnostic_event(event: &DiagnosticEvent) -> String {
+     match event {
+         DiagnosticEvent::ReadinessIncomplete { missing } => {
+             format!("readiness: not ready (missing: {})", missing.join(", "))

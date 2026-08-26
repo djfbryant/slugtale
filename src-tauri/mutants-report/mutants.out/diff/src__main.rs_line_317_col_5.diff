@@ -1,0 +1,60 @@
+--- src/main.rs
++++ replace setup_configured_hotkey -> Result<(), Box<dyn std::error::Error>> with Ok(())
+@@ -309,56 +309,17 @@
+         // outcome, so the bar stays up until every earlier Segment Pause has
+         // landed too, not just this last one (slugtale-0t4).
+         hide_dictation_bar(&self.app);
+     }
+ }
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn setup_configured_hotkey(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+-    let settings = load_current_settings(app.handle());
+-
+-    let mut builder =
+-        tauri_plugin_global_shortcut::Builder::new().with_handler(move |app, shortcut, event| {
+-            let input = match event.state {
+-                tauri_plugin_global_shortcut::ShortcutState::Pressed => {
+-                    slugtale_lib::HotkeyInput::Pressed
+-                }
+-                tauri_plugin_global_shortcut::ShortcutState::Released => {
+-                    slugtale_lib::HotkeyInput::Released
+-                }
+-            };
+-
+-            let state = app.state::<HotkeyRegistrationState>();
+-            let registration = state.0.lock();
+-            match registration {
+-                Ok(registration) => {
+-                    if let Some(commands) = registration.key_commands.as_ref() {
+-                        let key = if shortcut.key == tauri_plugin_global_shortcut::Code::Escape
+-                            && shortcut.mods.is_empty()
+-                        {
+-                            slugtale_lib::DictationKey::Escape
+-                        } else {
+-                            slugtale_lib::DictationKey::Hotkey
+-                        };
+-                        let _ = commands.send(GlobalKeyCommand::Input(key, input));
+-                    }
+-                }
+-                Err(_) => eprintln!("hotkey dictation adapter mutex poisoned"),
+-            }
+-        });
+-
+-    if let Some(hotkey) = settings.hotkey.as_deref() {
+-        builder = builder.with_shortcut(hotkey)?;
+-    }
+-
+-    app.handle().plugin(builder.build())?;
+-    set_hotkey_registration_state(app.handle(), &settings)?;
+-    start_global_key_worker(app.handle())?;
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn request_escape_registration(
+     registration: &HotkeyRegistration,
+     should_register: bool,
+ ) -> Result<(), String> {
+     let commands = registration

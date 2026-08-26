@@ -1,0 +1,26 @@
+--- src/usage.rs
++++ replace totals_for_day -> UsageTotals with Default::default()
+@@ -286,22 +286,17 @@
+         record.dictations = record.dictations.saturating_add(1);
+     }
+     record.words = record.words.saturating_add(segment.words);
+     record.speaking_seconds += segment.speaking_seconds.max(0.0);
+ }
+ 
+ /// Totals for exactly one local day.
+ pub fn totals_for_day(usage: &UsageFile, date: LocalDate) -> UsageTotals {
+-    let iso = date.to_iso();
+-    let mut totals = UsageTotals::default();
+-    for record in usage.days.iter().filter(|record| record.date == iso) {
+-        totals.add(record);
+-    }
+-    totals
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Totals for the calendar week containing `date`, from the locale's first day
+ /// of the week up to and including `date`.
+ pub fn totals_for_week(usage: &UsageFile, date: LocalDate, week_start: WeekStart) -> UsageTotals {
+     let first = date.week_start(week_start).days_from_epoch();
+     let last = date.days_from_epoch();
+     let mut totals = UsageTotals::default();

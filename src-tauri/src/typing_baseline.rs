@@ -127,6 +127,26 @@ impl TypingBaseline {
     }
 }
 
+/// Whether the Typing Challenge window is on screen.
+///
+/// A flag rather than asking the window itself, because the only reader is the
+/// global key worker and that runs on every hotkey press. Querying window
+/// visibility from a background thread costs a round trip to the main thread,
+/// and the hotkey path is the one place in this app where latency is felt.
+#[derive(Default)]
+pub struct TypingChallengeOpen(std::sync::atomic::AtomicBool);
+
+impl TypingChallengeOpen {
+    pub fn set(&self, open: bool) {
+        self.0
+            .store(open, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn get(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// Score one Typing Challenge: correct whitespace words per minute.
 ///
 /// Words are matched against the passage in order — the nth typed word against
@@ -429,5 +449,15 @@ mod tests {
         assert_eq!(baseline.effective_wpm(), None);
         assert_eq!(baseline.completed_challenges(), 0);
         assert!(baseline.typed_estimate.is_none());
+    }
+
+    #[test]
+    fn typing_challenge_open_tracks_window_visibility() {
+        let open = TypingChallengeOpen::default();
+        assert!(!open.get());
+        open.set(true);
+        assert!(open.get());
+        open.set(false);
+        assert!(!open.get());
     }
 }

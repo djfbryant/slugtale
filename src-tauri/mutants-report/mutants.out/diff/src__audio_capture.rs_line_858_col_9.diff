@@ -1,0 +1,31 @@
+--- src/audio_capture.rs
++++ replace AudioCaptureSession<R>::flush_segment -> Result<Option<CapturedAudio>, AudioCaptureError> with Ok(None)
+@@ -850,27 +850,17 @@
+         }
+     }
+ 
+     /// Take the speech captured so far as a Dictation Segment, leaving the
+     /// recording running. Returns `None` when there is nothing to take — either
+     /// no dictation is active, or the ring has been drained since the last
+     /// Segment Pause.
+     pub fn flush_segment(&mut self) -> Result<Option<CapturedAudio>, AudioCaptureError> {
+-        if !self.active {
+-            return Ok(None);
+-        }
+-
+-        let audio = self.recorder.take_segment()?;
+-        if audio.samples.is_empty() {
+-            return Ok(None);
+-        }
+-
+-        self.flushed_a_segment = true;
+-        Ok(Some(audio))
++        Ok(None) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Like [`Self::flush_segment`], but cut at a stable sample watermark: only
+     /// audio through `cut` plus the quiet-tail guard joins this segment, so a
+     /// slow worker queue cannot append later speech to it (slugtale-g1o.4).
+     pub fn flush_segment_through(
+         &mut self,
+         cut: u64,

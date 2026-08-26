@@ -1,0 +1,26 @@
+--- src/main.rs
++++ replace check_for_app_update -> Result<AppUpdateView, String> with Ok(Default::default())
+@@ -1140,22 +1140,17 @@
+     }
+ }
+ 
+ /// Ask GitHub Releases whether a newer signed build exists (ADR-0022). The
+ /// endpoint and public key live in tauri.conf.json; signature verification is
+ /// enforced by the plugin before anything is staged.
+ #[tauri::command]
+ async fn check_for_app_update(app: tauri::AppHandle) -> Result<AppUpdateView, String> {
+-    let updater = app.updater().map_err(|error| error.to_string())?;
+-    let update = updater.check().await.map_err(|error| error.to_string())?;
+-    Ok(match update {
+-        Some(update) => AppUpdateView::available(update.version),
+-        None => AppUpdateView::none(),
+-    })
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Download, verify, stage, and relaunch into a checked app update. The restart
+ /// never returns; the process replaces itself with the new build.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ #[tauri::command]
+ async fn install_app_update(app: tauri::AppHandle) -> Result<(), String> {
+     let updater = app.updater().map_err(|error| error.to_string())?;

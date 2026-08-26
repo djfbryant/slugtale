@@ -1,0 +1,49 @@
+--- src/main.rs
++++ replace get_usage_summary -> UsageSummary with Default::default()
+@@ -1481,45 +1481,17 @@
+     typed_estimate: Option<u32>,
+     /// How many of the three Typing Challenges are finished, for "2 of 3".
+     completed_challenges: usize,
+     challenge_count: usize,
+ }
+ 
+ #[tauri::command]
+ fn get_usage_summary(app: tauri::AppHandle) -> UsageSummary {
+-    let settings = load_current_settings(&app);
+-    let baseline = &settings.typing_baseline;
+-    let words_per_minute = baseline.effective_wpm();
+-    // With storing off there is no Usage File, so every span is zero — but the
+-    // Typing Baseline still reads, because the challenges work either way.
+-    let usage = if settings.store_usage {
+-        load_current_usage(&app)
+-    } else {
+-        slugtale_lib::UsageFile::default()
+-    };
+-    let today = slugtale_lib::today_local();
+-    let week_start = locale_week_start(&app);
+-
+-    UsageSummary {
+-        store_usage: settings.store_usage,
+-        today: usage_span(
+-            &slugtale_lib::totals_for_day(&usage, today),
+-            words_per_minute,
+-        ),
+-        this_week: usage_span(
+-            &slugtale_lib::totals_for_week(&usage, today, week_start),
+-            words_per_minute,
+-        ),
+-        all_time: usage_span(&slugtale_lib::totals_all_time(&usage), words_per_minute),
+-        measured_wpm: baseline.measured_wpm(),
+-        typed_estimate: baseline.typed_estimate,
+-        completed_challenges: baseline.completed_challenges(),
+-        challenge_count: slugtale_lib::TYPING_CHALLENGE_COUNT,
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Turn storing Daily Usage Records on or off.
+ ///
+ /// Turning it off deletes the Usage File outright rather than leaving it to rot
+ /// unread: "stop storing this" has to mean the stored thing is gone. The Typing
+ /// Baseline is in the Settings File and is untouched.
+ #[tauri::command]

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ delete ! in begin_dictation
+@@ -156,17 +156,17 @@
+     // DictationControl only decides requests that reach it.
+     if typing_challenge_is_open(app) {
+         return Ok(());
+     }
+ 
+     let (activation, dictation_available) = {
+         let activation = build_activation_snapshot_for(app, input);
+         let available = activation.dictation_available();
+-        if !available {
++        if  /* ~ changed by cargo-mutants ~ */available {
+             report_not_ready(app, &activation.report);
+         }
+         (Some(activation), available)
+     };
+ 
+     let event = {
+         let state = app.state::<HotkeyRegistrationState>();
+         let mut registration = state

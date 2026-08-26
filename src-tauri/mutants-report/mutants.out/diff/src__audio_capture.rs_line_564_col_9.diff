@@ -1,0 +1,33 @@
+--- src/audio_capture.rs
++++ replace CpalAudioRecorder::build_stream_for_format -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError> with Ok((Default::default(), Arc::new(Default::default())))
+@@ -556,29 +556,17 @@
+     }
+ 
+     fn build_stream_for_format(
+         device: &cpal::Device,
+         config: &cpal::StreamConfig,
+         sample_format: cpal::SampleFormat,
+         level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+     ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError> {
+-        match sample_format {
+-            cpal::SampleFormat::I8 => Self::build_stream::<i8>(device, config, level_bits),
+-            cpal::SampleFormat::I16 => Self::build_stream::<i16>(device, config, level_bits),
+-            cpal::SampleFormat::I32 => Self::build_stream::<i32>(device, config, level_bits),
+-            cpal::SampleFormat::U8 => Self::build_stream::<u8>(device, config, level_bits),
+-            cpal::SampleFormat::U16 => Self::build_stream::<u16>(device, config, level_bits),
+-            cpal::SampleFormat::U32 => Self::build_stream::<u32>(device, config, level_bits),
+-            cpal::SampleFormat::F32 => Self::build_stream::<f32>(device, config, level_bits),
+-            cpal::SampleFormat::F64 => Self::build_stream::<f64>(device, config, level_bits),
+-            other => Err(AudioCaptureError::new(format!(
+-                "unsupported input sample format: {other}"
+-            ))),
+-        }
++        Ok((Default::default(), Arc::new(Default::default()))) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn pause_active_stream(&mut self) {
+         use cpal::traits::StreamTrait;
+ 
+         if !self.stream_active {
+             return;
+         }

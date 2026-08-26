@@ -1,0 +1,36 @@
+--- src/audio_capture.rs
++++ replace CpalAudioRecorder::pause_active_stream with ()
+@@ -572,32 +572,17 @@
+             cpal::SampleFormat::F64 => Self::build_stream::<f64>(device, config, level_bits),
+             other => Err(AudioCaptureError::new(format!(
+                 "unsupported input sample format: {other}"
+             ))),
+         }
+     }
+ 
+     fn pause_active_stream(&mut self) {
+-        use cpal::traits::StreamTrait;
+-
+-        if !self.stream_active {
+-            return;
+-        }
+-
+-        if let Some(stream) = self.stream.as_ref() {
+-            if let Err(error) = stream.pause() {
+-                // Dropping the stream still stops capture. Forget its identity so
+-                // the next start builds fresh rather than reusing the failed one.
+-                eprintln!("could not pause audio input stream; rebuilding next time: {error}");
+-                self.stream.take();
+-                self.stream_identity = None;
+-            }
+-        }
+-        self.stream_active = false;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn stop_level_emitter(&mut self) {
+         if let Some(emitter) = self.level_emitter.take() {
+             emitter.stop();
+         }
+         self.level_bits
+             .store(0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);

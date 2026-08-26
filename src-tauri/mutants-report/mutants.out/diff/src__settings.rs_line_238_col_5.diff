@@ -1,0 +1,21 @@
+--- src/settings.rs
++++ replace apply_transcription_settings with ()
+@@ -230,17 +230,17 @@
+     });
+     settings.activation_mode = activation_mode;
+ }
+ 
+ /// Update the Transcription Speed Profile stored in the Settings File. The user
+ /// sets this once in the Transcription section of settings and it persists across
+ /// restarts, applying to all future transcriptions (CONTEXT.md).
+ pub fn apply_transcription_settings(settings: &mut Settings, speed_profile: SpeedProfile) {
+-    settings.speed_profile = speed_profile;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Update the Transcript Cleanup mode stored in the Settings File (slugtale-kyc).
+ /// Applies to every future Dictation Segment; nothing about it needs the model
+ /// reloaded or the platform asked.
+ pub fn apply_transcript_cleanup_settings(
+     settings: &mut Settings,
+     transcript_cleanup: crate::TranscriptCleanupMode,

@@ -1,0 +1,34 @@
+--- src/main.rs
++++ replace typing_challenge_state -> TypingChallengeState with Default::default()
+@@ -1561,30 +1561,17 @@
+     passage_index: Option<usize>,
+     completed: usize,
+     total: usize,
+     seconds: u32,
+     measured_wpm: Option<u32>,
+ }
+ 
+ fn typing_challenge_state(baseline: &slugtale_lib::TypingBaseline) -> TypingChallengeState {
+-    let passage_index = baseline.next_passage_index();
+-    TypingChallengeState {
+-        passage: passage_index.map(|index| {
+-            slugtale_lib::TYPING_CHALLENGE_PASSAGES[index]
+-                .split_whitespace()
+-                .collect::<Vec<_>>()
+-                .join(" ")
+-        }),
+-        passage_index,
+-        completed: baseline.completed_challenges(),
+-        total: slugtale_lib::TYPING_CHALLENGE_COUNT,
+-        seconds: slugtale_lib::TYPING_CHALLENGE_SECONDS,
+-        measured_wpm: baseline.measured_wpm(),
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn get_typing_challenge(app: tauri::AppHandle) -> TypingChallengeState {
+     typing_challenge_state(&load_current_settings(&app).typing_baseline)
+ }
+ 
+ /// Score one finished Typing Challenge and store it.

@@ -1,0 +1,23 @@
+--- src/diagnostics.rs
++++ replace DiagnosticEvent::transcription_completed -> Self with Default::default()
+@@ -55,19 +55,17 @@
+         Self::ReadinessIncomplete {
+             missing: missing.iter().map(|item| item.id.clone()).collect(),
+         }
+     }
+ 
+     /// Reduce a [`FinalTranscription`] to a character count so the transcript text
+     /// can never reach the Local Diagnostic Log.
+     pub fn transcription_completed(transcription: &FinalTranscription) -> Self {
+-        Self::TranscriptionCompleted {
+-            characters: transcription.text.chars().count(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Record an [`AsrError`] by its technical description; AsrError never carries
+     /// transcript text.
+     pub fn transcription_failed(error: &AsrError) -> Self {
+         Self::TranscriptionFailed {
+             reason: error.to_string(),
+         }

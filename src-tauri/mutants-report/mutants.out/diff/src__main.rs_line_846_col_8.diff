@@ -1,0 +1,21 @@
+--- src/main.rs
++++ delete ! in report_not_ready
+@@ -838,17 +838,17 @@
+ 
+ /// Tell the user which required items are missing and open Settings, where
+ /// they can act on each one.
+ fn report_not_ready(
+     app: &tauri::AppHandle,
+     report: &slugtale_lib::SettingsReadinessReport,
+ ) -> bool {
+     let missing = slugtale_lib::missing_required_items(report);
+-    if !missing.is_empty() {
++    if  /* ~ changed by cargo-mutants ~ */missing.is_empty() {
+         record_diagnostic_event(
+             app,
+             slugtale_lib::DiagnosticEvent::readiness_incomplete(&missing),
+         );
+         let labels = missing
+             .iter()
+             .map(|item| item.label.as_str())
+             .collect::<Vec<_>>()

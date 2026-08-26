@@ -1,0 +1,76 @@
+--- src/audio_capture.rs
++++ replace <impl AudioRecorder for CpalAudioRecorder>::prepare -> Result<(), AudioCaptureError> with Ok(())
+@@ -605,72 +605,17 @@
+ }
+ 
+ impl AudioRecorder for CpalAudioRecorder {
+     /// Validate the default input device, allocate the capture ring, and build
+     /// the input stream stopped while the app is idle, so the first Hotkey only
+     /// pays for `play`. Never plays the stream (that is what activates the
+     /// microphone) and never requests permission — see [`AudioRecorder::prepare`].
+     fn prepare(&mut self) -> Result<(), AudioCaptureError> {
+-        use cpal::traits::{DeviceTrait, HostTrait};
+-
+-        // Already prepared, or further along than preparation goes.
+-        if matches!(self.prepare_state, PrepareState::Prepared { .. }) || self.stream.is_some() {
+-            return Ok(());
+-        }
+-
+-        let prepared = (|| -> Result<InputStreamIdentity, AudioCaptureError> {
+-            let host = cpal::default_host();
+-            let device = host
+-                .default_input_device()
+-                .ok_or_else(|| AudioCaptureError::new("no default input device is available"))?;
+-            let supported_config = device
+-                .default_input_config()
+-                .map_err(|error| AudioCaptureError::new(error.to_string()))?;
+-            let sample_format = supported_config.sample_format();
+-            let config: cpal::StreamConfig = supported_config.into();
+-            let identity = InputStreamIdentity {
+-                device_id: device.id().ok(),
+-                sample_format,
+-                sample_rate_hz: config.sample_rate,
+-                channels: config.channels,
+-            };
+-
+-            self.sample_rate_hz = config.sample_rate;
+-            // The callback downmixes each input frame before placing it in the
+-            // ring, exactly as Start configures it.
+-            self.channels = 1;
+-
+-            // Build the stream but never play it: the microphone stays off
+-            // until `play` on the Hotkey path (proved by
+-            // `examples/mic_indicator_probe.rs`). Building allocates the ring
+-            // zero-initialised too, so first-touch page faults land here.
+-            let (stream, buffer) = Self::build_stream_for_format(
+-                &device,
+-                &config,
+-                sample_format,
+-                self.level_bits.clone(),
+-            )?;
+-            self.stream = Some(stream);
+-            self.buffer = Some(buffer);
+-            self.stream_identity = Some(identity.clone());
+-
+-            Ok(identity)
+-        })();
+-
+-        match prepared {
+-            Ok(identity) => {
+-                self.prepare_state = PrepareState::Prepared { identity };
+-                Ok(())
+-            }
+-            Err(error) => {
+-                self.prepare_state = PrepareState::Failed(error.to_string());
+-                Err(error)
+-            }
+-        }
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn start(&mut self) -> Result<(), AudioCaptureError> {
+         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+ 
+         self.pause_active_stream();
+         self.stop_level_emitter();
+ 

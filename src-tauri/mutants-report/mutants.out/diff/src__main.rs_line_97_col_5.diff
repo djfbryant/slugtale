@@ -1,0 +1,25 @@
+--- src/main.rs
++++ replace cancel_active_dictation -> Result<(), String> with Ok(())
+@@ -89,21 +89,17 @@
+         slugtale_lib::DictationEvent::Stop,
+     )
+ }
+ 
+ /// Cancel through the same lifecycle bridge used by the global Escape handler
+ /// so a click on the Dictation Bar cannot leave toggle/hold state believing a
+ /// discarded dictation is still active.
+ fn cancel_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
+-    end_active_dictation(
+-        app,
+-        |control| control.cancel(),
+-        slugtale_lib::DictationEvent::Cancel,
+-    )
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// End the active dictation through the shared lifecycle bridge, disarming bare
+ /// Escape while the registration lock is held. When no lifecycle answered — no
+ /// registration yet, or nothing active — the fallback event still runs so a
+ /// leftover Dictation Bar never outlives its dictation.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn end_active_dictation(

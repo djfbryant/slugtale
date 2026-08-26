@@ -1,0 +1,37 @@
+--- src/main.rs
++++ replace download_local_model -> Result<slugtale_lib::LocalModelStatus, String> with Ok(Default::default())
+@@ -1699,33 +1699,17 @@
+     Ok(model_manager(&app)?.status())
+ }
+ 
+ #[tauri::command]
+ async fn download_local_model(
+     app: tauri::AppHandle,
+     on_progress: tauri::ipc::Channel<slugtale_lib::DownloadProgress>,
+ ) -> Result<slugtale_lib::LocalModelStatus, String> {
+-    let manager = model_manager(&app)?;
+-    let status = tauri::async_runtime::spawn_blocking(move || {
+-        // Throttle IPC traffic: the initial update, then one per ~1 MB, plus
+-        // the final update (slugtale-dtl).
+-        let mut forward = slugtale_lib::throttled_progress(move |progress| {
+-            let _ = on_progress.send(progress);
+-        });
+-        manager
+-            .download_default(&slugtale_lib::HttpModelDownloader, &mut forward)
+-            .map_err(|error| error.to_string())
+-    })
+-    .await
+-    .map_err(|error| error.to_string())??;
+-    if status.present {
+-        warm_effective_primary_engine(&app);
+-    }
+-    Ok(status)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tauri::command]
+ fn delete_local_model(app: tauri::AppHandle) -> Result<slugtale_lib::LocalModelStatus, String> {
+     model_manager(&app)?
+         .delete_default()
+         .map_err(|error| error.to_string())
+ }

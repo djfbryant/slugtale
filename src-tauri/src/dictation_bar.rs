@@ -142,6 +142,16 @@ pub fn pointer_is_over_dictation_bar(
     dictation_bar_paint_rect(position, expanded).contains(local_x, local_y)
 }
 
+pub fn primary_display_label(monitor_name: Option<&str>) -> String {
+    monitor_name
+        .map(|name| format!("Main display ({name})"))
+        .unwrap_or_else(|| "Main display".to_string())
+}
+
+pub fn secondary_display_label(name: &str, width: u32, height: u32) -> String {
+    format!("{name} ({width} × {height})")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +316,18 @@ mod tests {
             BarPosition::BottomCenter,
             false
         ));
+    }
+
+    #[test]
+    fn display_labels_name_the_main_and_secondary_monitors() {
+        assert_eq!(
+            primary_display_label(Some("Built-in")),
+            "Main display (Built-in)"
+        );
+        assert_eq!(primary_display_label(None), "Main display");
+        assert_eq!(
+            secondary_display_label("Studio Display", 2560, 1440),
+            "Studio Display (2560 × 1440)"
+        );
     }
 }

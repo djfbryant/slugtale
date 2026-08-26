@@ -1,0 +1,25 @@
+--- src/app_files.rs
++++ replace AppFiles::diagnostic_log -> SharedDiagnosticLog<FileDiagnosticSink> with SharedDiagnosticLog::new(Default::default())
+@@ -88,21 +88,17 @@
+         self.usage_path()
+             .map(|path| load_usage(&path))
+             .unwrap_or_default()
+     }
+ 
+     /// A log handle gated by the user's diagnostic-logging preference; an
+     /// unresolvable path degrades to a no-op sink rather than failing dictation.
+     pub fn diagnostic_log(&self, enabled: bool) -> SharedDiagnosticLog<FileDiagnosticSink> {
+-        let sink = self
+-            .diagnostic_log_path()
+-            .map(FileDiagnosticSink::new)
+-            .unwrap_or_else(FileDiagnosticSink::unavailable);
+-        SharedDiagnosticLog::new(enabled, sink)
++        SharedDiagnosticLog::new(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     fn unique_test_dir(name: &str) -> PathBuf {

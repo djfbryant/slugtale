@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace == with != in CpalAudioRecorder::build_stream
+@@ -500,17 +500,17 @@
+     where
+         T: cpal::SizedSample,
+         f32: cpal::FromSample<T>,
+     {
+         use cpal::traits::DeviceTrait;
+         use cpal::Sample;
+ 
+         let channels = usize::from(config.channels);
+-        if channels == 0 {
++        if channels != /* ~ changed by cargo-mutants ~ */ 0 {
+             return Err(AudioCaptureError::new(
+                 "input channel count must be non-zero",
+             ));
+         }
+         let buffer =
+             std::sync::Arc::new(RealtimeCaptureBuffer::for_sample_rate(config.sample_rate)?);
+         let callback_buffer = buffer.clone();
+         let stream = device

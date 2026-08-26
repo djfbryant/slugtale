@@ -1,0 +1,21 @@
+--- src/app_files.rs
++++ replace AppFiles::settings_path -> Option<PathBuf> with None
+@@ -41,17 +41,17 @@
+     fn from_dirs(config_dir: Option<PathBuf>, data_dir: Option<PathBuf>) -> Self {
+         Self {
+             config_dir,
+             data_dir,
+         }
+     }
+ 
+     pub fn settings_path(&self) -> Option<PathBuf> {
+-        self.config_dir.as_ref().map(|dir| dir.join(SETTINGS_FILE))
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// The Usage File (CONTEXT.md): a sibling of the Settings File.
+     pub fn usage_path(&self) -> Option<PathBuf> {
+         self.config_dir.as_ref().map(|dir| dir.join(USAGE_FILE))
+     }
+ 
+     pub fn diagnostic_log_path(&self) -> Option<PathBuf> {

@@ -29,18 +29,7 @@ const TYPING_CHALLENGE_WINDOW: &str = "typing-challenge";
 /// global key worker and that runs on every hotkey press. Querying window
 /// visibility from a background thread costs a round trip to the main thread,
 /// and the hotkey path is the one place in this app where latency is felt.
-#[derive(Default)]
-struct TypingChallengeOpen(std::sync::atomic::AtomicBool);
-
-impl TypingChallengeOpen {
-    fn set(&self, open: bool) {
-        self.0.store(open, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    fn get(&self) -> bool {
-        self.0.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
+use slugtale_lib::TypingChallengeOpen;
 
 use slugtale_lib::{FileDiagnosticSink, SharedDiagnosticLog, TranscriptionProvider};
 
@@ -70,14 +59,15 @@ enum GlobalKeyCommand {
 /// focus.
 #[tauri::command]
 fn dictation_event(app: tauri::AppHandle, event: String) -> Result<(), String> {
-    let event = match event.as_str() {
-        "start" => slugtale_lib::DictationEvent::Start,
-        "stop" => return stop_active_dictation(&app),
-        "cancel" => return cancel_active_dictation(&app),
-        other => return Err(format!("unknown dictation event: {other}")),
-    };
-
-    dictation_host(&app).handle_dictation_event(event)
+    match event.as_str() {
+        "start" => {
+            let event = slugtale_lib::parse_dictation_ui_event("start")?;
+            dictation_host(&app).handle_dictation_event(event)
+        }
+        "stop" => stop_active_dictation(&app),
+        "cancel" => cancel_active_dictation(&app),
+        other => Err(slugtale_lib::parse_dictation_ui_event(other).unwrap_err()),
+    }
 }
 
 /// Stop from the Dictation Bar and reset the shared control at the same time.
@@ -908,8 +898,8 @@ fn dictation_bar_displays(app: tauri::AppHandle) -> Vec<DictationBarDisplayOptio
     let primary_label = primary
         .as_ref()
         .and_then(|monitor| monitor.name())
-        .map(|name| format!("Main display ({name})"))
-        .unwrap_or_else(|| "Main display".to_string());
+        .map(|name| slugtale_lib::primary_display_label(Some(name)))
+        .unwrap_or_else(|| slugtale_lib::primary_display_label(None));
     let mut displays = vec![DictationBarDisplayOption {
         value: slugtale_lib::BarDisplay::Primary,
         label: primary_label,
@@ -928,7 +918,7 @@ fn dictation_bar_displays(app: tauri::AppHandle) -> Vec<DictationBarDisplayOptio
         let size = monitor.size();
         displays.push(DictationBarDisplayOption {
             value: slugtale_lib::BarDisplay::Monitor(name.clone()),
-            label: format!("{name} ({} × {})", size.width, size.height),
+            label: slugtale_lib::secondary_display_label(&name, size.width, size.height),
         });
     }
 

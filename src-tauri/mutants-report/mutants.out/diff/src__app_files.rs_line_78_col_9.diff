@@ -1,0 +1,27 @@
+--- src/app_files.rs
++++ replace AppFiles::save_settings -> Result<(), String> with Ok(())
+@@ -70,23 +70,17 @@
+     /// Current Settings, or defaults when no file exists yet.
+     pub fn settings(&self) -> Settings {
+         self.settings_path()
+             .map(|path| load_settings(&path))
+             .unwrap_or_default()
+     }
+ 
+     pub fn save_settings(&self, settings: &Settings) -> Result<(), String> {
+-        let path = self
+-            .settings_path()
+-            .ok_or_else(|| "could not resolve settings path".to_string())?;
+-        if let Some(parent) = path.parent() {
+-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+-        }
+-        save_settings(&path, settings).map_err(|error| error.to_string())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn usage(&self) -> UsageFile {
+         self.usage_path()
+             .map(|path| load_usage(&path))
+             .unwrap_or_default()
+     }
+ 

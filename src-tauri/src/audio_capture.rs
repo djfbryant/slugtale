@@ -605,6 +605,10 @@ impl CpalAudioRecorder {
 }
 
 impl AudioRecorder for CpalAudioRecorder {
+    fn set_level_callback(&mut self, callback: Option<AudioLevelCallback>) {
+        CpalAudioRecorder::set_level_callback(self, callback);
+    }
+
     /// Validate the default input device, allocate the capture ring, and build
     /// the input stream stopped while the app is idle, so the first Hotkey only
     /// pays for `play`. Never plays the stream (that is what activates the
@@ -1071,6 +1075,19 @@ mod tests {
 
         // The mapping is monotonic: louder input never renders as a smaller bar.
         assert!(voice_level_from_rms(0.03) < voice_level_from_rms(0.06));
+    }
+
+    #[test]
+    fn cpal_recorder_keeps_level_callback_when_set_through_audio_recorder() {
+        let mut recorder = CpalAudioRecorder::new();
+        let callback: AudioLevelCallback = std::sync::Arc::new(|_| {});
+
+        AudioRecorder::set_level_callback(&mut recorder, Some(callback));
+
+        assert!(
+            recorder.level_callback.is_some(),
+            "the trait dispatch used by DictationHost must install the callback"
+        );
     }
 
     #[test]
@@ -1592,5 +1609,38 @@ mod tests {
         let _ = capture.take_segment().unwrap();
 
         assert_eq!(events.borrow().as_slice(), &[(1, "start")]);
+    }
+
+    #[test]
+    fn upsampling_doubles_sub_16khz_mono_input() {
+        let audio =
+            captured_audio_from_interleaved_input(8_000, 1, &[0.0, 1.0, 0.0, 1.0]).unwrap();
+
+        assert_eq!(audio.sample_rate_hz, 16_000);
+        assert_eq!(audio.samples.len(), 8);
+        assert!((audio.samples[0] - 0.0).abs() < 1e-4);
+        assert!((audio.samples[2] - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn zero_sample_rate_input_is_rejected() {
+        let error = captured_audio_from_interleaved_input(0, 1, &[0.0]).unwrap_err();
+        assert!(error.to_string().contains("sample rate"));
+    }
+
+    #[test]
+    fn zero_channel_input_is_rejected() {
+        let error = captured_audio_from_interleaved_input(16_000, 0, &[0.0]).unwrap_err();
+        assert!(error.to_string().contains("channel"));
+    }
+
+    #[test]
+    fn voice_activation_capture_reports_open_while_listening() {
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut capture = VoiceActivationCapture::new(GenerationRecorder::new(1, events));
+
+        assert!(!capture.is_open());
+        capture.start().unwrap();
+        assert!(capture.is_open());
     }
 }

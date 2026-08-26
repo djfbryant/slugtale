@@ -20,6 +20,20 @@ pub fn build_tray_menu_items() -> Vec<(&'static str, &'static str)> {
     vec![("settings", "Settings\u{2026}"), ("quit", "Quit Slugtale")]
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayMenuAction {
+    Settings,
+    Quit,
+}
+
+pub fn tray_menu_action(id: &str) -> Option<TrayMenuAction> {
+    match id {
+        "settings" => Some(TrayMenuAction::Settings),
+        "quit" => Some(TrayMenuAction::Quit),
+        _ => None,
+    }
+}
+
 /// Whether a window should hide (stay alive) on a close request rather than be
 /// destroyed. Slugtale is a tray resident app (ADR-0008): the settings window is
 /// reopened from the tray, so closing it must hide it — destroying it both kills
@@ -59,14 +73,14 @@ pub fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .icon_as_template(true)
         .tooltip("Slugtale")
         .menu(&menu)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "settings" => {
+        .on_menu_event(|app, event| match tray_menu_action(event.id.as_ref()) {
+            Some(TrayMenuAction::Settings) => {
                 show_settings(app.clone());
             }
-            "quit" => {
+            Some(TrayMenuAction::Quit) => {
                 app.exit(0);
             }
-            _ => {}
+            None => {}
         })
         .build(app)?;
 
@@ -196,5 +210,12 @@ mod tests {
         let items = build_tray_menu_items();
         let label = items.iter().find(|(id, _)| *id == "quit").unwrap().1;
         assert_eq!(label, "Quit Slugtale");
+    }
+
+    #[test]
+    fn tray_menu_actions_cover_every_configured_item() {
+        assert_eq!(tray_menu_action("settings"), Some(TrayMenuAction::Settings));
+        assert_eq!(tray_menu_action("quit"), Some(TrayMenuAction::Quit));
+        assert_eq!(tray_menu_action("about"), None);
     }
 }

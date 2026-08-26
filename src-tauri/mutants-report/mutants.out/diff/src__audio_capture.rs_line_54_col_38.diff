@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace * with + in captured_audio_from_interleaved_input
+@@ -46,17 +46,17 @@
+ 
+     if sample_rate_hz > 16_000 {
+         // Downsampling. Average each output sample over its whole source window
+         // (a box filter) so content above the 8 kHz Nyquist limit is band-limited
+         // away instead of aliasing into the speech band. Point/linear sampling
+         // here folds high-frequency mic content down as noise and garbles Whisper
+         // on 44.1/48 kHz mics (slugtale-8dj).
+         for index in 0..target_len {
+-            let start = index as f64 * ratio;
++            let start = index as f64 + /* ~ changed by cargo-mutants ~ */ ratio;
+             let end = start + ratio;
+             resampled.push(window_average(&mono, start, end));
+         }
+     } else {
+         // Upsampling (sub-16 kHz mics, rare). Linear interpolation is smooth and
+         // adds no aliasing when moving to a higher rate.
+         for index in 0..target_len {
+             let source_position = index as f64 * ratio;

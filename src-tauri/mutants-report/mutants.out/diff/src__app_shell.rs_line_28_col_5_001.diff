@@ -1,0 +1,21 @@
+--- src/app_shell.rs
++++ replace hides_on_close -> bool with false
+@@ -20,17 +20,17 @@
+     vec![("settings", "Settings\u{2026}"), ("quit", "Quit Slugtale")]
+ }
+ 
+ /// Whether a window should hide (stay alive) on a close request rather than be
+ /// destroyed. Slugtale is a tray resident app (ADR-0008): the settings window is
+ /// reopened from the tray, so closing it must hide it — destroying it both kills
+ /// the only reopen path and, as the last window, would quit the whole app.
+ pub fn hides_on_close(window_label: &str) -> bool {
+-    window_label == "settings"
++    false /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ pub fn dictation_bar_should_take_focus() -> bool {
+     false
+ }
+ 
+ pub fn show_settings(app: tauri::AppHandle) {
+     if let Some(window) = app.get_webview_window("settings") {

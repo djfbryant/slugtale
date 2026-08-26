@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace <impl DictationSurface for TauriSurface>::play_dictation_sound with ()
+@@ -249,17 +249,17 @@
+     }
+ 
+     fn notify_capture_failure(&self, error: &str) {
+         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+         let _ = slugtale_lib::notify("Slugtale could not capture audio", error);
+     }
+ 
+     fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound) {
+-        let _ = slugtale_lib::play_dictation_sound(sound);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn diagnostic_log(
+         &self,
+         settings: &slugtale_lib::Settings,
+     ) -> slugtale_lib::SharedDiagnosticLog<slugtale_lib::FileDiagnosticSink> {
+         current_diagnostic_log(&self.app, settings)
+     }

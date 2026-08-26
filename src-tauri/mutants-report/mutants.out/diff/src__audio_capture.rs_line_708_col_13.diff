@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace && with || in <impl AudioRecorder for CpalAudioRecorder>::start
+@@ -700,17 +700,17 @@
+         self.level_bits
+             .store(0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+ 
+         // Building a CoreAudio stream costs hundreds of milliseconds and was
+         // paid on every hotkey press. Keep the paused stream when the default
+         // device and format are unchanged; `stop`/`cancel` pause it, and `play`
+         // resumes it in roughly 40 ms on the reference Mac (slugtale-op3).
+         let reused_stream = self.stream.is_some()
+-            && self.buffer.is_some()
++            || /* ~ changed by cargo-mutants ~ */ self.buffer.is_some()
+             && self.stream_identity.as_ref() == Some(&identity);
+         if !reused_stream {
+             self.stream.take();
+             self.buffer = None;
+             let (stream, buffer) = Self::build_stream_for_format(
+                 &device,
+                 &config,
+                 sample_format,

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace <impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_>>::engine_availability -> Vec<(slugtale_lib::TranscriptionEngine, slugtale_lib::EngineAvailability,)> with vec![(Default::default(), Default::default())]
+@@ -775,17 +775,17 @@
+ 
+     fn engine_availability(
+         &self,
+         settings: &slugtale_lib::Settings,
+     ) -> Vec<(
+         slugtale_lib::TranscriptionEngine,
+         slugtale_lib::EngineAvailability,
+     )> {
+-        current_engine_availability(self.app, settings)
++        vec![(Default::default(), Default::default())] /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ fn current_settings_readiness(app: &tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
+     readiness_snapshot_for(app, |settings| {
+         if voice_activation::supported() && settings.voice_activation_enabled {
+             slugtale_lib::DictationInput::VoiceActivation
+         } else {

@@ -1,0 +1,21 @@
+--- src/audio_capture.rs
++++ replace <= with > in RealtimeCaptureBuffer::drain_through
+@@ -400,17 +400,17 @@
+         let write_position = self
+             .write_position
+             .load(std::sync::atomic::Ordering::Acquire);
+ 
+         let cut = cut.min(usize::MAX as u64) as usize;
+         // Never read later samples than exist, and never rewind into audio a
+         // previous segment already took.
+         let end = write_position.min(cut.saturating_add(guard as usize));
+-        if end <= read_position {
++        if end > /* ~ changed by cargo-mutants ~ */ read_position {
+             return Ok(Vec::new());
+         }
+         self.read_range(read_position, end)
+     }
+ 
+     /// Read `[from, to)` and advance the read position to `to`. Shared by
+     /// [`Self::drain`] and [`Self::drain_through`]; both callers have already
+     /// clamped their range.

@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ replace != with == in LocalDate::parse
+@@ -31,17 +31,17 @@
+         Self { year, month, day }
+     }
+ 
+     /// Parse the `YYYY-MM-DD` form a Usage File stores. Returns `None` for
+     /// anything else, so a hand-edited or corrupt record is dropped rather than
+     /// counted into the wrong day.
+     pub fn parse(text: &str) -> Option<Self> {
+         let bytes = text.as_bytes();
+-        if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
++        if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] == /* ~ changed by cargo-mutants ~ */ b'-' {
+             return None;
+         }
+         let year = text[0..4].parse::<i32>().ok()?;
+         let month = text[5..7].parse::<u32>().ok()?;
+         let day = text[8..10].parse::<u32>().ok()?;
+         if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
+             return None;
+         }

@@ -1,0 +1,21 @@
+--- src/text_insertion.rs
++++ replace <impl std::fmt::Display for TextInsertionError>::fmt -> std::fmt::Result with Ok(Default::default())
+@@ -19,17 +19,17 @@
+         Self {
+             message: message.into(),
+         }
+     }
+ }
+ 
+ impl std::fmt::Display for TextInsertionError {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+-        write!(f, "text insertion failed: {}", self.message)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl std::error::Error for TextInsertionError {}
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum TextInsertionOutcome {
+     ClipboardFree,

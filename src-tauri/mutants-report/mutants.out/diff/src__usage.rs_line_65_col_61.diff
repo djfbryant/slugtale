@@ -1,0 +1,21 @@
+--- src/usage.rs
++++ replace / with % in LocalDate::days_from_epoch
+@@ -57,17 +57,17 @@
+     pub fn days_from_epoch(self) -> i64 {
+         // Shift the year so leap days land at the end of the cycle, which makes
+         // the century rules a plain division instead of a special case.
+         let year = if self.month <= 2 {
+             self.year - 1
+         } else {
+             self.year
+         } as i64;
+-        let era = if year >= 0 { year } else { year - 399 } / 400;
++        let era = if year >= 0 { year } else { year - 399 } % /* ~ changed by cargo-mutants ~ */ 400;
+         let year_of_era = year - era * 400;
+         let month = self.month as i64;
+         let day = self.day as i64;
+         let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+         let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+         era * 146_097 + day_of_era - 719_468
+     }
+ 

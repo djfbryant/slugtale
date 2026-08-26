@@ -1,0 +1,39 @@
+--- src/main.rs
++++ replace <impl slugtale_lib::PlatformReadiness for CurrentPlatform>::microphone_granted -> bool with false
+@@ -1860,35 +1860,17 @@
+     app: &tauri::AppHandle,
+     settings: &slugtale_lib::Settings,
+ ) -> Result<(), String> {
+     app_files(app).save_settings(settings)
+ }
+ 
+ impl slugtale_lib::PlatformReadiness for CurrentPlatform {
+     fn microphone_granted(&self) -> bool {
+-        #[cfg(target_os = "macos")]
+-        {
+-            return self.macos_platform().microphone_granted();
+-        }
+-
+-        #[cfg(target_os = "windows")]
+-        {
+-            return self.windows_platform().microphone_granted();
+-        }
+-
+-        #[cfg(target_os = "linux")]
+-        {
+-            return self.linux_platform().microphone_granted();
+-        }
+-
+-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+-        {
+-            false
+-        }
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn insertion_granted(&self) -> bool {
+         #[cfg(target_os = "macos")]
+         {
+             return self.macos_platform().insertion_granted();
+         }
+ 

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace == with != in dictation_bar_displays
+@@ -913,17 +913,17 @@
+     let mut displays = vec![DictationBarDisplayOption {
+         value: slugtale_lib::BarDisplay::Primary,
+         label: primary_label,
+     }];
+ 
+     let monitors = app.available_monitors().unwrap_or_default();
+     for monitor in monitors {
+         if primary.as_ref().is_some_and(|primary| {
+-            monitor.position() == primary.position() && monitor.size() == primary.size()
++            monitor.position() == primary.position() && monitor.size() != /* ~ changed by cargo-mutants ~ */ primary.size()
+         }) {
+             continue;
+         }
+         let Some(name) = monitor.name().cloned() else {
+             continue;
+         };
+         let size = monitor.size();
+         displays.push(DictationBarDisplayOption {
