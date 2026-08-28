@@ -256,15 +256,6 @@ impl SpeechWindowBuffer {
     /// lets a quiet phrase rise above its room noise without averaging it with
     /// several seconds of silence. The 90th percentile also ignores a single
     /// click that would make a peak-only gate run Whisper.
-    pub fn new_audio_has_speech(
-        &self,
-        frame_samples: usize,
-        minimum_rms: f32,
-        contrast_ratio: f32,
-    ) -> bool {
-        self.new_audio_state(frame_samples, minimum_rms, contrast_ratio) == NewAudioState::Speech
-    }
-
     pub fn new_audio_state(
         &self,
         frame_samples: usize,
@@ -460,7 +451,10 @@ mod tests {
         window.push(&vec![0.01; SAMPLES_PER_SECOND / 2]);
         window.push(&vec![0.0; SAMPLES_PER_SECOND / 2]);
 
-        assert!(window.new_audio_has_speech(320, 0.006, 1.7));
+        assert_eq!(
+            window.new_audio_state(320, 0.006, 1.7),
+            NewAudioState::Speech
+        );
     }
 
     #[test]
@@ -468,7 +462,10 @@ mod tests {
         let mut window = SpeechWindowBuffer::new();
         window.push(&vec![0.01; SAMPLES_PER_SECOND * 2]);
 
-        assert!(!window.new_audio_has_speech(320, 0.006, 1.7));
+        assert_eq!(
+            window.new_audio_state(320, 0.006, 1.7),
+            NewAudioState::Quiet
+        );
     }
 
     #[test]
@@ -498,7 +495,10 @@ mod tests {
         let mut window = SpeechWindowBuffer::new();
         window.push(&samples);
 
-        assert!(window.new_audio_has_speech(320, 0.006, 1.5));
+        assert_eq!(
+            window.new_audio_state(320, 0.006, 1.5),
+            NewAudioState::Speech
+        );
     }
 
     #[test]

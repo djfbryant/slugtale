@@ -7,7 +7,6 @@
     "dev": "node scripts/run-dev.js",
     "dev:raw": "PATH=$HOME/.cargo/bin:$PATH tauri dev --features local-whisper-runtime",
     "build": "node scripts/run-tauri.js build --ci",
-    "prototype:settings": "open prototypes/settings/settings-prototype.html",
     "macos:install": "node scripts/install-macos-app.js",
     "macos:reauthorize": "node scripts/reauthorize-macos-app.js",
     "macos:reset-permissions": "node scripts/reset-dev-permissions.js",

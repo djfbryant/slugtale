@@ -353,6 +353,16 @@
       box-shadow: none;
     }
 
+    /* Each swatch's colour comes from data-accent rules instead of inline
+       style attributes: the CSP nonces Tauri injects for its own styles make
+       browsers ignore style-src 'unsafe-inline' for style attributes. */
+    .swatches button[data-accent="red"] { --swatch: var(--accent-swatch-red); }
+    .swatches button[data-accent="amber"] { --swatch: var(--accent-swatch-amber); }
+    .swatches button[data-accent="green"] { --swatch: var(--accent-swatch-green); }
+    .swatches button[data-accent="blue"] { --swatch: var(--accent-swatch-blue); }
+    .swatches button[data-accent="violet"] { --swatch: var(--accent-swatch-violet); }
+    .swatches button[data-accent="graphite"] { --swatch: var(--accent-swatch-graphite); }
+
     .swatches button[aria-pressed="true"] {
       box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--swatch);
     }
@@ -833,12 +843,12 @@
               <span class="row-sub">Shown while dictating</span>
             </span>
             <span class="swatches" role="group" aria-label="Accent colour">
-              <button id="accent-red" type="button" data-accent="red" aria-pressed="true" aria-label="Red" title="Red" style="--swatch: var(--accent-swatch-red)"></button>
-              <button id="accent-amber" type="button" data-accent="amber" aria-pressed="false" aria-label="Amber" title="Amber" style="--swatch: var(--accent-swatch-amber)"></button>
-              <button id="accent-green" type="button" data-accent="green" aria-pressed="false" aria-label="Green" title="Green" style="--swatch: var(--accent-swatch-green)"></button>
-              <button id="accent-blue" type="button" data-accent="blue" aria-pressed="false" aria-label="Blue" title="Blue" style="--swatch: var(--accent-swatch-blue)"></button>
-              <button id="accent-violet" type="button" data-accent="violet" aria-pressed="false" aria-label="Violet" title="Violet" style="--swatch: var(--accent-swatch-violet)"></button>
-              <button id="accent-graphite" type="button" data-accent="graphite" aria-pressed="false" aria-label="Graphite" title="Graphite" style="--swatch: var(--accent-swatch-graphite)"></button>
+              <button id="accent-red" type="button" data-accent="red" aria-pressed="true" aria-label="Red" title="Red"></button>
+              <button id="accent-amber" type="button" data-accent="amber" aria-pressed="false" aria-label="Amber" title="Amber"></button>
+              <button id="accent-green" type="button" data-accent="green" aria-pressed="false" aria-label="Green" title="Green"></button>
+              <button id="accent-blue" type="button" data-accent="blue" aria-pressed="false" aria-label="Blue" title="Blue"></button>
+              <button id="accent-violet" type="button" data-accent="violet" aria-pressed="false" aria-label="Violet" title="Violet"></button>
+              <button id="accent-graphite" type="button" data-accent="graphite" aria-pressed="false" aria-label="Graphite" title="Graphite"></button>
             </span>
           </div>
           <p id="settings-message" class="note" aria-live="polite"></p>

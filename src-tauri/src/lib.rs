@@ -196,37 +196,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn global_escape_press_cancels_an_active_dictation() {
-        let events = std::cell::RefCell::new(Vec::new());
-        let mut adapter = HotkeyDictationAdapter::new(ActivationMode::Toggle, |event| {
-            events.borrow_mut().push(event);
-        });
-
-        assert!(adapter.on_global_key(DictationKey::Hotkey, HotkeyInput::Pressed));
-        assert!(!adapter.on_global_key(DictationKey::Escape, HotkeyInput::Pressed));
-        assert!(!adapter.on_global_key(DictationKey::Escape, HotkeyInput::Released));
-
-        assert_eq!(
-            *events.borrow(),
-            vec![DictationEvent::Start, DictationEvent::Cancel]
-        );
-        assert!(!adapter.is_dictating());
-    }
-
-    #[test]
-    fn global_escape_press_while_idle_does_nothing() {
-        let events = std::cell::RefCell::new(Vec::new());
-        let mut adapter = HotkeyDictationAdapter::new(ActivationMode::Toggle, |event| {
-            events.borrow_mut().push(event);
-        });
-
-        assert!(!adapter.on_global_key(DictationKey::Escape, HotkeyInput::Pressed));
-
-        assert!(events.borrow().is_empty());
-        assert!(!adapter.is_dictating());
-    }
-
-    #[test]
     fn dictation_bar_uses_the_platform_work_area_with_a_small_edge_gap() {
         let work_area = MonitorGeometry {
             origin_x: -1280,

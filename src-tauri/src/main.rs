@@ -1926,7 +1926,6 @@ fn main() {
             })));
             app.manage(host.clone());
             slugtale_lib::setup_tray(app)?;
-            setup_configured_hotkey(app)?;
             // The Dictation Segment worker outlives every dictation: it is what
             // keeps segments landing in the order they were spoken.
             // The runtime probes the capture ring's voiced-sample watermark at
@@ -1947,6 +1946,11 @@ fn main() {
             // Usage writes happen off the Dictation Workflow path (ADR-0025), so
             // the queue that carries them has to exist before the first segment.
             // The Dictation Runtime starts that writer; nothing to do here.
+            // The hotkey worker starts last: from here on every activation
+            // input finds both the host and the runtime in place, so a press
+            // during setup cannot hit DictationHost::runtime()'s
+            // "dictation runtime started" panic.
+            setup_configured_hotkey(app)?;
             // Reconcile the OS login item with the stored preference so a moved or
             // rebuilt app (dev binaries change path) does not drift out of sync.
             let settings = load_current_settings(app.handle());

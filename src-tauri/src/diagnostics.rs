@@ -156,7 +156,7 @@ pub fn render_diagnostic_event(event: &DiagnosticEvent) -> String {
 }
 
 /// Destination for rendered Local Diagnostic Log lines. An `FnMut(&str)` works as
-/// a sink, matching the [`DictationEventSink`](crate::DictationEventSink) idiom.
+/// a sink, matching the dictation event sink idiom.
 pub trait DiagnosticSink {
     fn write_line(&mut self, line: &str);
 }

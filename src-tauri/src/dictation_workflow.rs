@@ -170,16 +170,6 @@ pub fn clean_dictation_segment(
     }
 }
 
-/// Transcript Cleanup for a dictation's opening text. Retained as the name the
-/// rest of the app already uses for the single-insertion case.
-pub fn clean_final_transcription(transcription: FinalTranscription) -> FinalTranscription {
-    clean_dictation_segment(
-        transcription,
-        DictationSegmentPosition::First,
-        TranscriptCleanupMode::Basic,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,18 +404,22 @@ mod tests {
     }
     #[test]
     fn clean_final_transcription_trims_and_normalizes_repeated_spaces() {
-        let transcription = clean_final_transcription(FinalTranscription::plain(
-            "  hello   from    slugtale  ".to_string(),
-        ));
+        let transcription = clean_dictation_segment(
+            FinalTranscription::plain("  hello   from    slugtale  ".to_string()),
+            DictationSegmentPosition::First,
+            TranscriptCleanupMode::Basic,
+        );
 
         assert_eq!(transcription.text, "Hello from slugtale");
     }
 
     #[test]
     fn basic_cleanup_preserves_existing_line_breaks() {
-        let transcription = clean_final_transcription(FinalTranscription::plain(
-            "  shopping  list \n milk and bread ".to_string(),
-        ));
+        let transcription = clean_dictation_segment(
+            FinalTranscription::plain("  shopping  list \n milk and bread ".to_string()),
+            DictationSegmentPosition::First,
+            TranscriptCleanupMode::Basic,
+        );
 
         assert_eq!(transcription.text, "Shopping list\nmilk and bread");
     }
@@ -439,7 +433,11 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let transcription = clean_final_transcription(FinalTranscription::plain(input));
+            let transcription = clean_dictation_segment(
+                FinalTranscription::plain(input),
+                DictationSegmentPosition::First,
+                TranscriptCleanupMode::Basic,
+            );
 
             assert_eq!(transcription.text, expected);
         }

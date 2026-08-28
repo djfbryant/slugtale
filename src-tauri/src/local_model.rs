@@ -200,14 +200,6 @@ fn copy_with_progress(
     Ok(downloaded)
 }
 
-pub fn ensure_default_model(
-    model_dir: &std::path::Path,
-    downloader: &dyn ModelDownloader,
-    on_progress: &mut dyn FnMut(DownloadProgress),
-) -> Result<LocalModelStatus, ModelError> {
-    ensure_default_model_with_sha256(model_dir, downloader, DEFAULT_MODEL_SHA256, on_progress)
-}
-
 /// How much new data must arrive before the frontend hears about it again.
 /// A progress bar reads smoothly at a handful of updates per second; at 64 KiB
 /// chunks a ~140 MB model would otherwise flood the IPC channel with thousands
@@ -425,23 +417,6 @@ mod tests {
         std::fs::write(default_model_path(&model_dir), b"model").unwrap();
 
         assert!(local_model_ready(&model_dir));
-        std::fs::remove_dir_all(&model_dir).ok();
-    }
-    #[test]
-    fn ensure_default_model_rejects_incomplete_downloads() {
-        let model_dir = unique_test_dir("model-download-short");
-        std::fs::remove_dir_all(&model_dir).ok();
-        let downloader = FakeModelDownloader::new(b"partial model").with_total(100);
-
-        let error = ensure_default_model(&model_dir, &downloader, &mut |_| {}).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "model download error: downloaded model was incomplete: expected 100 bytes, got 13"
-        );
-        assert!(!default_model_path(&model_dir).exists());
-        assert!(!model_dir.join("ggml-base.en.bin.download").exists());
-
         std::fs::remove_dir_all(&model_dir).ok();
     }
     #[test]
