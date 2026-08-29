@@ -468,6 +468,36 @@ enum PrepareState {
     Failed(String),
 }
 
+/// Builds the input stream for one concrete sample type; one row of
+/// [`INPUT_STREAM_BUILDERS`].
+type StreamBuilder = fn(
+    &cpal::Device,
+    &cpal::StreamConfig,
+    std::sync::Arc<std::sync::atomic::AtomicU32>,
+) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError>;
+
+/// The input sample formats the capture callback can convert, each with its
+/// concrete stream builder. The supported-format policy is this table: a
+/// format without a row (cpal's 24-bit, 64-bit, and DSD encodings) fails
+/// stream construction as unsupported.
+const INPUT_STREAM_BUILDERS: &[(cpal::SampleFormat, StreamBuilder)] = &[
+    (cpal::SampleFormat::I8, CpalAudioRecorder::build_stream::<i8>),
+    (cpal::SampleFormat::I16, CpalAudioRecorder::build_stream::<i16>),
+    (cpal::SampleFormat::I32, CpalAudioRecorder::build_stream::<i32>),
+    (cpal::SampleFormat::U8, CpalAudioRecorder::build_stream::<u8>),
+    (cpal::SampleFormat::U16, CpalAudioRecorder::build_stream::<u16>),
+    (cpal::SampleFormat::U32, CpalAudioRecorder::build_stream::<u32>),
+    (cpal::SampleFormat::F32, CpalAudioRecorder::build_stream::<f32>),
+    (cpal::SampleFormat::F64, CpalAudioRecorder::build_stream::<f64>),
+];
+
+fn stream_builder_for(sample_format: cpal::SampleFormat) -> Option<StreamBuilder> {
+    INPUT_STREAM_BUILDERS
+        .iter()
+        .find(|(format, _)| *format == sample_format)
+        .map(|(_, builder)| *builder)
+}
+
 #[derive(Default)]
 pub struct CpalAudioRecorder {
     stream: Option<cpal::Stream>,
@@ -555,25 +585,18 @@ impl CpalAudioRecorder {
         Ok((stream, buffer))
     }
 
+    /// Hardware-bound: builds a real cpal stream for the device. The
+    /// supported-format policy above is unit-tested; this wrapper is not.
     fn build_stream_for_format(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
         sample_format: cpal::SampleFormat,
         level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
     ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError> {
-        match sample_format {
-            cpal::SampleFormat::I8 => Self::build_stream::<i8>(device, config, level_bits),
-            cpal::SampleFormat::I16 => Self::build_stream::<i16>(device, config, level_bits),
-            cpal::SampleFormat::I32 => Self::build_stream::<i32>(device, config, level_bits),
-            cpal::SampleFormat::U8 => Self::build_stream::<u8>(device, config, level_bits),
-            cpal::SampleFormat::U16 => Self::build_stream::<u16>(device, config, level_bits),
-            cpal::SampleFormat::U32 => Self::build_stream::<u32>(device, config, level_bits),
-            cpal::SampleFormat::F32 => Self::build_stream::<f32>(device, config, level_bits),
-            cpal::SampleFormat::F64 => Self::build_stream::<f64>(device, config, level_bits),
-            other => Err(AudioCaptureError::new(format!(
-                "unsupported input sample format: {other}"
-            ))),
-        }
+        let builder = stream_builder_for(sample_format).ok_or_else(|| {
+            AudioCaptureError::new(format!("unsupported input sample format: {sample_format}"))
+        })?;
+        builder(device, config, level_bits)
     }
 
     fn pause_active_stream(&mut self) {
@@ -1088,6 +1111,40 @@ mod tests {
             recorder.level_callback.is_some(),
             "the trait dispatch used by DictationHost must install the callback"
         );
+    }
+
+    #[test]
+    fn sample_format_dispatch_covers_the_supported_formats_and_rejects_the_rest() {
+        for format in [
+            cpal::SampleFormat::I8,
+            cpal::SampleFormat::I16,
+            cpal::SampleFormat::I32,
+            cpal::SampleFormat::U8,
+            cpal::SampleFormat::U16,
+            cpal::SampleFormat::U32,
+            cpal::SampleFormat::F32,
+            cpal::SampleFormat::F64,
+        ] {
+            assert!(
+                stream_builder_for(format).is_some(),
+                "{format} must have a dispatch row"
+            );
+        }
+
+        // The 24-bit, 64-bit, and DSD encodings have no row: they fail stream
+        // construction as unsupported rather than mistranscribing samples.
+        for format in [
+            cpal::SampleFormat::I24,
+            cpal::SampleFormat::I64,
+            cpal::SampleFormat::U24,
+            cpal::SampleFormat::U64,
+            cpal::SampleFormat::DsdU8,
+        ] {
+            assert!(
+                stream_builder_for(format).is_none(),
+                "{format} is unsupported"
+            );
+        }
     }
 
     #[test]
