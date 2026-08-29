@@ -7,15 +7,13 @@ const settingsHtml = readFileSync(new URL("../src/index.html", import.meta.url),
 
 function deferred() {
   let resolve;
-  let reject;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
+  const promise = new Promise((resolvePromise) => {
     resolve = resolvePromise;
-    reject = rejectPromise;
   });
-  return { promise, reject, resolve };
+  return { promise, resolve };
 }
 
-function loadAppUpdate({ invoke }) {
+function loadAppUpdate({ invoke, runInit = false }) {
   const [, script] = settingsHtml.match(/<script>\s*([\s\S]*?)\s*<\/script>/);
   const elements = new Map();
   const invocations = [];
@@ -24,9 +22,16 @@ function loadAppUpdate({ invoke }) {
     if (!elements.has(id)) {
       const classes = new Set();
       elements.set(id, {
+        addEventListener() {},
         classList: {
+          add(name) {
+            classes.add(name);
+          },
           contains(name) {
             return classes.has(name);
+          },
+          remove(name) {
+            classes.delete(name);
           },
           toggle(name, enabled) {
             if (enabled) classes.add(name);
@@ -34,7 +39,10 @@ function loadAppUpdate({ invoke }) {
           },
         },
         disabled: false,
+        dataset: {},
         hidden: false,
+        innerHTML: "",
+        style: {},
         textContent: "",
       });
     }
@@ -43,9 +51,13 @@ function loadAppUpdate({ invoke }) {
 
   const context = {
     console,
-    document: { getElementById: element },
+    document: {
+      addEventListener() {},
+      getElementById: element,
+    },
     navigator: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" },
     window: {
+      addEventListener() {},
       __TAURI__: {
         core: {
           invoke(command, args) {
@@ -58,16 +70,17 @@ function loadAppUpdate({ invoke }) {
   };
   context.globalThis = context;
 
-  const testableScript = script.replace(
-    /\s*init\(\);\s*$/,
-    `
+  const testHooks = `
 window.__slugtaleTest = {
   checkForAppUpdate,
   getAppUpdateState: () => ({ ...appUpdateState }),
   openAppUpdateRelease,
   renderAppUpdate
 };
-`,
+`;
+  const testableScript = script.replace(
+    /\s*init\(\);\s*$/,
+    runInit ? `${testHooks}\ninit();` : testHooks,
   );
   vm.runInNewContext(testableScript, context);
 
@@ -84,6 +97,16 @@ test("app updates start idle without a release request", () => {
   assert.equal(app.elements.get("app-update-release-button").hidden, true);
   assert.match(app.elements.get("app-update-state").textContent, /only when you select Check now/);
   assert.deepEqual(app.invocations, []);
+});
+
+test("the real Settings startup path makes no update request", () => {
+  const neverAnswers = new Promise(() => {});
+  const app = loadAppUpdate({ invoke: () => neverAnswers, runInit: true });
+
+  assert.equal(
+    app.invocations.some(({ command }) => command === "check_for_app_update"),
+    false,
+  );
 });
 
 test("a manual check enters checking and blocks a duplicate check", async () => {

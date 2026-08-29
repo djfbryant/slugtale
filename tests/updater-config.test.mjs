@@ -47,32 +47,36 @@ test("the binary registers manual check and fixed release-page commands", () => 
       `${command} must be registered in the invoke handler`,
     );
   }
+  assert.match(main, /slugtale_lib::check_for_app_update\(&app\)\.await/);
+  assert.match(main, /slugtale_lib::open_app_update_release\(\)/);
 });
 
 test("the release-page command opens only the compiled-in GitHub URL", () => {
   const main = readRepo("src-tauri/src/main.rs");
+  const appUpdate = readRepo("src-tauri/src/app_update.rs");
   assert.match(
-    main,
+    appUpdate,
     /const APP_UPDATE_RELEASE_URL: &str =\s*"https:\/\/github\.com\/djfbryant\/slugtale\/releases\/latest";/,
   );
   assert.match(
-    main,
-    /fn open_app_update_release\(\) -> Result<\(\), String>\s*{\s*open::that\(APP_UPDATE_RELEASE_URL\)/,
+    appUpdate,
+    /pub fn open_app_update_release\(\) -> Result<\(\), String>\s*{\s*open::that\(APP_UPDATE_RELEASE_URL\)/,
   );
   assert.doesNotMatch(main, /fn open_app_update_release\([^)]*url/i);
 });
 
 test("app update results use a tagged status enum", () => {
-  const main = readRepo("src-tauri/src/main.rs");
-  assert.match(main, /#\[serde\(tag = "status", rename_all = "snake_case"\)\]/);
-  assert.match(main, /enum AppUpdateView\s*{\s*Current,\s*Available\s*{\s*version: String,?\s*},?\s*}/);
+  const appUpdate = readRepo("src-tauri/src/app_update.rs");
+  assert.match(appUpdate, /#\[serde\(tag = "status", rename_all = "snake_case"\)\]/);
+  assert.match(appUpdate, /enum AppUpdateView\s*{\s*Current,\s*Available\s*{\s*version: String,?\s*},?\s*}/);
 });
 
 test("the app has no install command or frontend install call", () => {
   const main = readRepo("src-tauri/src/main.rs");
+  const appUpdate = readRepo("src-tauri/src/app_update.rs");
   const settings = readRepo("src/index.html");
 
-  assert.doesNotMatch(main, /install_app_update|download_and_install/);
+  assert.doesNotMatch(`${main}\n${appUpdate}`, /install_app_update|download_and_install/);
   assert.doesNotMatch(settings, /install_app_update|installAppUpdate|app-update-install-button/);
   assert.match(settings, /invoke\("check_for_app_update"\)/);
   for (const id of [

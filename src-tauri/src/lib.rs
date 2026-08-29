@@ -4,6 +4,9 @@
 mod app_shell;
 pub use app_shell::*;
 
+mod app_update;
+pub use app_update::*;
+
 /// The Local Diagnostic Log domain (ADR-0019). Extracted into its own module;
 /// re-exported so existing `slugtale_lib::*` call sites keep compiling.
 mod diagnostics;

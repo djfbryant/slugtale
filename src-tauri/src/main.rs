@@ -4,8 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use tauri_plugin_updater::UpdaterExt;
 
 mod app_paths;
 mod dictation_bar_window;
@@ -31,8 +29,6 @@ use slugtale_lib::AppFiles;
 /// declared in tauri.conf.json: most users never open it, and a hidden window
 /// carrying a live webview for the life of the app is a cost with no benefit.
 const TYPING_CHALLENGE_WINDOW: &str = "typing-challenge";
-
-const APP_UPDATE_RELEASE_URL: &str = "https://github.com/djfbryant/slugtale/releases/latest";
 
 /// Whether the Typing Challenge window is on screen.
 ///
@@ -671,30 +667,16 @@ fn save_launch_at_login(
     )
 }
 
-/// The terminal result of one app-update check.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-enum AppUpdateView {
-    Current,
-    Available { version: String },
-}
-
-/// Ask GitHub Releases whether a newer signed build exists.
 #[tauri::command]
-async fn check_for_app_update(app: tauri::AppHandle) -> Result<AppUpdateView, String> {
-    let updater = app.updater().map_err(|error| error.to_string())?;
-    let update = updater.check().await.map_err(|error| error.to_string())?;
-    Ok(match update {
-        Some(update) => AppUpdateView::Available {
-            version: update.version,
-        },
-        None => AppUpdateView::Current,
-    })
+async fn check_for_app_update(
+    app: tauri::AppHandle,
+) -> Result<slugtale_lib::AppUpdateView, String> {
+    slugtale_lib::check_for_app_update(&app).await
 }
 
 #[tauri::command]
 fn open_app_update_release() -> Result<(), String> {
-    open::that(APP_UPDATE_RELEASE_URL).map_err(|error| error.to_string())
+    slugtale_lib::open_app_update_release()
 }
 
 /// What Settings needs to render one row of the Transcription Engines list
