@@ -976,13 +976,13 @@
               <input id="launch-at-login-toggle" type="checkbox" aria-label="Launch at login" />
             </span>
           </div>
-          <div class="row" id="voice-activation-row" hidden>
+          <div class="row" id="voice-activation-row">
             <span class="row-label">
               Voice activation
-              <span class="row-sub">Experimental: say "Hi Slugtale" to start dictating without the hotkey. While enabled, the microphone stays open and speech is checked locally for the wake phrase.</span>
+              <span class="row-sub">Coming soon. Start dictation with your hotkey for now.</span>
             </span>
             <span class="row-control">
-              <input id="voice-activation-toggle" type="checkbox" aria-label="Voice activation" />
+              <input id="voice-activation-toggle" type="checkbox" aria-label="Voice activation, coming soon" disabled />
             </span>
           </div>
           <div class="row">
@@ -1203,7 +1203,6 @@
     let savingDictationBar = false;
     let savingLaunchAtLogin = false;
     let savingVoiceActivation = false;
-    let voiceActivationSupported = false;
     let openingReadinessAction = false;
     let capturingHotkey = false;
     let activePane = "status";
@@ -1616,16 +1615,10 @@
       launchToggle.disabled = savingLaunchAtLogin;
 
       const voiceToggle = document.getElementById("voice-activation-toggle");
-      const voiceRow = document.getElementById("voice-activation-row");
       const voiceMessage = document.getElementById("voice-activation-message");
-      voiceRow.hidden = !voiceActivationSupported;
-      voiceToggle.checked = Boolean(currentSettings.voice_activation_enabled);
-      voiceToggle.disabled = savingVoiceActivation || !voiceActivationSupported;
-      if (!savingVoiceActivation) {
-        voiceMessage.textContent = voiceActivationSupported && voiceToggle.checked
-          ? "Listening for \"Hi Slugtale\". Wait for the dictation bar, then talk."
-          : "";
-      }
+      voiceToggle.checked = false;
+      voiceToggle.disabled = true;
+      voiceMessage.textContent = "";
     }
 
     function barDisplayKey(display) {
@@ -2234,11 +2227,7 @@
       }
 
       try {
-        const [settings, supported] = await Promise.all([
-          invoke("get_settings"),
-          invoke("voice_activation_supported").catch(() => false)
-        ]);
-        voiceActivationSupported = Boolean(supported);
+        const settings = await invoke("get_settings");
         renderSettings(settings);
       } catch (error) {
         console.error("Could not load settings", error);

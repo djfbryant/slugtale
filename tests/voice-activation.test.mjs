@@ -12,15 +12,15 @@ const listenLoopSource = readFileSync(
   "utf8",
 );
 
-test("unsupported builds hide voice activation instead of claiming to listen", () => {
-  assert.match(settingsHtml, /invoke\("voice_activation_supported"\)/);
-  assert.match(settingsHtml, /voiceRow\.hidden = !voiceActivationSupported/);
-  assert.match(settingsHtml, /voiceToggle\.disabled = savingVoiceActivation \|\| !voiceActivationSupported/);
-});
-
-test("voice activation tells the user to wait for the dictation bar", () => {
-  assert.match(settingsHtml, /Wait for the dictation bar, then talk\./);
-  assert.doesNotMatch(settingsHtml, /Say it, then keep talking\./);
+test("settings marks voice activation as coming soon and keeps it off", () => {
+  assert.match(settingsHtml, /Coming soon\. Start dictation with your hotkey for now\./);
+  assert.match(
+    settingsHtml,
+    /id="voice-activation-toggle"[^>]*aria-label="Voice activation, coming soon"[^>]*disabled/,
+  );
+  assert.match(settingsHtml, /voiceToggle\.checked = false/);
+  assert.match(settingsHtml, /voiceToggle\.disabled = true/);
+  assert.doesNotMatch(settingsHtml, /voiceRow\.hidden/);
 });
 
 test("voice activation reports a blocked or silent microphone", () => {
