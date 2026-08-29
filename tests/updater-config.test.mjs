@@ -25,15 +25,21 @@ test("release builds produce the signed updater artifacts", () => {
   assert.equal(config.bundle.createUpdaterArtifacts, true);
 });
 
-test("the settings windows are allowed to use the updater", () => {
+test("webviews have no direct updater or opener permissions", () => {
   const capability = JSON.parse(readRepo("src-tauri/capabilities/default.json"));
-  assert.ok(capability.permissions.includes("updater:default"));
+  assert.equal(
+    capability.permissions.some(
+      (permission) => permission.startsWith("updater:") || permission.startsWith("opener:"),
+    ),
+    false,
+  );
 });
 
-test("the binary registers the updater plugin and its two commands", () => {
+test("the binary registers manual check and fixed release-page commands", () => {
   const main = readRepo("src-tauri/src/main.rs");
   assert.match(main, /tauri_plugin_updater::Builder::new\(\)\.build\(\)/);
-  for (const command of ["check_for_app_update", "install_app_update"]) {
+  assert.doesNotMatch(main, /tauri_plugin_opener/);
+  for (const command of ["check_for_app_update", "open_app_update_release"]) {
     assert.match(main, new RegExp(`fn ${command}`), `${command} must be defined`);
     assert.match(
       main,
@@ -43,21 +49,36 @@ test("the binary registers the updater plugin and its two commands", () => {
   }
 });
 
-test("installing restarts through the downloaded update rather than a manual copy", () => {
+test("the release-page command opens only the compiled-in GitHub URL", () => {
   const main = readRepo("src-tauri/src/main.rs");
-  assert.match(main, /download_and_install/);
-  assert.match(main, /app\.restart\(\)/);
+  assert.match(
+    main,
+    /const APP_UPDATE_RELEASE_URL: &str =\s*"https:\/\/github\.com\/djfbryant\/slugtale\/releases\/latest";/,
+  );
+  assert.match(
+    main,
+    /fn open_app_update_release\(\) -> Result<\(\), String>\s*{\s*open::that\(APP_UPDATE_RELEASE_URL\)/,
+  );
+  assert.doesNotMatch(main, /fn open_app_update_release\([^)]*url/i);
 });
 
-test("Settings offers the check-on-launch and apply UX", () => {
+test("app update results use a tagged status enum", () => {
+  const main = readRepo("src-tauri/src/main.rs");
+  assert.match(main, /#\[serde\(tag = "status", rename_all = "snake_case"\)\]/);
+  assert.match(main, /enum AppUpdateView\s*{\s*Current,\s*Available\s*{\s*version: String,?\s*},?\s*}/);
+});
+
+test("the app has no install command or frontend install call", () => {
+  const main = readRepo("src-tauri/src/main.rs");
   const settings = readRepo("src/index.html");
-  assert.match(settings, /checkForAppUpdate\(\);\s*\n\s*}\s*\n\s*<\/script>|checkForAppUpdate\(\)/);
+
+  assert.doesNotMatch(main, /install_app_update|download_and_install/);
+  assert.doesNotMatch(settings, /install_app_update|installAppUpdate|app-update-install-button/);
   assert.match(settings, /invoke\("check_for_app_update"\)/);
-  assert.match(settings, /invoke\("install_app_update"\)/);
   for (const id of [
     "app-update-state",
     "app-update-check-button",
-    "app-update-install-button",
+    "app-update-release-button",
     "app-update-message",
   ]) {
     assert.ok(settings.includes(`id="${id}"`), `Settings must render #${id}`);

@@ -16,10 +16,12 @@ use app_paths::{
     current_diagnostic_log, load_current_settings, load_current_usage, model_dir, model_manager,
     record_diagnostic_event, save_current_settings, usage_path,
 };
-use dictation_bar_window::{apply_dictation_bar_appearance, hide_dictation_bar, show_dictation_bar};
+use dictation_bar_window::{
+    apply_dictation_bar_appearance, hide_dictation_bar, show_dictation_bar,
+};
 use hotkey_registration::{
-    HotkeyRegistrationState, request_escape_registration, setup_configured_hotkey,
-    update_registered_hotkey,
+    request_escape_registration, setup_configured_hotkey, update_registered_hotkey,
+    HotkeyRegistrationState,
 };
 use slugtale_lib::{DictationHost, DictationPhase, DictationSurface};
 
@@ -29,6 +31,8 @@ use slugtale_lib::AppFiles;
 /// declared in tauri.conf.json: most users never open it, and a hidden window
 /// carrying a live webview for the life of the app is a cost with no benefit.
 const TYPING_CHALLENGE_WINDOW: &str = "typing-challenge";
+
+const APP_UPDATE_RELEASE_URL: &str = "https://github.com/djfbryant/slugtale/releases/latest";
 
 /// Whether the Typing Challenge window is on screen.
 ///
@@ -667,60 +671,30 @@ fn save_launch_at_login(
     )
 }
 
-/// What Settings renders for one app-update check (slugtale-9pr). `version` is
-/// the newer build's version when one is available, and is what the user sees
-/// before deciding to install.
+/// The terminal result of one app-update check.
 #[derive(Debug, Clone, serde::Serialize)]
-struct AppUpdateView {
-    available: bool,
-    version: Option<String>,
+#[serde(tag = "status", rename_all = "snake_case")]
+enum AppUpdateView {
+    Current,
+    Available { version: String },
 }
 
-impl AppUpdateView {
-    fn none() -> Self {
-        Self {
-            available: false,
-            version: None,
-        }
-    }
-
-    fn available(version: String) -> Self {
-        Self {
-            available: true,
-            version: Some(version),
-        }
-    }
-}
-
-/// Ask GitHub Releases whether a newer signed build exists (ADR-0022). The
-/// endpoint and public key live in tauri.conf.json; signature verification is
-/// enforced by the plugin before anything is staged.
+/// Ask GitHub Releases whether a newer signed build exists.
 #[tauri::command]
 async fn check_for_app_update(app: tauri::AppHandle) -> Result<AppUpdateView, String> {
     let updater = app.updater().map_err(|error| error.to_string())?;
     let update = updater.check().await.map_err(|error| error.to_string())?;
     Ok(match update {
-        Some(update) => AppUpdateView::available(update.version),
-        None => AppUpdateView::none(),
+        Some(update) => AppUpdateView::Available {
+            version: update.version,
+        },
+        None => AppUpdateView::Current,
     })
 }
 
-/// Download, verify, stage, and relaunch into a checked app update. The restart
-/// never returns; the process replaces itself with the new build.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-async fn install_app_update(app: tauri::AppHandle) -> Result<(), String> {
-    let updater = app.updater().map_err(|error| error.to_string())?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "no app update is available".to_string())?;
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|error| error.to_string())?;
-    app.restart();
+fn open_app_update_release() -> Result<(), String> {
+    open::that(APP_UPDATE_RELEASE_URL).map_err(|error| error.to_string())
 }
 
 /// What Settings needs to render one row of the Transcription Engines list
@@ -1525,7 +1499,7 @@ fn main() {
             dictation_bar_pointer_over,
             save_launch_at_login,
             check_for_app_update,
-            install_app_update,
+            open_app_update_release,
             get_local_model_status,
             download_local_model,
             delete_local_model,

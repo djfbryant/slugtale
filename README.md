@@ -15,10 +15,10 @@ prompts, confidence data, vocabulary, or context to the internet. There is no
 cloud transcription, cloud cleanup, or cloud fallback.
 
 The whole app is not offline. Slugtale downloads model assets when you ask it
-to. It also checks GitHub Releases for app updates when it starts. Slugtale
-downloads an app update only after you select **Update and restart**. These
-services can see normal connection data, such as your IP address. Slugtale does
-not include dictation content in these requests.
+to. It checks GitHub Releases only after you select **Check now** in Settings.
+The check does not download or install an app update. These services can see
+normal connection data, such as your IP address. Slugtale does not include
+dictation content in these requests.
 
 Usage counts are off by default. If you turn them on, Slugtale stores only
 counts such as words, speaking time, and dictations. Turning the setting off
@@ -51,8 +51,7 @@ See [SECURITY.md](SECURITY.md) for the full data-handling policy.
   default is five seconds, and recording continues after the insertion.
 - Optional local usage counts and typing-time estimates. This setting is off by
   default.
-- Launch at login, local diagnostic logs, and app updates with a signature check
-  before installation.
+- Launch at login, local diagnostic logs, and manual app update checks.
 
 ## Platform status
 
@@ -254,15 +253,21 @@ SLUGTALE_SIGN_IDENTITY="Your Code Signing Identity" npm run dev
 
 Select the Slugtale icon in the macOS menu bar, then select **Settings...**.
 
-### An in-app update asks for permissions again
+### Update a source build or fork
 
-The current updater can replace a local or fork build with an app that has a
-different signing identity. macOS can then remove its Microphone and
-Accessibility grants.
+**Check now** can open the Slugtale release page. Slugtale does not replace the
+installed app. Another build can have a different signing identity. macOS can
+then ask for Microphone and Accessibility access again.
 
-For a local or fork build, pull the updated source and run
-`npm run macos:install` with the same `SLUGTALE_SIGN_IDENTITY`. This path keeps
-the existing privacy grants.
+For a source build or fork, pull the new source. Install it with the same
+`SLUGTALE_SIGN_IDENTITY` that you used for the current app:
+
+```sh
+SLUGTALE_SIGN_IDENTITY="Your Code Signing Identity" npm run macos:install
+```
+
+Keep that identity the same for each install. This helps macOS keep the current
+privacy grants.
 
 ### Dictation copies text instead of inserting it
 

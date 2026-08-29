@@ -4,8 +4,8 @@
 
 Slugtale ships versioned releases starting at `v0.1.0`. Security fixes target
 the latest tagged release and the current `main` branch. Older releases do not
-receive separate security fixes; update to the newest release through the
-in-app updater or a fresh download.
+receive separate security fixes. Use the latest GitHub Release or rebuild the
+latest source.
 
 ## Reporting a Vulnerability
 
@@ -28,12 +28,18 @@ users.
 
 Slugtale is designed as a local-first dictation app.
 
-### Update integrity
+### App update checks
 
-In-app updates are fetched from the GitHub Releases `latest.json` manifest and
-are accepted only after the Tauri updater signature check against the public
-key embedded in `src-tauri/tauri.conf.json`. Updates signed with any other key
-are rejected and never installed.
+Slugtale checks the GitHub Releases `latest.json` file only after you select
+**Check now**. The app does not download or install the update.
+
+When a new version exists, a Rust command opens only the Slugtale GitHub Release
+page. The webview cannot supply a URL. It has no direct updater or opener
+permission.
+
+Release builds still include signed updater artifacts. The updater public key
+stays in `src-tauri/tauri.conf.json` for a future install flow. The current
+check does not download or verify an update artifact.
 
 At the time of this policy:
 

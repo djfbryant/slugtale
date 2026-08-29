@@ -994,13 +994,14 @@
           <div class="row">
             <span class="row-label">
               App updates
-              <span id="app-update-state" class="row-sub">Checking for updates…</span>
+              <span id="app-update-state" class="row-sub">Checks happen only when you select Check now.</span>
             </span>
             <span class="row-control">
-              <button id="app-update-install-button" type="button" class="primary" hidden></button>
+              <button id="app-update-release-button" type="button" class="primary" hidden>Open release page</button>
               <button id="app-update-check-button" type="button" class="ghost">Check now</button>
             </span>
           </div>
+          <p class="note">Slugtale will not replace this app. Another build can make macOS ask for Microphone and Accessibility access again.</p>
           <p id="app-update-message" class="note" aria-live="polite"></p>
           <p id="launch-at-login-message" class="note" aria-live="polite"></p>
           <p id="voice-activation-message" class="note" aria-live="polite"></p>
@@ -1723,79 +1724,67 @@
       }
     }
 
-    // App updates (slugtale-9pr). The check on launch happens here rather than
-    // in Rust because this page loads with the hidden Settings window at app
-    // startup, so "page init" is "app launch". A failed or unreachable check is
-    // quiet: dictation never depends on the release server being reachable.
-    let appUpdateBusy = false;
+    let appUpdateState = { phase: "idle" };
 
-    function renderAppUpdate(update, { message = "", isError = false } = {}) {
+    function renderAppUpdate() {
       const stateEl = document.getElementById("app-update-state");
-      const installButton = document.getElementById("app-update-install-button");
+      const releaseButton = document.getElementById("app-update-release-button");
       const checkButton = document.getElementById("app-update-check-button");
       const messageEl = document.getElementById("app-update-message");
 
-      if (update.available) {
-        stateEl.textContent = update.version
-          ? `Version ${update.version} is available.`
-          : "An update is available.";
-        installButton.textContent = "Update and restart";
-        installButton.hidden = false;
-      } else if (update.available === null) {
-        stateEl.textContent = "Slugtale could not check for updates.";
-        installButton.hidden = true;
-      } else {
+      if (appUpdateState.phase === "checking") {
+        stateEl.textContent = "Checking for updates…";
+      } else if (appUpdateState.phase === "current") {
         stateEl.textContent = "Slugtale is up to date.";
-        installButton.hidden = true;
+      } else if (appUpdateState.phase === "available") {
+        stateEl.textContent = `Version ${appUpdateState.version} is available.`;
+      } else if (appUpdateState.phase === "error") {
+        stateEl.textContent = "Slugtale could not check for updates.";
+      } else {
+        stateEl.textContent = "Checks happen only when you select Check now.";
       }
-      checkButton.disabled = appUpdateBusy;
-      installButton.disabled = appUpdateBusy;
-      messageEl.classList.toggle("error", isError);
-      messageEl.textContent = message;
+      checkButton.disabled = appUpdateState.phase === "checking";
+      releaseButton.hidden = appUpdateState.phase !== "available";
+      messageEl.classList.toggle("error", Boolean(appUpdateState.isError));
+      messageEl.textContent = appUpdateState.message || "";
     }
 
-    async function checkForAppUpdate({ announceFailure = false } = {}) {
-      const invoke = tauriInvoke();
-      if (!invoke || appUpdateBusy) return;
+    function setAppUpdateState(nextState) {
+      appUpdateState = nextState;
+      renderAppUpdate();
+    }
 
-      appUpdateBusy = true;
-      renderAppUpdate(
-        { available: false },
-        { message: announceFailure ? "Checking…" : "" },
-      );
+    async function checkForAppUpdate() {
+      const invoke = tauriInvoke();
+      if (!invoke || appUpdateState.phase === "checking") return;
+
+      setAppUpdateState({ phase: "checking" });
 
       try {
         const update = await invoke("check_for_app_update");
-        appUpdateBusy = false;
-        renderAppUpdate(update);
+        setAppUpdateState(
+          update.status === "available"
+            ? { phase: "available", version: update.version }
+            : { phase: "current" },
+        );
       } catch (error) {
-        appUpdateBusy = false;
-        if (announceFailure) {
-          renderAppUpdate({ available: false }, { message: String(error), isError: true });
-        } else {
-          // A failed launch check claims nothing: dictation never depends on
-          // the release server being reachable, so it just skips the notice.
-          renderAppUpdate({ available: null }, { message: "" });
-          console.warn("Launch update check skipped:", error);
-        }
+        setAppUpdateState({ phase: "error", message: String(error), isError: true });
       }
     }
 
-    async function installAppUpdate() {
+    async function openAppUpdateRelease() {
       const invoke = tauriInvoke();
-      if (!invoke || appUpdateBusy) return;
-
-      appUpdateBusy = true;
-      renderAppUpdate(
-        { available: true },
-        { message: "Downloading the update… Slugtale restarts when it is ready." },
-      );
+      if (!invoke || appUpdateState.phase !== "available") return;
 
       try {
-        await invoke("install_app_update");
+        await invoke("open_app_update_release");
       } catch (error) {
-        appUpdateBusy = false;
-        renderAppUpdate({ available: true }, { message: String(error), isError: true });
+        setAppUpdateState({
+          phase: "available",
+          version: appUpdateState.version,
+          message: String(error),
+          isError: true,
+        });
       }
     }
 
@@ -2672,9 +2661,9 @@
       });
 
       document.getElementById("app-update-check-button").addEventListener("click", () => {
-        checkForAppUpdate({ announceFailure: true });
+        checkForAppUpdate();
       });
-      document.getElementById("app-update-install-button").addEventListener("click", installAppUpdate);
+      document.getElementById("app-update-release-button").addEventListener("click", openAppUpdateRelease);
 
       document.getElementById("usage-store-toggle").addEventListener("change", (event) => {
         setUsageStoring(event.target.checked);
@@ -2720,7 +2709,6 @@
 
       selectPane("status");
       refreshSetup();
-      checkForAppUpdate();
     }
 
     init();

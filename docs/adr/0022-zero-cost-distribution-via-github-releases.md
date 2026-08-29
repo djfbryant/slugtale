@@ -1,12 +1,51 @@
-# Zero-Cost Distribution via GitHub Releases
+# Zero-cost distribution through GitHub Releases
 
-Supersedes ADR-0020 (Developer-Run First). Slugtale now targets packaged, downloadable executables rather than developer-run builds, starting with macOS (ADR-0021). The governing constraint is **no new recurring or one-time costs**: every choice below holds even with no Apple Developer account, no Windows code-signing certificate, and no paid CI.
+ADR-0022 supersedes ADR-0020. Slugtale ships packaged apps, starting with macOS.
+The project does not require a paid signing account or paid CI.
 
-Decisions:
+## Decision
 
-- **Distribution channel: GitHub Releases.** Artifacts are attached to a tagged GitHub Release. Hosting location does not affect OS trust prompts — a download from GitHub is treated by Gatekeeper/SmartScreen exactly like any other internet download — so this choice is purely about free, versioned hosting.
-- **Unsigned, but ad-hoc signed on macOS.** We do not pay for an Apple Developer ID or notarization. macOS builds are ad-hoc signed (`codesign --sign -`, free), which avoids the hard "app is damaged" block on macOS 15 and makes the *Privacy & Security → Open Anyway* path work. Users still see a one-time Gatekeeper prompt; this is accepted for the first releases.
-- **Signing is opt-in, off by default.** The build pipeline detects signing secrets and degrades to unsigned when they are absent (the pattern used by pingdotgg/t3code). Turning on Apple notarization (~$99/yr) or Windows Azure Trusted Signing (~$10/mo) later is a secrets/config change, not a rewrite. No code commits to either cost.
-- **Build locally, not in CI — for now.** The repository is private, where GitHub-hosted macOS runners bill at a 10× minute multiplier and a from-source whisper.cpp build exhausts the free allowance quickly. v1 releases are produced with a local `npm run build` and published with `gh release create`. A CI release matrix is deferred until the repo is public (free) or the cost is explicitly accepted.
-- **In-app auto-update via the Tauri updater.** The updater reads a `latest.json` published on the GitHub Release. Update artifacts are signed with a Tauri updater keypair (`tauri signer generate`, free and separate from OS code signing). This gives testers automatic updates at zero cost.
-- **Best acceleration per platform is a standing policy; the first release ships Metal.** macOS uses Metal (free, no extra dependencies on Apple Silicon). CUDA/Vulkan acceleration is real work only inside the Windows and Linux ports (see slugtale-5pc), and each of those must ship a CPU fallback so users without a supported GPU or driver are never broken.
+GitHub Releases hosts each tagged release and its updater files.
+
+GitHub is free versioned hosting. The hosting location does not change
+Gatekeeper or SmartScreen prompts.
+
+The macOS build uses ad hoc signing when no signing identity is set. It is not
+notarized. macOS can show Gatekeeper prompts for these builds.
+
+Signing stays optional. The build uses signing secrets when they exist and
+builds unsigned artifacts when they do not. Apple notarization and Windows
+Trusted Signing can be enabled later through secrets and configuration. The
+project does not require either paid service.
+
+Release builds stay local while the repository is private. GitHub-hosted macOS
+runners cost more than the free allowance supports. A public repository or an
+approved budget can change this decision.
+
+Settings checks for a new version only after the user selects **Check now**.
+The Tauri updater reads `latest.json`. Slugtale does not download, install, or
+restart into the update.
+
+If a new version exists, Settings offers **Open release page**. A Rust command
+opens only `https://github.com/djfbryant/slugtale/releases/latest`. The webview
+cannot choose the URL. The webview has no updater or opener permission.
+
+This manual flow protects local builds and forks. An upstream app can have a
+different macOS signing identity. Replacing the current app with that build can
+make macOS ask for Microphone and Accessibility access again.
+
+Slugtale keeps the updater endpoint, public key, and signed updater artifacts.
+The endpoint supports version checks. The key and artifacts leave room for a
+later install flow. A future install flow needs proof that it preserves macOS
+privacy grants. The current check does not download or verify an artifact.
+
+macOS releases use Metal. Windows and Linux work must keep a CPU fallback when
+they add hardware acceleration.
+
+## Consequences
+
+Users must open the release page and choose how to update.
+
+Source builds and forks cannot install an upstream Slugtale bundle from
+Settings. Their maintainers can rebuild and install with the same bundle ID and
+signing identity.
