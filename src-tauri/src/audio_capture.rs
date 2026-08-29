@@ -498,6 +498,29 @@ fn stream_builder_for(sample_format: cpal::SampleFormat) -> Option<StreamBuilder
         .map(|(_, builder)| *builder)
 }
 
+/// Whether an idle-time prepare should run at all. A prepared state has
+/// nothing left to do, and while a stream is held (recording or paused)
+/// preparation must not disturb it; a failure may always be retried — a
+/// missing device can come back.
+fn should_attempt_prepare(state: &PrepareState, stream_held: bool) -> bool {
+    !matches!(state, PrepareState::Prepared { .. }) && !stream_held
+}
+
+/// Fold a prepare attempt into the next idle-preparation state: success
+/// records the device/format identity, failure records why. The recorder
+/// replaces its whole state with this result each attempt, so a later
+/// success overwrites an earlier failure.
+fn prepare_state_after(
+    outcome: Result<&InputStreamIdentity, &AudioCaptureError>,
+) -> PrepareState {
+    match outcome {
+        Ok(identity) => PrepareState::Prepared {
+            identity: identity.clone(),
+        },
+        Err(error) => PrepareState::Failed(error.to_string()),
+    }
+}
+
 #[derive(Default)]
 pub struct CpalAudioRecorder {
     stream: Option<cpal::Stream>,
@@ -599,6 +622,30 @@ impl CpalAudioRecorder {
         builder(device, config, level_bits)
     }
 
+    /// Build a stream for `identity` and hold it with its ring, replacing any
+    /// previous stream. Never plays: the microphone stays off until `play`
+    /// (see [`AudioRecorder::prepare`]). The old stream is dropped first so a
+    /// failed build leaves nothing stale behind.
+    fn install_stream(
+        &mut self,
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        identity: &InputStreamIdentity,
+    ) -> Result<(), AudioCaptureError> {
+        self.stream.take();
+        self.buffer = None;
+        let (stream, buffer) = Self::build_stream_for_format(
+            device,
+            config,
+            identity.sample_format,
+            self.level_bits.clone(),
+        )?;
+        self.stream = Some(stream);
+        self.buffer = Some(buffer);
+        self.stream_identity = Some(identity.clone());
+        Ok(())
+    }
+
     fn pause_active_stream(&mut self) {
         use cpal::traits::StreamTrait;
 
@@ -639,8 +686,7 @@ impl AudioRecorder for CpalAudioRecorder {
     fn prepare(&mut self) -> Result<(), AudioCaptureError> {
         use cpal::traits::{DeviceTrait, HostTrait};
 
-        // Already prepared, or further along than preparation goes.
-        if matches!(self.prepare_state, PrepareState::Prepared { .. }) || self.stream.is_some() {
+        if !should_attempt_prepare(&self.prepare_state, self.stream.is_some()) {
             return Ok(());
         }
 
@@ -666,33 +712,15 @@ impl AudioRecorder for CpalAudioRecorder {
             // ring, exactly as Start configures it.
             self.channels = 1;
 
-            // Build the stream but never play it: the microphone stays off
-            // until `play` on the Hotkey path (proved by
-            // `examples/mic_indicator_probe.rs`). Building allocates the ring
-            // zero-initialised too, so first-touch page faults land here.
-            let (stream, buffer) = Self::build_stream_for_format(
-                &device,
-                &config,
-                sample_format,
-                self.level_bits.clone(),
-            )?;
-            self.stream = Some(stream);
-            self.buffer = Some(buffer);
-            self.stream_identity = Some(identity.clone());
+            // Building allocates the ring zero-initialised too, so first-touch
+            // page faults land here rather than on the hotkey path.
+            self.install_stream(&device, &config, &identity)?;
 
             Ok(identity)
         })();
 
-        match prepared {
-            Ok(identity) => {
-                self.prepare_state = PrepareState::Prepared { identity };
-                Ok(())
-            }
-            Err(error) => {
-                self.prepare_state = PrepareState::Failed(error.to_string());
-                Err(error)
-            }
-        }
+        self.prepare_state = prepare_state_after(prepared.as_ref());
+        prepared.map(|_| ())
     }
 
     fn start(&mut self) -> Result<(), AudioCaptureError> {
@@ -1145,6 +1173,52 @@ mod tests {
                 "{format} is unsupported"
             );
         }
+    }
+
+    #[test]
+    fn idle_prepare_runs_only_when_failed_or_unprepared_and_no_stream_is_held() {
+        let prepared = PrepareState::Prepared {
+            identity: InputStreamIdentity {
+                device_id: None,
+                sample_format: cpal::SampleFormat::F32,
+                sample_rate_hz: 48_000,
+                channels: 1,
+            },
+        };
+
+        assert!(should_attempt_prepare(&PrepareState::Unprepared, false));
+        assert!(!should_attempt_prepare(&prepared, false));
+        // Preparing while recording must not disturb the dictation in
+        // progress.
+        assert!(!should_attempt_prepare(&PrepareState::Unprepared, true));
+        // A failed prepare may always be retried: a missing device can come
+        // back.
+        assert!(should_attempt_prepare(
+            &PrepareState::Failed("no device".into()),
+            false
+        ));
+    }
+
+    #[test]
+    fn a_prepare_outcome_is_recorded_as_the_identity_or_the_failure_reason() {
+        let identity = InputStreamIdentity {
+            device_id: None,
+            sample_format: cpal::SampleFormat::F32,
+            sample_rate_hz: 48_000,
+            channels: 1,
+        };
+        let error = AudioCaptureError::new("no default input device is available");
+
+        assert_eq!(
+            prepare_state_after(Ok(&identity)),
+            PrepareState::Prepared {
+                identity: identity.clone()
+            }
+        );
+        assert_eq!(
+            prepare_state_after(Err(&error)),
+            PrepareState::Failed(error.to_string())
+        );
     }
 
     #[test]
