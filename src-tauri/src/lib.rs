@@ -110,6 +110,15 @@ pub use dictation_segments::*;
 mod dictation_runtime;
 pub use dictation_runtime::*;
 
+/// The dictation lifecycle host (slugtale-30i): everything between an
+/// activation input saying "start" and the Dictation Runtime receiving the
+/// captured audio. It owns the recording-feedback state machine, the focus
+/// target, the audio capture session, and the runtime handle, and reaches the
+/// rest of the app only through the `DictationSurface` port — implemented by
+/// the Tauri shell in the binary tier and by a fake in tests.
+mod dictation_host;
+pub use dictation_host::*;
+
 /// Transcript Cleanup (slugtale-m4h): the deterministic, entirely local passes
 /// that run between transcription and insertion — whitespace normalization in
 /// every mode, plus conservative filler-word removal when enabled.

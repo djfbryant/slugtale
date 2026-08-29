@@ -9,7 +9,6 @@ use tauri_plugin_updater::UpdaterExt;
 
 mod app_paths;
 mod dictation_bar_window;
-mod dictation_host;
 mod hotkey_registration;
 mod voice_activation;
 
@@ -18,11 +17,11 @@ use app_paths::{
     record_diagnostic_event, save_current_settings, usage_path,
 };
 use dictation_bar_window::{apply_dictation_bar_appearance, hide_dictation_bar, show_dictation_bar};
-use dictation_host::{DictationHost, DictationPhase, DictationSurface};
 use hotkey_registration::{
     HotkeyRegistrationState, request_escape_registration, setup_configured_hotkey,
     update_registered_hotkey,
 };
+use slugtale_lib::{DictationHost, DictationPhase, DictationSurface};
 
 use slugtale_lib::AppFiles;
 

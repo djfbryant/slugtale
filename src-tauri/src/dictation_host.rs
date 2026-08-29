@@ -30,40 +30,40 @@ impl DictationPhase {
 /// so the implementation stays replaceable and the tests stay honest about
 /// what the lifecycle actually asked for.
 pub trait DictationSurface: Send + Sync {
-    fn settings(&self) -> slugtale_lib::Settings;
-    fn record_diagnostic_event(&self, event: slugtale_lib::DiagnosticEvent);
-    fn show_dictation_bar(&self, phase: DictationPhase, settings: &slugtale_lib::Settings);
+    fn settings(&self) -> crate::Settings;
+    fn record_diagnostic_event(&self, event: crate::DiagnosticEvent);
+    fn show_dictation_bar(&self, phase: DictationPhase, settings: &crate::Settings);
     fn hide_dictation_bar(&self);
     fn emit_dictation_audio_level(&self, level: f32);
     fn notify_capture_failure(&self, error: &str);
-    fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound);
+    fn play_dictation_sound(&self, sound: crate::DictationSound);
     fn diagnostic_log(
         &self,
-        settings: &slugtale_lib::Settings,
-    ) -> slugtale_lib::SharedDiagnosticLog<slugtale_lib::FileDiagnosticSink>;
+        settings: &crate::Settings,
+    ) -> crate::SharedDiagnosticLog<crate::FileDiagnosticSink>;
     fn dictation_stack(
         &self,
-        settings: &slugtale_lib::Settings,
-    ) -> Result<slugtale_lib::DictationStack<slugtale_lib::FileDiagnosticSink>, String>;
+        settings: &crate::Settings,
+    ) -> Result<crate::DictationStack<crate::FileDiagnosticSink>, String>;
 }
 /// The dictation lifecycle's one owner of state: recording feedback, the focus
 /// target, the audio capture session, and the runtime handle. The locks are
 /// private so the ordering rules stay inside this module; every method holds a
 /// lock no longer than the state move itself and never across a surface call.
-pub struct DictationHost<R = slugtale_lib::CpalAudioRecorder> {
+pub struct DictationHost<R = crate::CpalAudioRecorder> {
     surface: Arc<dyn DictationSurface>,
-    feedback: Mutex<slugtale_lib::RecordingFeedback>,
+    feedback: Mutex<crate::RecordingFeedback>,
     /// The process id of the app the user was dictating into, captured when
     /// recording starts so insertion can re-target it after transcription
     /// (slugtale-squ).
     focus_target: Mutex<Option<i32>>,
-    capture: Mutex<slugtale_lib::AudioCaptureSession<R>>,
-    runtime_state: Mutex<Option<Arc<slugtale_lib::DictationRuntime>>>,
+    capture: Mutex<crate::AudioCaptureSession<R>>,
+    runtime_state: Mutex<Option<Arc<crate::DictationRuntime>>>,
 }
 
 impl<R> DictationHost<R>
 where
-    R: slugtale_lib::AudioRecorder,
+    R: crate::AudioRecorder,
 {
     pub fn new(surface: Arc<dyn DictationSurface>) -> Self
     where
@@ -75,9 +75,9 @@ where
     pub fn with_recorder(surface: Arc<dyn DictationSurface>, recorder: R) -> Self {
         Self {
             surface,
-            feedback: Mutex::new(slugtale_lib::RecordingFeedback::default()),
+            feedback: Mutex::new(crate::RecordingFeedback::default()),
             focus_target: Mutex::new(None),
-            capture: Mutex::new(slugtale_lib::AudioCaptureSession::new(recorder)),
+            capture: Mutex::new(crate::AudioCaptureSession::new(recorder)),
             runtime_state: Mutex::new(None),
         }
     }
@@ -85,7 +85,7 @@ where
     /// Install the runtime once setup has started it. Every lifecycle call
     /// before this would find nothing able to record, so setup orders this
     /// ahead of any activation input.
-    pub fn set_runtime(&self, runtime: Arc<slugtale_lib::DictationRuntime>) -> Result<(), String> {
+    pub fn set_runtime(&self, runtime: Arc<crate::DictationRuntime>) -> Result<(), String> {
         let mut guard = self
             .runtime_state
             .lock()
@@ -100,7 +100,7 @@ where
         self.capture
             .lock()
             .ok()
-            .map(|guard| slugtale_lib::AudioRecorder::voice_watermark(guard.recorder()))
+            .map(|guard| crate::AudioRecorder::voice_watermark(guard.recorder()))
             .unwrap_or(0)
     }
 
@@ -109,7 +109,7 @@ where
     /// never prompt, so callers gate this on an already-granted microphone.
     pub fn prepare_capture(&self) {
         if let Ok(mut guard) = self.capture.lock() {
-            let _ = slugtale_lib::AudioRecorder::prepare(guard.recorder_mut());
+            let _ = crate::AudioRecorder::prepare(guard.recorder_mut());
         }
     }
 
@@ -118,7 +118,7 @@ where
     /// # Panics
     /// Before setup has started the runtime; nothing reaches this module
     /// before that.
-    pub fn runtime(&self) -> Arc<slugtale_lib::DictationRuntime> {
+    pub fn runtime(&self) -> Arc<crate::DictationRuntime> {
         self.runtime_state
             .lock()
             .ok()
@@ -128,7 +128,7 @@ where
 
     pub fn handle_dictation_event(
         &self,
-        event: slugtale_lib::DictationEvent,
+        event: crate::DictationEvent,
     ) -> Result<(), String> {
         self.handle_dictation_event_with(event, None)
     }
@@ -139,14 +139,14 @@ where
     /// from the tray, tests — pass `None`.
     pub fn handle_dictation_event_with(
         &self,
-        event: slugtale_lib::DictationEvent,
-        mut activation: Option<slugtale_lib::DictationActivation>,
+        event: crate::DictationEvent,
+        mut activation: Option<crate::DictationActivation>,
     ) -> Result<(), String> {
         self.surface
-            .record_diagnostic_event(slugtale_lib::DiagnosticEvent::hotkey_transition(event));
+            .record_diagnostic_event(crate::DiagnosticEvent::hotkey_transition(event));
 
         match event {
-            slugtale_lib::DictationEvent::Start => {
+            crate::DictationEvent::Start => {
                 // Capture the app the user is dictating into before our own bar can
                 // take focus, so insertion can re-target it later (slugtale-squ).
                 self.capture_focus_target();
@@ -165,7 +165,7 @@ where
             // switches it to a transcribing state and hides it once the workflow
             // finishes, so the user sees the model working (slugtale-0t4). Its bar
             // update is this Stop press's own activation, so read Settings once here.
-            slugtale_lib::DictationEvent::Stop => {
+            crate::DictationEvent::Stop => {
                 self.advance_recording_feedback(event)?;
                 let settings = self.surface.settings();
                 self.handle_audio_capture_event_with_settings(event, Some(&settings))?;
@@ -174,7 +174,7 @@ where
             // drops any Dictation Segment still queued, so nothing further is typed
             // after the user asks Slugtale to stop. Text inserted by an earlier
             // Segment Pause is not undone (ADR-0014). It reads no Settings at all.
-            slugtale_lib::DictationEvent::Cancel => {
+            crate::DictationEvent::Cancel => {
                 self.runtime().abandon();
                 self.apply_recording_feedback(event, None)?;
                 self.handle_audio_capture_event(event)?;
@@ -189,8 +189,8 @@ where
     /// which keeps it up for transcription) use this directly.
     fn advance_recording_feedback(
         &self,
-        event: slugtale_lib::DictationEvent,
-    ) -> Result<slugtale_lib::RecordingFeedbackEffect, String> {
+        event: crate::DictationEvent,
+    ) -> Result<crate::RecordingFeedbackEffect, String> {
         let effect = {
             let mut guard = self
                 .feedback
@@ -208,8 +208,8 @@ where
 
     fn apply_recording_feedback(
         &self,
-        event: slugtale_lib::DictationEvent,
-        settings: Option<&slugtale_lib::Settings>,
+        event: crate::DictationEvent,
+        settings: Option<&crate::Settings>,
     ) -> Result<(), String> {
         let effect = self.advance_recording_feedback(event)?;
 
@@ -235,13 +235,13 @@ where
 
     fn capture_focus_target(&self) {
         if let Ok(mut guard) = self.focus_target.lock() {
-            *guard = slugtale_lib::capture_text_target();
+            *guard = crate::capture_text_target();
         }
     }
 
     fn handle_audio_capture_event(
         &self,
-        event: slugtale_lib::DictationEvent,
+        event: crate::DictationEvent,
     ) -> Result<(), String> {
         self.handle_audio_capture_event_with_settings(event, None)
     }
@@ -251,15 +251,15 @@ where
     /// (slugtale-g1o.6).
     fn handle_audio_capture_event_with_settings(
         &self,
-        event: slugtale_lib::DictationEvent,
-        bar_settings: Option<&slugtale_lib::Settings>,
+        event: crate::DictationEvent,
+        bar_settings: Option<&crate::Settings>,
     ) -> Result<(), String> {
         let outcome = {
             let mut guard = self
                 .capture
                 .lock()
                 .map_err(|_| "audio capture mutex poisoned".to_string())?;
-            if matches!(event, slugtale_lib::DictationEvent::Start) {
+            if matches!(event, crate::DictationEvent::Start) {
                 guard
                     .recorder_mut()
                     .set_level_callback(Some(self.dictation_audio_level_callback()));
@@ -272,7 +272,7 @@ where
                 self.clear_dictation_audio_level_callback();
                 self.surface.hide_dictation_bar();
                 self.surface.record_diagnostic_event(
-                    slugtale_lib::DiagnosticEvent::audio_capture_failed(&error),
+                    crate::DiagnosticEvent::audio_capture_failed(&error),
                 );
                 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                 self.surface.notify_capture_failure(&error.to_string());
@@ -281,7 +281,7 @@ where
         };
 
         match outcome {
-            Some(slugtale_lib::AudioCaptureOutcome::Completed(audio)) => {
+            Some(crate::AudioCaptureOutcome::Completed(audio)) => {
                 self.clear_dictation_audio_level_callback();
                 eprintln!(
                     "captured dictation audio: {} samples at {} Hz",
@@ -309,7 +309,7 @@ where
                     self.surface.hide_dictation_bar();
                 }
             }
-            Some(slugtale_lib::AudioCaptureOutcome::Discarded) => {
+            Some(crate::AudioCaptureOutcome::Discarded) => {
                 self.clear_dictation_audio_level_callback();
                 eprintln!("discarded dictation audio");
                 self.surface.hide_dictation_bar();
@@ -317,7 +317,7 @@ where
             // No active session to drain. A terminal event still clears any bar left
             // on screen (e.g. Stop with nothing captured); Start has none to hide.
             None => {
-                if matches!(event, slugtale_lib::DictationEvent::Stop) {
+                if matches!(event, crate::DictationEvent::Stop) {
                     self.surface.hide_dictation_bar();
                 }
             }
@@ -328,7 +328,7 @@ where
 
     /// The Segment Pause detector lives inside the Dictation Runtime, which
     /// re-arms it on every begin(), so each dictation starts unable to flush.
-    fn dictation_audio_level_callback(&self) -> slugtale_lib::AudioLevelCallback {
+    fn dictation_audio_level_callback(&self) -> crate::AudioLevelCallback {
         let surface = self.surface.clone();
         let runtime = self.runtime();
         Arc::new(move |level| {
@@ -352,21 +352,21 @@ where
     /// Pause instead of being pinned at Start.
     pub fn run_dictation_segment(
         &self,
-        audio: slugtale_lib::CapturedAudio,
-        position: slugtale_lib::DictationSegmentPosition,
-    ) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
+        audio: crate::CapturedAudio,
+        position: crate::DictationSegmentPosition,
+    ) -> Result<crate::DictationSegmentOutcome, String> {
         let settings = self.surface.settings();
         let diagnostic_log = self.surface.diagnostic_log(&settings);
         let stack = self.surface.dictation_stack(&settings)?;
         let target_pid = self.focus_target.lock().ok().and_then(|guard| *guard);
 
-        let prepared = slugtale_lib::prepare_text_insertion(target_pid)?;
+        let prepared = crate::prepare_text_insertion(target_pid)?;
         let runtime = stack.asr_runtime();
         let insertion =
-            slugtale_lib::DiagnosticTextInsertion::new(&prepared.insertion, diagnostic_log.clone());
+            crate::DiagnosticTextInsertion::new(&prepared.insertion, diagnostic_log.clone());
         let rescue =
-            slugtale_lib::DiagnosticInsertionRescue::new(prepared.rescue.as_ref(), diagnostic_log);
-        slugtale_lib::DictationWorkflow::new(
+            crate::DiagnosticInsertionRescue::new(prepared.rescue.as_ref(), diagnostic_log);
+        crate::DictationWorkflow::new(
             &runtime,
             &insertion,
             &rescue,
@@ -380,7 +380,7 @@ where
     /// microphone running. Called only from the worker thread. `cut` is the sample
     /// watermark the Pause Flush was queued with: the segment ends there (plus a
     /// small acoustic guard), whatever else has arrived since.
-    pub fn take_dictation_segment(&self, cut: u64) -> Option<slugtale_lib::CapturedAudio> {
+    pub fn take_dictation_segment(&self, cut: u64) -> Option<crate::CapturedAudio> {
         let flushed = self
             .capture
             .lock()
@@ -404,7 +404,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugtale_lib::{
+    use crate::{
         AudioCaptureError, AudioRecorder, CapturedAudio, CountedSegment, DictationEvent,
         DictationRuntime, DictationRuntimeHost, DictationSegmentOutcome, DictationSegmentPosition,
         FileDiagnosticSink, SharedDiagnosticLog,
@@ -438,21 +438,21 @@ mod tests {
     }
 
     impl DictationSurface for FakeSurface {
-        fn settings(&self) -> slugtale_lib::Settings {
+        fn settings(&self) -> crate::Settings {
             self.record(Call::ReadSettings);
-            slugtale_lib::Settings::default()
+            crate::Settings::default()
         }
 
-        fn record_diagnostic_event(&self, event: slugtale_lib::DiagnosticEvent) {
+        fn record_diagnostic_event(&self, event: crate::DiagnosticEvent) {
             let tag = match event {
-                slugtale_lib::DiagnosticEvent::HotkeyTransition { .. } => "hotkey_transition",
-                slugtale_lib::DiagnosticEvent::AudioCaptureFailed { .. } => "audio_capture_failed",
+                crate::DiagnosticEvent::HotkeyTransition { .. } => "hotkey_transition",
+                crate::DiagnosticEvent::AudioCaptureFailed { .. } => "audio_capture_failed",
                 _ => "other",
             };
             self.record(Call::Diagnostic(tag));
         }
 
-        fn show_dictation_bar(&self, phase: DictationPhase, _settings: &slugtale_lib::Settings) {
+        fn show_dictation_bar(&self, phase: DictationPhase, _settings: &crate::Settings) {
             self.record(Call::ShowBar(phase.as_str()));
         }
 
@@ -470,25 +470,25 @@ mod tests {
             self.record(Call::NotifyCaptureFailure);
         }
 
-        fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound) {
+        fn play_dictation_sound(&self, sound: crate::DictationSound) {
             let name = match sound {
-                slugtale_lib::DictationSound::Start => "start",
-                slugtale_lib::DictationSound::Stop => "stop",
+                crate::DictationSound::Start => "start",
+                crate::DictationSound::Stop => "stop",
             };
             self.record(Call::PlaySound(name));
         }
 
         fn diagnostic_log(
             &self,
-            _settings: &slugtale_lib::Settings,
+            _settings: &crate::Settings,
         ) -> SharedDiagnosticLog<FileDiagnosticSink> {
             SharedDiagnosticLog::new(false, FileDiagnosticSink::unavailable())
         }
 
         fn dictation_stack(
             &self,
-            _settings: &slugtale_lib::Settings,
-        ) -> Result<slugtale_lib::DictationStack<FileDiagnosticSink>, String> {
+            _settings: &crate::Settings,
+        ) -> Result<crate::DictationStack<FileDiagnosticSink>, String> {
             unreachable!("the tested events never reach the segment worker path")
         }
     }
@@ -583,7 +583,7 @@ mod tests {
             DictationRuntime::start(
                 IdleRuntimeHost,
                 || 0,
-                Arc::new(|_: slugtale_lib::LocalDate, _: CountedSegment| {}),
+                Arc::new(|_: crate::LocalDate, _: CountedSegment| {}),
             )
             .expect("test runtime starts"),
         )
@@ -734,5 +734,32 @@ mod tests {
         assert!(calls.contains(&Call::ShowBar("recording")));
         assert!(calls.contains(&Call::NotifyCaptureFailure));
         assert!(!calls.contains(&Call::ShowBar("transcribing")));
+    }
+
+    #[test]
+    fn cancelling_mid_dictation_discards_the_capture_and_never_plays_a_sound() {
+        let surface = Arc::new(FakeSurface::default());
+        let host = host_with(&surface, FakeRecorder::healthy());
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+
+        host.handle_dictation_event(DictationEvent::Cancel).unwrap();
+
+        // Cancel clears the bar immediately and discards the audio (CONTEXT.md:
+        // Cancel discards): no stop cue, no transcribing state, and the capture
+        // session's Discarded outcome hides the bar a second time after the
+        // feedback state machine already dropped it.
+        assert_eq!(
+            surface.calls(),
+            vec![
+                Call::Diagnostic("hotkey_transition"),
+                Call::ReadSettings,
+                Call::PlaySound("start"),
+                Call::ShowBar("recording"),
+                Call::Diagnostic("hotkey_transition"),
+                Call::HideBar,
+                Call::ClearAudioLevel,
+                Call::HideBar,
+            ]
+        );
     }
 }

@@ -5,7 +5,7 @@
 
 use tauri::{Emitter, Manager};
 
-use super::dictation_host::DictationPhase;
+use slugtale_lib::DictationPhase;
 
 /// The Dictation Bar's user-chosen appearance, pushed to the bar window so it can
 /// paint its accent and align its orb to the edge it was sent to.
