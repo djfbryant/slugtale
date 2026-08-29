@@ -484,25 +484,50 @@ enum PrepareState {
 
 /// Builds the input stream for one concrete sample type; one row of
 /// [`INPUT_STREAM_BUILDERS`].
-type StreamBuilder = fn(
-    &cpal::Device,
-    &cpal::StreamConfig,
-    std::sync::Arc<std::sync::atomic::AtomicU32>,
-) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError>;
+type StreamBuilder =
+    fn(
+        &cpal::Device,
+        &cpal::StreamConfig,
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError>;
 
 /// The input sample formats the capture callback can convert, each with its
 /// concrete stream builder. The supported-format policy is this table: a
 /// format without a row (cpal's 24-bit, 64-bit, and DSD encodings) fails
 /// stream construction as unsupported.
 const INPUT_STREAM_BUILDERS: &[(cpal::SampleFormat, StreamBuilder)] = &[
-    (cpal::SampleFormat::I8, CpalAudioRecorder::build_stream::<i8>),
-    (cpal::SampleFormat::I16, CpalAudioRecorder::build_stream::<i16>),
-    (cpal::SampleFormat::I32, CpalAudioRecorder::build_stream::<i32>),
-    (cpal::SampleFormat::U8, CpalAudioRecorder::build_stream::<u8>),
-    (cpal::SampleFormat::U16, CpalAudioRecorder::build_stream::<u16>),
-    (cpal::SampleFormat::U32, CpalAudioRecorder::build_stream::<u32>),
-    (cpal::SampleFormat::F32, CpalAudioRecorder::build_stream::<f32>),
-    (cpal::SampleFormat::F64, CpalAudioRecorder::build_stream::<f64>),
+    (
+        cpal::SampleFormat::I8,
+        CpalAudioRecorder::build_stream::<i8>,
+    ),
+    (
+        cpal::SampleFormat::I16,
+        CpalAudioRecorder::build_stream::<i16>,
+    ),
+    (
+        cpal::SampleFormat::I32,
+        CpalAudioRecorder::build_stream::<i32>,
+    ),
+    (
+        cpal::SampleFormat::U8,
+        CpalAudioRecorder::build_stream::<u8>,
+    ),
+    (
+        cpal::SampleFormat::U16,
+        CpalAudioRecorder::build_stream::<u16>,
+    ),
+    (
+        cpal::SampleFormat::U32,
+        CpalAudioRecorder::build_stream::<u32>,
+    ),
+    (
+        cpal::SampleFormat::F32,
+        CpalAudioRecorder::build_stream::<f32>,
+    ),
+    (
+        cpal::SampleFormat::F64,
+        CpalAudioRecorder::build_stream::<f64>,
+    ),
 ];
 
 fn stream_builder_for(sample_format: cpal::SampleFormat) -> Option<StreamBuilder> {
@@ -524,9 +549,7 @@ fn should_attempt_prepare(state: &PrepareState, stream_held: bool) -> bool {
 /// records the device/format identity, failure records why. The recorder
 /// replaces its whole state with this result each attempt, so a later
 /// success overwrites an earlier failure.
-fn prepare_state_after(
-    outcome: Result<&InputStreamIdentity, &AudioCaptureError>,
-) -> PrepareState {
+fn prepare_state_after(outcome: Result<&InputStreamIdentity, &AudioCaptureError>) -> PrepareState {
     match outcome {
         Ok(identity) => PrepareState::Prepared {
             identity: identity.clone(),
@@ -1787,8 +1810,7 @@ mod tests {
 
     #[test]
     fn upsampling_doubles_sub_16khz_mono_input() {
-        let audio =
-            captured_audio_from_interleaved_input(8_000, 1, &[0.0, 1.0, 0.0, 1.0]).unwrap();
+        let audio = captured_audio_from_interleaved_input(8_000, 1, &[0.0, 1.0, 0.0, 1.0]).unwrap();
 
         assert_eq!(audio.sample_rate_hz, 16_000);
         assert_eq!(audio.samples.len(), 8);
