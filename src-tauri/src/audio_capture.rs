@@ -453,6 +453,20 @@ struct InputStreamIdentity {
     channels: u16,
 }
 
+/// Whether the paused stream from the previous dictation may serve the next
+/// one. Reuse demands every fact about the stream to be unchanged: the
+/// recorder must still hold the stream and its ring, and the observed
+/// device/format identity must equal the recorded one. Anything less takes
+/// the cold-start path and rebuilds all three together (slugtale-op3).
+fn paused_stream_is_reusable(
+    stream_held: bool,
+    buffer_held: bool,
+    recorded: Option<&InputStreamIdentity>,
+    observed: &InputStreamIdentity,
+) -> bool {
+    stream_held && buffer_held && recorded == Some(observed)
+}
+
 /// Where the recorder stands relative to the first Hotkey. `Recording` is not
 /// a variant here because it is already tracked by `stream_active`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -759,21 +773,14 @@ impl AudioRecorder for CpalAudioRecorder {
         // paid on every hotkey press. Keep the paused stream when the default
         // device and format are unchanged; `stop`/`cancel` pause it, and `play`
         // resumes it in roughly 40 ms on the reference Mac (slugtale-op3).
-        let reused_stream = self.stream.is_some()
-            && self.buffer.is_some()
-            && self.stream_identity.as_ref() == Some(&identity);
+        let reused_stream = paused_stream_is_reusable(
+            self.stream.is_some(),
+            self.buffer.is_some(),
+            self.stream_identity.as_ref(),
+            &identity,
+        );
         if !reused_stream {
-            self.stream.take();
-            self.buffer = None;
-            let (stream, buffer) = Self::build_stream_for_format(
-                &device,
-                &config,
-                sample_format,
-                self.level_bits.clone(),
-            )?;
-            self.stream = Some(stream);
-            self.buffer = Some(buffer);
-            self.stream_identity = Some(identity.clone());
+            self.install_stream(&device, &config, &identity)?;
         }
 
         if let Err(error) = self.stream.as_ref().expect("audio stream exists").play() {
@@ -784,17 +791,7 @@ impl AudioRecorder for CpalAudioRecorder {
             // A retained stream can become unusable after a device interruption
             // without its identity changing. Fall back to a cold start once so a
             // stale stream never strands dictation.
-            self.stream.take();
-            self.buffer = None;
-            let (stream, buffer) = Self::build_stream_for_format(
-                &device,
-                &config,
-                sample_format,
-                self.level_bits.clone(),
-            )?;
-            self.stream = Some(stream);
-            self.buffer = Some(buffer);
-            self.stream_identity = Some(identity.clone());
+            self.install_stream(&device, &config, &identity)?;
             self.stream
                 .as_ref()
                 .expect("rebuilt audio stream exists")
@@ -1219,6 +1216,52 @@ mod tests {
             prepare_state_after(Err(&error)),
             PrepareState::Failed(error.to_string())
         );
+    }
+
+    #[test]
+    fn a_paused_stream_is_reused_only_when_everything_about_it_still_matches() {
+        let observed = InputStreamIdentity {
+            device_id: None,
+            sample_format: cpal::SampleFormat::F32,
+            sample_rate_hz: 48_000,
+            channels: 1,
+        };
+        let recorded = observed.clone();
+        let changed = InputStreamIdentity {
+            sample_rate_hz: 44_100,
+            ..observed.clone()
+        };
+
+        // Same device and format: the hundreds-of-milliseconds rebuild is
+        // skipped and `play` resumes the paused stream (slugtale-op3).
+        assert!(paused_stream_is_reusable(
+            true,
+            true,
+            Some(&recorded),
+            &observed
+        ));
+        assert!(!paused_stream_is_reusable(
+            true,
+            true,
+            Some(&changed),
+            &observed
+        ));
+
+        // A dropped stream, a dropped ring, or a forgotten identity forces the
+        // cold start that rebuilds all three together.
+        assert!(!paused_stream_is_reusable(
+            false,
+            true,
+            Some(&recorded),
+            &observed
+        ));
+        assert!(!paused_stream_is_reusable(
+            true,
+            false,
+            Some(&recorded),
+            &observed
+        ));
+        assert!(!paused_stream_is_reusable(true, true, None, &observed));
     }
 
     #[test]
