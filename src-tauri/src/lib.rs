@@ -38,6 +38,8 @@ pub use text_insertion::*;
 mod platform_execution;
 pub use platform_execution::*;
 
+mod json_file;
+
 mod settings;
 pub use settings::*;
 

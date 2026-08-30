@@ -374,44 +374,23 @@ pub fn format_time_saved(seconds: Option<f64>) -> String {
 
 /// Write the Usage File as human-readable JSON, replacing it atomically so a
 /// crash mid-write cannot leave a half-parsed file where counts used to be.
-/// Mirrors [`crate::save_settings`] deliberately: same discipline, separate file.
 pub fn save_usage(path: &std::path::Path, usage: &UsageFile) -> std::io::Result<()> {
-    let json = serde_json::to_string_pretty(usage)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("usage.json");
-    let temp_path = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
-
-    std::fs::write(&temp_path, json)?;
-    match std::fs::rename(&temp_path, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = std::fs::remove_file(&temp_path);
-            Err(error)
-        }
-    }
+    crate::json_file::save(path, usage)
 }
 
-/// Load the Usage File, treating missing and unreadable alike as "no days yet".
+/// Load the Usage File, treating missing and unreadable alike as "no days yet"
+/// and quarantining JSON that cannot represent Usage.
 ///
 /// A missing file is the normal state: it does not exist until the user turns
 /// storing on, and turning it off deletes it.
 pub fn load_usage(path: &std::path::Path) -> UsageFile {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default()
+    crate::json_file::load_or_default(path)
 }
 
-/// Delete the Usage File. Turning the store toggle off must leave nothing
-/// behind, so an already-absent file is success rather than an error.
+/// Delete the Usage File and its `.corrupt` recovery files. Turning the store
+/// toggle off must leave nothing behind, so already-absent files are success.
 pub fn delete_usage(path: &std::path::Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
+    crate::json_file::delete_with_quarantines(path)
 }
 
 #[cfg(test)]
@@ -691,19 +670,68 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_usage_file_reads_as_no_days_rather_than_failing() {
-        // Usage must never be able to break the app, and there is nothing here
-        // worth recovering: the counts are a mirror, not the user's work.
+    fn opting_out_deletes_usage_and_its_recoveries_only() {
+        let directory = std::env::temp_dir().join(format!(
+            "slugtale-usage-opt-out-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("usage.json");
+        let quarantine = directory.join("usage.json.corrupt");
+        let numbered = directory.join("usage.json.1.corrupt");
+        let later_numbered = directory.join("usage.json.12.corrupt");
+        let unrelated = directory.join("usage.json.backup.corrupt");
+        for file in [&path, &quarantine, &numbered, &later_numbered, &unrelated] {
+            std::fs::write(file, b"data").unwrap();
+        }
+
+        delete_usage(&path).unwrap();
+
+        assert!(!path.exists());
+        assert!(!quarantine.exists());
+        assert!(!numbered.exists());
+        assert!(!later_numbered.exists());
+        assert!(unrelated.exists());
+        std::fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn malformed_usage_is_quarantined_without_overwriting_an_older_recovery_file() {
         let path = std::env::temp_dir().join(format!(
             "slugtale-usage-corrupt-{}.json",
             std::process::id()
         ));
-        std::fs::write(&path, "{ not json").unwrap();
+        let quarantine = path.with_file_name(format!(
+            "{}.corrupt",
+            path.file_name().unwrap().to_string_lossy()
+        ));
+        let next_quarantine = path.with_file_name(format!(
+            "{}.1.corrupt",
+            path.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&quarantine).ok();
+        std::fs::remove_file(&next_quarantine).ok();
+        std::fs::write(&quarantine, "older broken data").unwrap();
+        let malformed = b"{ newer broken data";
+        std::fs::write(&path, malformed).unwrap();
 
         let usage = load_usage(&path);
 
-        std::fs::remove_file(&path).ok();
         assert_eq!(usage, UsageFile::default());
+        assert_eq!(std::fs::read(&path).unwrap(), malformed);
+        assert_eq!(
+            std::fs::read_to_string(&quarantine).unwrap(),
+            "older broken data"
+        );
+        assert_eq!(std::fs::read(&next_quarantine).unwrap(), malformed);
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&quarantine).ok();
+        std::fs::remove_file(&next_quarantine).ok();
     }
 
     #[test]

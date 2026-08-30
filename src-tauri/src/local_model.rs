@@ -152,14 +152,32 @@ pub trait ModelDownloader {
 
 pub struct HttpModelDownloader;
 
-impl ModelDownloader for HttpModelDownloader {
-    fn download(
+#[derive(Debug, Clone, Copy)]
+struct DownloadTimeouts {
+    total: std::time::Duration,
+    stalled_read: std::time::Duration,
+}
+
+impl DownloadTimeouts {
+    const PRODUCTION: Self = Self {
+        total: std::time::Duration::from_secs(60 * 60),
+        stalled_read: std::time::Duration::from_secs(30),
+    };
+}
+
+impl HttpModelDownloader {
+    fn download_with_timeouts(
         &self,
         url: &str,
         destination: &std::path::Path,
         on_progress: &mut dyn FnMut(DownloadProgress),
+        timeouts: DownloadTimeouts,
     ) -> Result<(), ModelError> {
         let mut response = ureq::get(url)
+            .config()
+            .timeout_global(Some(timeouts.total))
+            .timeout_recv_body(Some(timeouts.stalled_read))
+            .build()
             .call()
             .map_err(|error| ModelError::Download(error.to_string()))?;
         let total = response
@@ -171,6 +189,17 @@ impl ModelDownloader for HttpModelDownloader {
         let mut file = std::fs::File::create(destination)?;
         copy_with_progress(&mut reader, &mut file, total, on_progress)?;
         Ok(())
+    }
+}
+
+impl ModelDownloader for HttpModelDownloader {
+    fn download(
+        &self,
+        url: &str,
+        destination: &std::path::Path,
+        on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<(), ModelError> {
+        self.download_with_timeouts(url, destination, on_progress, DownloadTimeouts::PRODUCTION)
     }
 }
 
@@ -524,6 +553,89 @@ mod tests {
         // 200_000 bytes over 64 KiB chunks reports the initial update plus one
         // per chunk, so the bar advances rather than jumping straight to done.
         assert!(updates.len() >= 4);
+    }
+    #[test]
+    fn http_download_errors_when_the_response_body_stalls() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release_server, wait_for_release) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\npartial")
+                .unwrap();
+            stream.flush().unwrap();
+            let _ = wait_for_release.recv_timeout(std::time::Duration::from_secs(2));
+        });
+
+        let model_dir = unique_test_dir("stalled-http-download");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let destination = model_dir.join("partial.bin");
+        let (send_result, receive_result) = std::sync::mpsc::channel();
+        let download = std::thread::spawn(move || {
+            let result = HttpModelDownloader.download_with_timeouts(
+                &format!("http://{address}/model.bin"),
+                &destination,
+                &mut |_| {},
+                DownloadTimeouts {
+                    total: std::time::Duration::from_secs(1),
+                    stalled_read: std::time::Duration::from_millis(100),
+                },
+            );
+            let _ = send_result.send(result);
+        });
+
+        let result = receive_result.recv_timeout(std::time::Duration::from_secs(1));
+        let _ = release_server.send(());
+        server.join().unwrap();
+        download.join().unwrap();
+        std::fs::remove_dir_all(model_dir).ok();
+
+        assert!(result
+            .expect("the download must honor its timeout")
+            .is_err());
+    }
+    #[test]
+    fn http_download_allows_a_slow_body_that_keeps_making_progress() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n")
+                .unwrap();
+            for byte in b"steady" {
+                stream.write_all(std::slice::from_ref(byte)).unwrap();
+                stream.flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+
+        let model_dir = unique_test_dir("steady-http-download");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let destination = model_dir.join("steady.bin");
+        let result = HttpModelDownloader.download_with_timeouts(
+            &format!("http://{address}/model.bin"),
+            &destination,
+            &mut |_| {},
+            DownloadTimeouts {
+                total: std::time::Duration::from_secs(1),
+                stalled_read: std::time::Duration::from_millis(200),
+            },
+        );
+        server.join().unwrap();
+
+        assert!(result.is_ok());
+        assert_eq!(std::fs::read(destination).unwrap(), b"steady");
+        std::fs::remove_dir_all(model_dir).ok();
     }
     #[test]
     fn throttled_progress_always_sends_the_first_and_last_update() {

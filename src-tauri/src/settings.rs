@@ -280,30 +280,13 @@ pub fn apply_voice_activation_settings(settings: &mut Settings, enabled: bool) {
 /// Write the Settings File as human-readable JSON so it can be inspected
 /// during development (ADR-0018).
 pub fn save_settings(path: &std::path::Path, settings: &Settings) -> std::io::Result<()> {
-    let json = serde_json::to_string_pretty(settings)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("settings.json");
-    let temp_path = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
-
-    std::fs::write(&temp_path, json)?;
-    match std::fs::rename(&temp_path, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = std::fs::remove_file(&temp_path);
-            Err(error)
-        }
-    }
+    crate::json_file::save(path, settings)
 }
 
 /// Load the Settings File, falling back to defaults when it is missing or
-/// unreadable (e.g. first run).
+/// unreadable and quarantining JSON that cannot represent Settings.
 pub fn load_settings(path: &std::path::Path) -> Settings {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default()
+    crate::json_file::load_or_default(path)
 }
 
 #[cfg(test)]
@@ -453,6 +436,31 @@ mod tests {
         std::fs::remove_file(&path).ok();
 
         assert_eq!(load_settings(&path), Settings::default());
+    }
+    #[test]
+    fn malformed_settings_are_recovered_until_a_normal_save_replaces_them() {
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-settings-malformed-{}.json",
+            std::process::id()
+        ));
+        let quarantine = path.with_file_name(format!(
+            "{}.corrupt",
+            path.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&quarantine).ok();
+        let malformed = b"{ not json";
+        std::fs::write(&path, malformed).unwrap();
+
+        let loaded = load_settings(&path);
+
+        assert_eq!(loaded, Settings::default());
+        assert_eq!(std::fs::read(&path).unwrap(), malformed);
+        assert_eq!(std::fs::read(&quarantine).unwrap(), malformed);
+        save_settings(&path, &Settings::default()).unwrap();
+        assert_eq!(load_settings(&path), Settings::default());
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&quarantine).ok();
     }
     #[test]
     fn hotkey_settings_store_trimmed_hotkey_and_activation_mode() {
