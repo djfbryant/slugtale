@@ -103,27 +103,15 @@ pub fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn play_sound(sound: DictationSound) -> std::io::Result<()> {
-    // Reuse the built-in system sounds so v1 ships no bundled audio assets. Tink
-    // marks the start of recording; Pop marks the end.
-    std::process::Command::new("afplay")
-        .arg(macos_dictation_sound_file(sound))
-        .spawn()?;
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-pub fn macos_dictation_sound_file(sound: DictationSound) -> &'static str {
-    match sound {
-        DictationSound::Start => "/System/Library/Sounds/Tink.aiff",
-        DictationSound::Stop => "/System/Library/Sounds/Pop.aiff",
-    }
+    // The afplay call lives in the platform adapter (ADR-0021) so this module
+    // stays free of OS bindings, matching the Windows and Linux arms below.
+    crate::macos::play_dictation_sound(sound)
 }
 
 #[cfg(target_os = "windows")]
 fn play_sound(sound: DictationSound) -> std::io::Result<()> {
     // The Win32 call lives in the platform adapter (ADR-0021) so this module
-    // stays free of OS bindings; slugtale-yn9 tracks moving the afplay arm
-    // above behind the same boundary.
+    // stays free of OS bindings.
     crate::windows::play_dictation_sound(sound)
 }
 
@@ -196,13 +184,6 @@ mod tests {
         assert_eq!(effect.sound, None);
         assert!(!effect.bar_visible);
         assert_eq!(effect.outcome, None);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_dictation_sound_files_are_the_system_cues() {
-        assert!(macos_dictation_sound_file(DictationSound::Start).contains("Tink"));
-        assert!(macos_dictation_sound_file(DictationSound::Stop).contains("Pop"));
     }
 
     #[cfg(target_os = "macos")]

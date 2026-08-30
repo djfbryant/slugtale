@@ -502,8 +502,8 @@ fn notify_user(title: &str, body: &str) -> Result<(), String> {
 }
 
 /// Play the audible dictation cue through winmm using system event aliases, so
-/// v1 ships no bundled audio assets (the Windows analog of the afplay arm in
-/// recording_feedback.rs). SND_ASYNC returns immediately so the recording
+/// v1 ships no bundled audio assets (the Windows analog of the macOS adapter's
+/// afplay cue). SND_ASYNC returns immediately so the recording
 /// lifecycle never blocks on audio.
 pub(crate) fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
     // Asterisk is the softer "information" chime for the start edge; Default is

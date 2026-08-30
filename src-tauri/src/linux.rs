@@ -346,7 +346,7 @@ fn notify_user(title: &str, body: &str) -> Result<(), String> {
 
 /// Play the audible dictation cue through the XDG sound theme with
 /// `canberra-gtk-play`, so v1 ships no bundled audio assets (the Linux analog of
-/// the afplay arm in recording_feedback.rs). The helper is spawned detached so
+/// the macOS adapter's afplay cue). The helper is spawned detached so
 /// the recording lifecycle never blocks on audio.
 pub(crate) fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
     // Freedesktop sound-theme event ids: a soft "message" chime for the start
@@ -366,7 +366,7 @@ pub(crate) fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()>
 
     // canberra-gtk-play resolves the active XDG sound theme; if it is not
     // installed, fall back to paplay against the freedesktop stereo theme file.
-    // Like the macOS afplay arm, audible feedback is best-effort — a missing
+    // Like the macOS afplay cue, audible feedback is best-effort — a missing
     // player must never fail the dictation lifecycle.
     let mut canberra = std::process::Command::new("canberra-gtk-play");
     canberra.arg("-i").arg(event_id);

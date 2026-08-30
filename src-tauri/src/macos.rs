@@ -1,8 +1,8 @@
 use crate::{
-    ClipboardInsertionRescue, FinalTranscription, InsertionRescue, InsertionRescueError,
-    InsertionRescueOutcome, InsertionRescueSystem, MicrophonePermissionSetup, PlatformReadiness,
-    TextInsertion, TextInsertionError, TextInsertionOutcome, TextInsertionPermissionSetup,
-    TextInsertionPipeline, TextInsertionSystem, WeekStart,
+    ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
+    InsertionRescueError, InsertionRescueOutcome, InsertionRescueSystem, MicrophonePermissionSetup,
+    PlatformReadiness, TextInsertion, TextInsertionError, TextInsertionOutcome,
+    TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem, WeekStart,
 };
 use block2::RcBlock;
 use objc2::runtime::Bool;
@@ -325,6 +325,24 @@ fn applescript_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Play the audible dictation cue through `afplay` against the built-in system
+/// sounds, so v1 ships no bundled audio assets. The helper is spawned detached
+/// so the recording lifecycle never blocks waiting on audio.
+pub(crate) fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
+    // Tink marks the start of recording; Pop marks the end.
+    Command::new("afplay")
+        .arg(dictation_sound_file(sound))
+        .spawn()?;
+    Ok(())
+}
+
+fn dictation_sound_file(sound: DictationSound) -> &'static str {
+    match sound {
+        DictationSound::Start => "/System/Library/Sounds/Tink.aiff",
+        DictationSound::Stop => "/System/Library/Sounds/Pop.aiff",
+    }
+}
+
 /// Show a user-facing notification (used to guide the user to grant
 /// Accessibility when insertion can't reach the focused app). Exposed for the
 /// Tauri layer; failures are non-fatal and surfaced to the caller.
@@ -444,5 +462,11 @@ mod tests {
             locale_week_start(),
             WeekStart::Sunday | WeekStart::Monday
         ));
+    }
+
+    #[test]
+    fn dictation_sound_files_are_the_system_cues() {
+        assert!(dictation_sound_file(DictationSound::Start).contains("Tink"));
+        assert!(dictation_sound_file(DictationSound::Stop).contains("Pop"));
     }
 }
