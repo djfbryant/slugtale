@@ -30,6 +30,28 @@ not keep a dictation history or send telemetry.
 Voice activation is also off by default. If you turn it on, Slugtale keeps the
 microphone open and checks for "Hi Slugtale" on your Mac.
 
+### Voice activation model
+
+The current experimental build uses the local Whisper model for the "Hi
+Slugtale" check. This stays on your Mac, but it uses too much CPU for an
+always-on feature.
+
+The planned production version uses a small wake-word model instead. You will
+install it from **Settings > Voice Activation > Install wake-word model**.
+Slugtale will download fixed model files only after you select that action. It
+will check each file before use. After installation, wake-word detection will
+work without an internet connection.
+
+The wake-word model contains no audio from you. Slugtale will not send your
+microphone audio to the model host. The install request contains no audio,
+transcript, prompt, vocabulary, or app context.
+
+The install button and the small model are not implemented yet. Voice
+activation remains experimental until the model passes local privacy, false
+activation, CPU, and memory tests. See
+[ADR-0027](docs/adr/0027-dedicated-openwakeword-detector-for-voice-activation.md)
+for the accepted design.
+
 See [SECURITY.md](SECURITY.md) for the full data-handling policy.
 
 ## Features
