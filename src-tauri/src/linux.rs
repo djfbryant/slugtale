@@ -434,6 +434,24 @@ fn open_sound_settings() {
         });
 }
 
+/// Reveal `path` in the desktop file manager. The spawned helper returns
+/// immediately. Reached from local_model through the Platform Adapter boundary
+/// (ADR-0021).
+pub(crate) fn reveal_in_file_manager(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    reveal_command(path, select).spawn()?;
+    Ok(())
+}
+
+fn reveal_command(path: &std::path::Path, _select: bool) -> std::process::Command {
+    // xdg-open cannot select a file, so revealing a file opens its folder.
+    let target = if path.is_file() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+    std::process::Command::new("xdg-open").arg(target)
+}
+
 /// The active X11 window id, captured at record start so insertion can
 /// re-target it (parallels the macOS `frontmost_app_pid`). The seam is
 /// pid-shaped across platforms; on X11 the meaningful unit is the window id,

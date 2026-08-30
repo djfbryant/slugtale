@@ -94,7 +94,7 @@ Key design rule: `lib.rs` contains only plain Rust — no `#[tauri::command]` ma
 ## Conventions & Patterns
 
 - Domain vocabulary is defined in `CONTEXT.md` — use it in code and test names.
-- Platform-specific OS behavior (hotkeys, permissions, audio) lives behind a **Platform Adapter** boundary (ADR-0021).
+- Platform-specific OS behavior lives behind a **Platform Adapter** boundary (ADR-0021). This includes hotkeys, permissions, audio, notifications, and file-manager reveal. Any spawned OS process (`open`, `explorer`, `xdg-open`, `afplay`, `osascript`) belongs in `macos.rs`, `windows.rs`, or `linux.rs`. Domain modules keep the decision logic and dispatch through `#[cfg]` arms to adapter functions (see `recording_feedback.rs`, `local_model.rs`).
 - Rust unit tests live in a `#[cfg(test)] mod tests` in the module they cover, preferring that module's public interface. `lib.rs` keeps only the tests for behavior it owns itself. A module gated to one platform (`macos.rs`, `windows.rs`, `linux.rs`) must test from inside itself — its code does not exist on the other platforms, so `lib.rs` cannot reach it — and may reach a private policy function there rather than leave it uncovered.
 - Frontend tests live in `tests/` as `*.test.mjs`. `npm test` discovers them from that directory, so a test placed elsewhere is silently skipped.
 - Tauri commands in `main.rs` are thin wrappers that delegate to `lib.rs` functions.

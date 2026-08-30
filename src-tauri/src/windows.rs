@@ -566,14 +566,31 @@ pub fn open_microphone_settings() -> Result<(), String> {
 }
 
 /// Launch an `ms-settings:` URI. `explorer` resolves the URI through the shell
-/// without flashing a console window, following the `open_path` precedent in
-/// local_model.rs; the spawned helper returns immediately.
+/// without flashing a console window; the spawned helper returns immediately.
 fn open_settings_uri(uri: &str) -> Result<(), String> {
     std::process::Command::new("explorer")
         .arg(uri)
         .spawn()
         .map_err(|error| format!("could not open Windows Settings: {error}"))?;
     Ok(())
+}
+
+/// Reveal `path` in File Explorer, selecting the file when `select` is set.
+/// The spawned helper returns immediately. Reached from local_model through
+/// the Platform Adapter boundary (ADR-0021).
+pub(crate) fn reveal_in_file_manager(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    reveal_command(path, select).spawn()?;
+    Ok(())
+}
+
+fn reveal_command(path: &std::path::Path, select: bool) -> std::process::Command {
+    let mut command = std::process::Command::new("explorer");
+    if select {
+        command.arg(format!("/select,{}", path.display()));
+    } else {
+        command.arg(path);
+    }
+    command
 }
 
 /// The process id of the foreground window's owning app — captured at record

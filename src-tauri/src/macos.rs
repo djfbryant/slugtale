@@ -343,6 +343,23 @@ fn dictation_sound_file(sound: DictationSound) -> &'static str {
     }
 }
 
+/// Reveal `path` in Finder, selecting the file when `select` is set. The
+/// spawned helper returns immediately. Reached from local_model through the
+/// Platform Adapter boundary (ADR-0021).
+pub(crate) fn reveal_in_file_manager(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    reveal_command(path, select).spawn()?;
+    Ok(())
+}
+
+fn reveal_command(path: &std::path::Path, select: bool) -> Command {
+    let mut command = Command::new("open");
+    if select {
+        command.arg("-R");
+    }
+    command.arg(path);
+    command
+}
+
 /// Show a user-facing notification (used to guide the user to grant
 /// Accessibility when insertion can't reach the focused app). Exposed for the
 /// Tauri layer; failures are non-fatal and surfaced to the caller.
@@ -468,5 +485,25 @@ mod tests {
     fn dictation_sound_files_are_the_system_cues() {
         assert!(dictation_sound_file(DictationSound::Start).contains("Tink"));
         assert!(dictation_sound_file(DictationSound::Stop).contains("Pop"));
+    }
+
+    #[test]
+    fn reveal_command_selects_file_with_open_dash_r() {
+        let select = reveal_command(std::path::Path::new("/tmp/models/base.bin"), true);
+        assert_eq!(select.get_program(), std::ffi::OsStr::new("open"));
+        assert_eq!(
+            select.get_args().collect::<Vec<_>>(),
+            vec![
+                std::ffi::OsStr::new("-R"),
+                std::ffi::OsStr::new("/tmp/models/base.bin")
+            ]
+        );
+
+        let plain = reveal_command(std::path::Path::new("/tmp/models"), false);
+        assert_eq!(plain.get_program(), std::ffi::OsStr::new("open"));
+        assert_eq!(
+            plain.get_args().collect::<Vec<_>>(),
+            vec![std::ffi::OsStr::new("/tmp/models")]
+        );
     }
 }

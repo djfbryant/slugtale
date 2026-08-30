@@ -376,47 +376,37 @@ pub fn reveal_location(model_dir: &std::path::Path) -> RevealLocation {
 }
 
 /// Open the model location in the native file manager (Finder/Explorer). The
-/// spawned helper returns immediately, so this never blocks the caller.
+/// spawned helper returns immediately, so this never blocks the caller. This
+/// module owns the reveal-or-open decision; the OS spawn lives behind the
+/// Platform Adapter (ADR-0021).
 pub fn open_in_file_manager(location: &RevealLocation) -> std::io::Result<()> {
     match location {
-        RevealLocation::SelectFile(file) => open_path(file, true),
+        RevealLocation::SelectFile(file) => reveal_in_file_manager(file, true),
         RevealLocation::OpenDir(dir) => {
             std::fs::create_dir_all(dir)?;
-            open_path(dir, false)
+            reveal_in_file_manager(dir, false)
         }
     }
 }
 
 #[cfg(target_os = "macos")]
-fn open_path(path: &std::path::Path, select: bool) -> std::io::Result<()> {
-    let mut command = std::process::Command::new("open");
-    if select {
-        command.arg("-R");
-    }
-    command.arg(path).spawn()?;
-    Ok(())
+fn reveal_in_file_manager(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    crate::macos::reveal_in_file_manager(path, select)
 }
 
 #[cfg(target_os = "windows")]
-fn open_path(path: &std::path::Path, select: bool) -> std::io::Result<()> {
-    let mut command = std::process::Command::new("explorer");
-    if select {
-        command.arg(format!("/select,{}", path.display()));
-    } else {
-        command.arg(path);
-    }
-    command.spawn()?;
-    Ok(())
+fn reveal_in_file_manager(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    crate::windows::reveal_in_file_manager(path, select)
 }
 
-#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-fn open_path(path: &std::path::Path, _select: bool) -> std::io::Result<()> {
-    let target = if path.is_file() {
-        path.parent().unwrap_or(path)
-    } else {
-        path
-    };
-    std::process::Command::new("xdg-open").arg(target).spawn()?;
+#[cfg(target_os = "linux")]
+fn reveal_in_file_manager(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    crate::linux::reveal_in_file_manager(path, select)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn reveal_in_file_manager(_path: &std::path::Path, _select: bool) -> std::io::Result<()> {
+    // Other platforms reveal once their Platform Adapter lands (ADR-0021).
     Ok(())
 }
 
