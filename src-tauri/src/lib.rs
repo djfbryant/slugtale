@@ -202,7 +202,7 @@ pub use linux::{
     activate_app, detect_session, frontmost_app_pid, locale_week_start, notify,
     open_microphone_settings, DisplayServerSession, LinuxInsertionRescue,
     LinuxMicrophonePermissionSetup, LinuxPlatform, LinuxTextInsertion,
-    LinuxTextInsertionPermissionSetup,
+    LinuxTextInsertionPermissionSetup, PortalAccelerator, PortalAcceleratorError,
 };
 
 #[cfg(test)]

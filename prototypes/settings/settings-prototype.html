@@ -1,0 +1,1275 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="gruvbox-dark" data-os="omarchy">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PROTOTYPE — Slugtale Settings (B1 Omarchy Linux & macOS Preview)</title>
+  <!--
+    THROWAWAY PROTOTYPE — not shipped in production bundle.
+    Tracked by bd issue slugtale-dsi.
+
+    Round 5: B1 Layout in Omarchy Linux (Hyprland / Arch) & macOS comparison:
+      - OS Toggle: Omarchy Linux (Hyprland Wayland) vs macOS
+      - Omarchy Themes: Gruvbox Dark, Gruvbox Light, Catppuccin Mocha, Tokyo Night, Standard
+      - Hyprland Active Borders, Linux Keycaps (Super/Ctrl), Wayland Display Session, PipeWire audio
+      - Full feature suite: Status, Dictation, Bar, Usage, Engine, General
+
+    Interactive Switcher:
+      ?os=omarchy|macos
+      ?variant=B1|B2|B3|B4
+      ?theme=gruvbox-dark|gruvbox-light|catppuccin-mocha|tokyo-night|dark|light|auto
+      ?state=ready|partial|fresh
+  -->
+  <style>
+    /* =========================================================================
+       CSS Tokens & Theme Palettes
+       ========================================================================= */
+
+    /* Default Light */
+    :root, [data-theme="light"] {
+      --bg: #eef0ef;
+      --surface: #ffffff;
+      --surface-sunken: #f5f7f6;
+      --surface-elevated: #ffffff;
+      --rail: #e8eaec;
+      --rail-active: #2674a6;
+      --rail-active-text: #ffffff;
+      --text: #1f2933;
+      --text-dim: #6c757d;
+      --text-faint: #8a929a;
+      --border: #e2e5e8;
+      --border-strong: #d2d7dc;
+      --accent: #2674a6;
+      --accent-soft: #eaf2f8;
+      --ok: #2f9e5f;
+      --ok-soft: #f0f8f3;
+      --ok-text: #1f7a44;
+      --warn: #e08c2e;
+      --warn-soft: #fdf6ec;
+      --warn-text: #946212;
+      --danger: #c53929;
+      --danger-soft: #fdf2f2;
+      --on-fill: #ffffff;
+      --shadow-sm: 0 1px 2px rgba(24, 34, 44, 0.05);
+      --shadow: 0 1px 3px rgba(24, 34, 44, 0.08);
+      --shadow-md: 0 4px 12px rgba(24, 34, 44, 0.08);
+      --titlebar: #ebebeb;
+      --hypr-border: #2674a6;
+      --window-border: rgba(0, 0, 0, 0.08);
+
+      /* Fixed 6-swatch palette for Dictation Bar Orb (ADR-0004) */
+      --accent-swatch-red: #ff5a52;
+      --accent-swatch-amber: #f5a524;
+      --accent-swatch-green: #35c76a;
+      --accent-swatch-blue: #4c9ffe;
+      --accent-swatch-violet: #a78bfa;
+      --accent-swatch-graphite: #9aa4ad;
+
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 13.5px;
+      line-height: 1.45;
+    }
+
+    /* Standard Dark */
+    [data-theme="dark"] {
+      --bg: #16181b;
+      --surface: #202428;
+      --surface-sunken: #191c1f;
+      --surface-elevated: #262b30;
+      --rail: #131518;
+      --rail-active: #3d8fc4;
+      --rail-active-text: #ffffff;
+      --text: #e9edf0;
+      --text-dim: #9aa4ad;
+      --text-faint: #78828b;
+      --border: #2b3137;
+      --border-strong: #394047;
+      --accent: #4a9fd8;
+      --accent-soft: #1a2934;
+      --ok: #3fbb75;
+      --ok-soft: #16261d;
+      --ok-text: #5ccb8b;
+      --warn: #d9a03f;
+      --warn-soft: #2a2115;
+      --warn-text: #e0b165;
+      --danger: #e08072;
+      --danger-soft: #2c1817;
+      --on-fill: #ffffff;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+      --shadow-md: 0 6px 16px rgba(0, 0, 0, 0.5);
+      --titlebar: #1b1d20;
+      --hypr-border: #4a9fd8;
+      --window-border: rgba(255, 255, 255, 0.08);
+
+      color-scheme: dark;
+    }
+
+    /* Omarchy: Gruvbox Dark (Default on this machine) */
+    [data-theme="gruvbox-dark"] {
+      --bg: #282828;
+      --surface: #32302f;
+      --surface-sunken: #1d2021;
+      --surface-elevated: #3c3836;
+      --rail: #1d2021;
+      --rail-active: #fe8019;
+      --rail-active-text: #1d2021;
+      --text: #ebdbb2;
+      --text-dim: #a89984;
+      --text-faint: #7c6f64;
+      --border: #3c3836;
+      --border-strong: #504945;
+      --accent: #fe8019;
+      --accent-soft: #3a2b1c;
+      --ok: #b8bb26;
+      --ok-soft: #283020;
+      --ok-text: #b8bb26;
+      --warn: #fabd2f;
+      --warn-soft: #362e1c;
+      --warn-text: #fabd2f;
+      --danger: #fb4934;
+      --danger-soft: #3a1e1e;
+      --on-fill: #1d2021;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+      --shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+      --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.7);
+      --titlebar: #1d2021;
+      --hypr-border: #fe8019;
+      --window-border: #504945;
+
+      color-scheme: dark;
+    }
+
+    /* Omarchy: Gruvbox Light */
+    [data-theme="gruvbox-light"] {
+      --bg: #fbf1c7;
+      --surface: #f2e5bc;
+      --surface-sunken: #ebdbb2;
+      --surface-elevated: #f9f5d7;
+      --rail: #ebdbb2;
+      --rail-active: #d65d0e;
+      --rail-active-text: #fbf1c7;
+      --text: #282828;
+      --text-dim: #7c6f64;
+      --text-faint: #928374;
+      --border: #d5c4a1;
+      --border-strong: #bdae93;
+      --accent: #af3a03;
+      --accent-soft: #faebd7;
+      --ok: #79740e;
+      --ok-soft: #e5e8c4;
+      --ok-text: #427b58;
+      --warn: #b57614;
+      --warn-soft: #f4e8ba;
+      --warn-text: #b57614;
+      --danger: #9d0006;
+      --danger-soft: #fadad8;
+      --on-fill: #ffffff;
+      --shadow-sm: 0 1px 2px rgba(40, 40, 40, 0.08);
+      --shadow: 0 1px 4px rgba(40, 40, 40, 0.12);
+      --shadow-md: 0 4px 14px rgba(40, 40, 40, 0.12);
+      --titlebar: #ebdbb2;
+      --hypr-border: #d65d0e;
+      --window-border: #bdae93;
+
+      color-scheme: light;
+    }
+
+    /* Omarchy: Catppuccin Mocha */
+    [data-theme="catppuccin-mocha"] {
+      --bg: #1e1e2e;
+      --surface: #181825;
+      --surface-sunken: #11111b;
+      --surface-elevated: #313244;
+      --rail: #11111b;
+      --rail-active: #cba6f7;
+      --rail-active-text: #11111b;
+      --text: #cdd6f4;
+      --text-dim: #a6adc8;
+      --text-faint: #6c7086;
+      --border: #313244;
+      --border-strong: #45475a;
+      --accent: #89b4fa;
+      --accent-soft: #1e2538;
+      --ok: #a6e3a1;
+      --ok-soft: #192723;
+      --ok-text: #a6e3a1;
+      --warn: #f9e2af;
+      --warn-soft: #2d2a20;
+      --warn-text: #f9e2af;
+      --danger: #f38ba8;
+      --danger-soft: #301f27;
+      --on-fill: #11111b;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+      --shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+      --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.7);
+      --titlebar: #11111b;
+      --hypr-border: #cba6f7;
+      --window-border: #45475a;
+
+      color-scheme: dark;
+    }
+
+    /* Omarchy: Tokyo Night */
+    [data-theme="tokyo-night"] {
+      --bg: #1a1b26;
+      --surface: #24283b;
+      --surface-sunken: #16161e;
+      --surface-elevated: #2f354a;
+      --rail: #16161e;
+      --rail-active: #7aa2f7;
+      --rail-active-text: #16161e;
+      --text: #c0caf5;
+      --text-dim: #9aa5ce;
+      --text-faint: #565f89;
+      --border: #292e42;
+      --border-strong: #3b4261;
+      --accent: #7aa2f7;
+      --accent-soft: #1d2946;
+      --ok: #9ece6a;
+      --ok-soft: #1c2e22;
+      --ok-text: #9ece6a;
+      --warn: #e0af68;
+      --warn-soft: #322b1e;
+      --warn-text: #e0af68;
+      --danger: #f7768e;
+      --danger-soft: #331e28;
+      --on-fill: #16161e;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+      --shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+      --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.7);
+      --titlebar: #16161e;
+      --hypr-border: #7aa2f7;
+      --window-border: #3b4261;
+
+      color-scheme: dark;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px 20px 90px;
+      background: #181a1d;
+      color: var(--text);
+      transition: background 0.2s ease, color 0.2s ease;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* Background backdrop according to OS */
+    [data-os="omarchy"] body {
+      background: radial-gradient(circle at 50% 20%, #2b2826 0%, #141414 100%);
+    }
+    [data-os="macos"] body {
+      background: #c6cbcf;
+    }
+    [data-os="macos"][data-theme="dark"] body {
+      background: #0c0e10;
+    }
+
+    /* =========================================================================
+       Window Shell — 480x520
+       ========================================================================= */
+    .window-frame {
+      width: 480px;
+      height: 520px;
+      display: flex;
+      flex-direction: column;
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--bg);
+      position: relative;
+      transition: all 0.2s ease;
+    }
+
+    /* macOS Window Shell Styling */
+    [data-os="macos"] .window-frame {
+      border-radius: 12px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--window-border);
+    }
+    [data-os="macos"] .titlebar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      height: 32px;
+      padding: 0 12px;
+      background: var(--titlebar);
+      border-bottom: 1px solid var(--border);
+    }
+    [data-os="macos"] .traffic-lights { display: flex; gap: 7px; }
+    [data-os="macos"] .traffic-light { width: 11px; height: 11px; border-radius: 50%; }
+    [data-os="macos"] .traffic-close { background: #ff5f56; border: 1px solid #e0443e; }
+    [data-os="macos"] .traffic-min { background: #ffbd2e; border: 1px solid #dea123; }
+    [data-os="macos"] .traffic-max { background: #27c93f; border: 1px solid #1aab29; }
+    [data-os="macos"] .window-title { margin-left: 8px; font-size: 0.78rem; font-weight: 600; color: var(--text-dim); }
+    [data-os="macos"] .omarchy-header { display: none; }
+
+    /* Omarchy Linux (Hyprland) Window Shell Styling */
+    [data-os="omarchy"] .window-frame {
+      border-radius: 10px;
+      box-shadow: 0 0 0 2px var(--hypr-border), 0 16px 40px rgba(0, 0, 0, 0.6);
+    }
+    [data-os="omarchy"] .titlebar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 30px;
+      padding: 0 10px;
+      background: var(--titlebar);
+      border-bottom: 1px solid var(--border);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    [data-os="omarchy"] .traffic-lights { display: none; }
+    [data-os="omarchy"] .window-title { display: none; }
+    [data-os="omarchy"] .omarchy-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+    }
+    .omarchy-title-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.76rem;
+      font-weight: 650;
+      color: var(--text-dim);
+    }
+    .omarchy-tag {
+      font-size: 0.65rem;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--surface-sunken);
+      border: 1px solid var(--border);
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .omarchy-window-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    .omarchy-window-controls span:hover { color: var(--accent); }
+
+    .viewport { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; }
+
+    /* ---------- Common Atoms & Components ---------- */
+    .icon { width: 16px; height: 16px; flex-shrink: 0; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 8px;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--text-dim);
+      font-size: 0.72rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+    .pill[data-ready="true"] { border-color: color-mix(in srgb, var(--ok) 40%, transparent); color: var(--ok-text); background: var(--ok-soft); }
+    .pill[data-ready="true"]::before { background: var(--ok); }
+    .pill[data-ready="false"] { border-color: color-mix(in srgb, var(--warn) 45%, transparent); color: var(--warn-text); background: var(--warn-soft); }
+    .pill[data-ready="false"]::before { background: var(--warn); }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      min-height: 26px;
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.8rem;
+      font-weight: 550;
+      padding: 3px 10px;
+      cursor: pointer;
+      transition: all 0.1s ease;
+    }
+    button:hover { background: var(--surface-sunken); border-color: var(--accent); }
+    button:active { transform: translateY(1px); }
+    button.primary { border-color: var(--accent); background: var(--accent); color: var(--on-fill); }
+    button.primary:hover { opacity: 0.92; background: var(--accent); }
+    button.danger { border-color: color-mix(in srgb, var(--danger) 40%, transparent); color: var(--danger); background: var(--danger-soft); }
+    button.danger:hover { background: var(--danger); color: #fff; }
+    button.ghost { border-color: transparent; background: transparent; color: var(--accent); padding: 2px 6px; }
+    button.ghost:hover { background: var(--accent-soft); }
+
+    select, input[type="text"], input[type="number"] {
+      min-height: 27px;
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.82rem;
+      padding: 3px 8px;
+      outline: none;
+    }
+    select:focus, input:focus { border-color: var(--accent); outline: 2px solid var(--accent-soft); }
+
+    /* Segmented Control */
+    .segmented {
+      display: inline-flex;
+      padding: 2px;
+      border-radius: 7px;
+      background: var(--surface-sunken);
+      border: 1px solid var(--border);
+      gap: 1px;
+    }
+    .segmented button {
+      border: 0;
+      background: transparent;
+      color: var(--text-dim);
+      min-height: 22px;
+      padding: 2px 9px;
+      border-radius: 5px;
+      font-size: 0.76rem;
+      font-weight: 550;
+    }
+    .segmented button[aria-pressed="true"] {
+      background: var(--surface);
+      color: var(--text);
+      font-weight: 650;
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* Keycaps (OS adaptable) */
+    .keys { display: inline-flex; gap: 3px; align-items: center; }
+    .keys kbd {
+      display: grid;
+      place-items: center;
+      min-width: 22px;
+      height: 22px;
+      padding: 0 5px;
+      border: 1px solid var(--border-strong);
+      border-bottom-width: 2px;
+      border-radius: 5px;
+      background: var(--surface);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.78rem;
+      font-weight: 650;
+      box-shadow: 0 1px 1px rgba(0,0,0,0.05);
+    }
+    [data-os="omarchy"] .keys kbd {
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 0.75rem;
+      border-radius: 4px;
+    }
+
+    /* Switch toggle */
+    .toggle {
+      position: relative;
+      display: inline-block;
+      width: 34px;
+      height: 20px;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; margin: 0; }
+    .slider {
+      position: absolute; cursor: pointer; inset: 0;
+      background-color: var(--border-strong);
+      transition: .2s; border-radius: 20px;
+    }
+    .slider:before {
+      position: absolute; content: "";
+      height: 14px; width: 14px; left: 3px; bottom: 3px;
+      background-color: white;
+      transition: .2s; border-radius: 50%;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    }
+    input:checked + .slider { background-color: var(--accent); }
+    input:checked + .slider:before { transform: translateX(14px); }
+
+    /* Swatches */
+    .swatches { display: inline-flex; gap: 6px; align-items: center; }
+    .swatch-btn {
+      width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent;
+      padding: 0; cursor: pointer; position: relative; display: grid; place-items: center;
+      min-height: 0;
+      transition: transform 0.15s ease;
+    }
+    .swatch-btn:hover { transform: scale(1.15); }
+    .swatch-btn[aria-checked="true"] { border-color: var(--text); transform: scale(1.18); box-shadow: 0 0 6px rgba(0,0,0,0.2); }
+    .swatch-btn[aria-checked="true"]::after {
+      content: ""; width: 6px; height: 6px; border-radius: 50%; background: #ffffff;
+    }
+
+    /* Warning Banner */
+    .warn-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 12px;
+      border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+      border-radius: 8px;
+      background: var(--warn-soft);
+      font-size: 0.8rem;
+      margin-bottom: 12px;
+    }
+    .warn-banner strong { display: block; color: var(--text); font-weight: 650; }
+    .warn-banner small { color: var(--warn-text); }
+
+    /* Scrollable pane */
+    .scrollable { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 16px; scrollbar-gutter: stable; }
+    .scrollable::-webkit-scrollbar { width: 7px; }
+    .scrollable::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+
+    /* Mini Orb Live Simulator Preview */
+    .orb-preview-box {
+      display: flex; align-items: center; justify-content: center;
+      width: 52px; height: 52px; border-radius: 12px;
+      background: var(--surface-sunken); border: 1px solid var(--border);
+      position: relative; flex-shrink: 0;
+    }
+    .orb-preview-circle {
+      width: 28px; height: 28px; border-radius: 50%;
+      display: grid; place-items: center; color: #fff;
+      box-shadow: 0 0 14px var(--preview-color, var(--accent));
+      background: var(--preview-color, var(--accent));
+      transition: all 0.25s ease;
+      animation: pulse-halo 2.5s infinite ease-in-out;
+    }
+    .orb-preview-circle svg { width: 15px; height: 15px; }
+
+    @keyframes pulse-halo {
+      0%, 100% { transform: scale(1); box-shadow: 0 0 10px var(--preview-color, var(--accent)); }
+      50% { transform: scale(1.06); box-shadow: 0 0 18px var(--preview-color, var(--accent)); }
+    }
+
+    /* Hero Metric Cards */
+    .hero-stat {
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent-soft) 0%, var(--surface-sunken) 100%);
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-bottom: 12px;
+    }
+    .hero-stat .hero-title { font-size: 0.74rem; font-weight: 650; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+    .hero-stat .hero-value { font-size: 1.65rem; font-weight: 800; color: var(--accent); letter-spacing: -0.03em; line-height: 1.1; margin: 2px 0; }
+    .hero-stat .hero-sub { font-size: 0.76rem; color: var(--text-dim); }
+
+    .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+    .stat-box {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 8px;
+      text-align: center;
+    }
+    .stat-box .label { font-size: 0.7rem; color: var(--text-faint); font-weight: 600; text-transform: uppercase; }
+    .stat-box .val { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-top: 2px; }
+    .stat-box .count { font-size: 0.72rem; color: var(--text-dim); }
+
+    /* =========================================================================
+       B1: Inset Grouped Rail Layout
+       ========================================================================= */
+    .b1-wrap { display: grid; grid-template-columns: 58px minmax(0, 1fr); height: 100%; width: 100%; }
+    .b1-rail {
+      background: var(--rail);
+      border-right: 1px solid var(--border);
+      padding: 10px 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    .b1-tab {
+      position: relative;
+      display: grid; place-items: center; gap: 2px;
+      width: 46px; padding: 6px 0 5px;
+      border: 0; border-radius: 9px; background: transparent;
+      color: var(--text-dim); cursor: pointer;
+      font-size: 0.62rem; font-weight: 650; letter-spacing: 0.02em;
+      min-height: 0;
+    }
+    .b1-tab .icon { width: 18px; height: 18px; }
+    .b1-tab[aria-current="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+    .b1-tab .badge {
+      position: absolute; top: 4px; right: 8px;
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--warn); border: 1.5px solid var(--rail);
+    }
+    .b1-main { display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+    .b1-toolbar {
+      flex: 0 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 16px 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .b1-toolbar h2 { margin: 0; font-size: 1.05rem; font-weight: 680; letter-spacing: -0.01em; }
+    .b1-caption { margin: 12px 2px 5px; font-size: 0.72rem; font-weight: 650; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; }
+    .b1-caption:first-child { margin-top: 2px; }
+    .b1-group {
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .b1-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      min-height: 40px;
+    }
+    .b1-row + .b1-row { border-top: 1px solid var(--border); }
+    .b1-row .label { font-size: 0.85rem; font-weight: 550; }
+    .b1-row .sub { display: block; color: var(--text-dim); font-size: 0.76rem; font-weight: 400; margin-top: 1px; }
+
+    /* ---------- Floating Prototype Switcher Bar ---------- */
+    .switcher-bar {
+      position: fixed;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: #0f141a;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.1);
+      z-index: 1000;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+    }
+    .switcher-bar button {
+      border: 0;
+      background: #232c35;
+      color: #e3e9ef;
+      border-radius: 999px;
+      min-height: 28px;
+      padding: 0 11px;
+      font-family: inherit;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .switcher-bar button:hover { background: #323e4a; }
+    .switcher-bar button.active-pill { background: #2674a6; color: #fff; }
+    [data-theme="gruvbox-dark"] .switcher-bar button.active-pill { background: #fe8019; color: #1d2021; font-weight: 700; }
+    [data-theme="catppuccin-mocha"] .switcher-bar button.active-pill { background: #cba6f7; color: #11111b; font-weight: 700; }
+    [data-theme="tokyo-night"] .switcher-bar button.active-pill { background: #7aa2f7; color: #16161e; font-weight: 700; }
+    .switcher-bar .label-text {
+      padding: 0 8px;
+      color: #f0f4f8;
+      font-size: 0.76rem;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Simulated Desktop Application Window (480x520) -->
+  <div class="window-frame">
+    <div class="titlebar">
+      <!-- macOS Window Controls -->
+      <div class="traffic-lights">
+        <div class="traffic-light traffic-close"></div>
+        <div class="traffic-light traffic-min"></div>
+        <div class="traffic-light traffic-max"></div>
+      </div>
+      <span class="window-title">Slugtale Settings — 480×520</span>
+
+      <!-- Omarchy Linux (Hyprland) Window Header -->
+      <div class="omarchy-header">
+        <div class="omarchy-title-left">
+          <span>Slugtale Settings</span>
+          <span class="omarchy-tag">Hyprland · Wayland</span>
+        </div>
+        <div class="omarchy-window-controls">
+          <span title="Minimize">─</span>
+          <span title="Toggle float">□</span>
+          <span title="Close window">✕</span>
+        </div>
+      </div>
+    </div>
+    <div id="viewport" class="viewport"></div>
+  </div>
+
+  <!-- Prototype Switcher (Floating Bottom Pill) -->
+  <div class="switcher-bar">
+    <button id="os-btn" type="button" class="active-pill" title="Toggle OS Desktop (o)"></button>
+    <button id="theme-btn" type="button" title="Cycle Theme Palette (d)"></button>
+    <span id="variant-label" class="label-text"></span>
+    <button id="state-btn" type="button" title="Cycle scenario state (s)"></button>
+  </div>
+
+  <script>
+    // ---------- Embedded Icons ----------
+    const ICONS = {
+      status: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+      dictation: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>',
+      bar: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/>',
+      usage: '<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>',
+      engine: '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/>',
+      general: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>',
+      mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
+      check: '<path d="M20 6 9 17l-5-5"/>',
+      alert: '<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>'
+    };
+    function icon(name, cls = "icon") {
+      return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+    }
+
+    // ---------- Navigation Tabs ----------
+    const TABS = [
+      { id: "status", label: "Status", icon: "status" },
+      { id: "dictation", label: "Dictation", icon: "dictation" },
+      { id: "bar", label: "Bar", icon: "bar" },
+      { id: "usage", label: "Usage", icon: "usage" },
+      { id: "engine", label: "Engine", icon: "engine" },
+      { id: "general", label: "General", icon: "general" }
+    ];
+
+    // Swatches (ADR-0004)
+    const SWATCHES = [
+      { id: "red", hex: "#ff5a52", label: "Red" },
+      { id: "amber", hex: "#f5a524", label: "Amber" },
+      { id: "green", hex: "#35c76a", label: "Green" },
+      { id: "blue", hex: "#4c9ffe", label: "Blue" },
+      { id: "violet", hex: "#a78bfa", label: "Violet" },
+      { id: "graphite", hex: "#9aa4ad", label: "Graphite" }
+    ];
+
+    // ---------- Scenarios / State Fixtures ----------
+    const SCENARIOS = {
+      fresh: {
+        label: "First Run (Unconfigured)",
+        hotkey_macos: null,
+        hotkey_linux: null,
+        activation_mode: "toggle",
+        voice_activation: false,
+        speed_profile: "balanced",
+        primary_engine: "whisper",
+        second_opinion: "off",
+        launch_at_login: false,
+        theme_setting: "auto",
+        bar_accent: "red",
+        bar_position: "bottom-center",
+        bar_display: "active",
+        store_usage: true,
+        usage: {
+          today: { dictations: 0, words: 0, time_saved: "0 min" },
+          this_week: { dictations: 0, words: 0, time_saved: "0 min" },
+          all_time: { dictations: 0, words: 0, time_saved: "0 min" },
+          measured_wpm: null,
+          typed_estimate: null,
+          completed_challenges: 0
+        },
+        model: { id: "base.en", present: false, mb: 148, path_macos: "~/Library/Application Support/com.slugtale.desktop/models/ggml-base.en.bin", path_linux: "~/.local/share/slugtale/models/ggml-base.en.bin" },
+        items_macos: [
+          { id: "microphone", label: "Microphone permission", ready: false, required: true, detail: "Grant access in System Settings > Privacy & Security", action: "Open Privacy" },
+          { id: "text_insertion", label: "Text insertion permission", ready: false, required: true, detail: "Grant Accessibility permission to insert text at caret", action: "Open Accessibility" },
+          { id: "hotkey", label: "Hotkey configured", ready: false, required: true, detail: "Record a global shortcut to start dictating", pane: "dictation" },
+          { id: "local_model", label: "Local model downloaded", ready: false, required: true, detail: "Download base.en weights (148 MB)", pane: "engine" },
+          { id: "transcription_engine", label: "Transcription runtime", ready: true, required: true, detail: "Whisper runtime ready" },
+          { id: "display_session", label: "Display server session", ready: true, required: false, detail: "macOS Cocoa Window Server" }
+        ],
+        items_linux: [
+          { id: "display_session", label: "Display server session", ready: true, required: true, detail: "Wayland (Hyprland compositor connected)" },
+          { id: "microphone", label: "Audio capture", ready: false, required: true, detail: "PipeWire / ALSA microphone stream", action: "Check Audio" },
+          { id: "text_insertion", label: "Text insertion", ready: false, required: true, detail: "wlr-virtual-keyboard / Accessibility portal", action: "Grant Portal" },
+          { id: "hotkey", label: "Global shortcut", ready: false, required: true, detail: "Bind global shortcut for Hyprland", pane: "dictation" },
+          { id: "local_model", label: "Local model downloaded", ready: false, required: true, detail: "Download base.en weights (148 MB)", pane: "engine" },
+          { id: "transcription_engine", label: "Transcription runtime", ready: true, required: true, detail: "Whisper Linux CPU/Vulkan engine ready" }
+        ]
+      },
+      ready: {
+        label: "Configured (Measured Baseline)",
+        hotkey_macos: "Cmd+Shift+D",
+        hotkey_linux: "Super+Shift+D",
+        activation_mode: "toggle",
+        voice_activation: true,
+        speed_profile: "balanced",
+        primary_engine: "whisper",
+        second_opinion: "automatic",
+        launch_at_login: true,
+        theme_setting: "auto",
+        bar_accent: "amber",
+        bar_position: "bottom-center",
+        bar_display: "active",
+        store_usage: true,
+        usage: {
+          today: { dictations: 8, words: 940, time_saved: "About 14 min" },
+          this_week: { dictations: 34, words: 4300, time_saved: "About 58 min" },
+          all_time: { dictations: 92, words: 12400, time_saved: "About 2 hr 45 min" },
+          measured_wpm: 64,
+          typed_estimate: null,
+          completed_challenges: 3
+        },
+        model: { id: "base.en", present: true, mb: 148, path_macos: "~/Library/Application Support/com.slugtale.desktop/models/ggml-base.en.bin", path_linux: "~/.local/share/slugtale/models/ggml-base.en.bin" },
+        items_macos: [
+          { id: "microphone", label: "Microphone permission", ready: true, required: true },
+          { id: "text_insertion", label: "Text insertion permission", ready: true, required: true },
+          { id: "hotkey", label: "Hotkey configured", ready: true, required: true },
+          { id: "local_model", label: "Local model downloaded", ready: true, required: true },
+          { id: "transcription_engine", label: "Transcription runtime", ready: true, required: true },
+          { id: "display_session", label: "Display server session", ready: true, required: false }
+        ],
+        items_linux: [
+          { id: "display_session", label: "Display server session", ready: true, required: true, detail: "Wayland (Hyprland compositor connected)" },
+          { id: "microphone", label: "Audio capture", ready: true, required: true, detail: "PipeWire Audio Capture (ALSA/Pulse)" },
+          { id: "text_insertion", label: "Text insertion", ready: true, required: true, detail: "wlr-virtual-keyboard / Wayland Portal" },
+          { id: "hotkey", label: "Global shortcut", ready: true, required: true, detail: "Global hotkey registered" },
+          { id: "local_model", label: "Local model downloaded", ready: true, required: true, detail: "ggml-base.en.bin on SSD (148 MB)" },
+          { id: "transcription_engine", label: "Transcription runtime", ready: true, required: true, detail: "Whisper Linux CPU/Vulkan engine ready" }
+        ]
+      }
+    };
+
+    // Global in-memory state clone
+    let appState = JSON.parse(JSON.stringify(SCENARIOS.ready));
+    let activeTab = "dictation";
+    let showDeleteConfirm = false;
+
+    const THEME_CYCLE = ["gruvbox-dark", "gruvbox-light", "catppuccin-mocha", "tokyo-night", "dark", "light"];
+
+    function getQueryParams() {
+      const p = new URLSearchParams(window.location.search);
+      return {
+        os: ["omarchy", "macos"].includes(p.get("os")) ? p.get("os") : "omarchy",
+        state: ["ready", "fresh"].includes(p.get("state")) ? p.get("state") : "ready",
+        theme: THEME_CYCLE.includes(p.get("theme")) ? p.get("theme") : "gruvbox-dark"
+      };
+    }
+
+    function updateParams(newParams) {
+      const p = new URLSearchParams(window.location.search);
+      Object.entries(newParams).forEach(([k, v]) => p.set(k, v));
+      window.history.replaceState(null, "", `?${p.toString()}`);
+      render();
+    }
+
+    function getPlatformItems(s, os) {
+      return os === "omarchy" ? s.items_linux : s.items_macos;
+    }
+    function getPlatformHotkey(s, os) {
+      return os === "omarchy" ? s.hotkey_linux : s.hotkey_macos;
+    }
+    function getPlatformPath(s, os) {
+      return os === "omarchy" ? s.model.path_linux : s.model.path_macos;
+    }
+
+    const isAppReady = (s, os) => getPlatformItems(s, os).every((i) => i.ready || !i.required);
+    const getBlockers = (s, os) => getPlatformItems(s, os).filter((i) => i.required && !i.ready);
+
+    function badgeForTab(s, tabId, os) {
+      if (tabId === "status") return getBlockers(s, os).length > 0;
+      if (tabId === "dictation") return !getPlatformHotkey(s, os);
+      if (tabId === "engine") return !s.model.present;
+      return false;
+    }
+
+    function keycapsHtml(hotkey, os) {
+      if (!hotkey) return `<span class="pill" data-ready="false">Unset</span>`;
+      if (os === "omarchy") {
+        const keys = hotkey.split("+").map((k) => `<kbd>${k}</kbd>`).join("");
+        return `<span class="keys">${keys}</span>`;
+      } else {
+        const glyphs = { Cmd: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧" };
+        const keys = hotkey.split("+").map((k) => `<kbd>${glyphs[k] || k}</kbd>`).join("");
+        return `<span class="keys">${keys}</span>`;
+      }
+    }
+
+    function swatchPickerHtml(currentAccent) {
+      return `<div class="swatches">${SWATCHES.map((sw) => `
+        <button type="button" class="swatch-btn" data-accent="${sw.id}" aria-checked="${currentAccent === sw.id}" style="background:${sw.hex}" title="${sw.label}"></button>
+      `).join("")}</div>`;
+    }
+
+    // =========================================================================
+    // B1: Inset Grouped Rail View Renderer
+    // =========================================================================
+    function renderB1(s, os) {
+      const tab = activeTab;
+      const items = getPlatformItems(s, os);
+      const blockers = getBlockers(s, os);
+      const hotkey = getPlatformHotkey(s, os);
+      const modelPath = getPlatformPath(s, os);
+
+      const panes = {
+        status: `
+          ${blockers.length ? `
+            <div class="b1-caption">Needs Attention</div>
+            <div style="display:grid;gap:6px">
+              ${blockers.map((b) => `
+                <div class="warn-banner">
+                  <div><strong>${b.label}</strong><small>${b.detail}</small></div>
+                  ${b.action ? `<button type="button">${b.action}</button>` : `<button type="button" data-nav="${b.pane}">Fix</button>`}
+                </div>
+              `).join("")}
+            </div>` : ""}
+          <div class="b1-caption">${os === "omarchy" ? "Hyprland & System Checks" : "All System Checks"}</div>
+          <div class="b1-group">
+            ${items.map((i) => `
+              <div class="b1-row">
+                <div><span class="label">${i.label}</span><span class="sub">${i.detail || (i.ready ? "Ready" : "Action required")}</span></div>
+                <span class="pill" data-ready="${i.ready}">${i.ready ? (i.required ? "Ready" : "Optional") : "Action Needed"}</span>
+              </div>
+            `).join("")}
+          </div>`,
+
+        dictation: `
+          <div class="b1-caption">Global Shortcut</div>
+          <div class="b1-group">
+            <div class="b1-row">
+              <div><span class="label">Dictation Hotkey</span><span class="sub">${os === "omarchy" ? "Bound globally via Hyprland / wlroots" : "Controls dictation across any application"}</span></div>
+              ${hotkey ? `<div style="display:flex;gap:8px;align-items:center">${keycapsHtml(hotkey, os)}<button type="button" class="ghost" data-action="record-hotkey">Change</button></div>`
+                       : `<button type="button" class="primary" data-action="record-hotkey">Record Hotkey</button>`}
+            </div>
+            <div class="b1-row">
+              <div><span class="label">Activation Mode</span><span class="sub">${s.activation_mode === "toggle" ? "Press once to start, press again to stop" : "Hold while speaking, release to insert"}</span></div>
+              <div class="segmented" data-prop="activation_mode">
+                <button type="button" data-val="toggle" aria-pressed="${s.activation_mode === "toggle"}">Toggle</button>
+                <button type="button" data-val="hold" aria-pressed="${s.activation_mode === "hold"}">Hold</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="b1-caption">Hands-Free</div>
+          <div class="b1-group">
+            <div class="b1-row">
+              <div><span class="label">Voice Wake Word</span><span class="sub">Say "Hey Slug" to dictate without keys</span></div>
+              <label class="toggle"><input type="checkbox" data-prop="voice_activation" ${s.voice_activation ? "checked" : ""}><span class="slider"></span></label>
+            </div>
+          </div>`,
+
+        bar: `
+          <div class="b1-caption">Orb & Pill Appearance</div>
+          <div class="b1-group">
+            <div class="b1-row">
+              <div><span class="label">Accent Color</span><span class="sub">Palette color painted by resting Orb</span></div>
+              ${swatchPickerHtml(s.bar_accent)}
+            </div>
+            <div class="b1-row">
+              <div><span class="label">Screen Position</span><span class="sub">${os === "omarchy" ? "Wayland layer-surface anchor position" : "Dock anchor on screen"}</span></div>
+              <div class="segmented" data-prop="bar_position">
+                <button type="button" data-val="bottom-center" aria-pressed="${s.bar_position === "bottom-center"}">Bottom</button>
+                <button type="button" data-val="top-center" aria-pressed="${s.bar_position === "top-center"}">Top</button>
+                <button type="button" data-val="bottom-right" aria-pressed="${s.bar_position === "bottom-right"}">Corner</button>
+                <button type="button" data-val="caret" aria-pressed="${s.bar_position === "caret"}">Caret</button>
+              </div>
+            </div>
+            <div class="b1-row">
+              <div><span class="label">Target Monitor</span><span class="sub">${os === "omarchy" ? "Hyprland monitor identifier (DP-1/HDMI-A-1)" : "Display anchor"}</span></div>
+              <select data-prop="bar_display">
+                <option value="active" ${s.bar_display === "active" ? "selected" : ""}>Active Monitor (Focused Workspace)</option>
+                <option value="primary" ${s.bar_display === "primary" ? "selected" : ""}>Primary Output</option>
+              </select>
+            </div>
+          </div>`,
+
+        usage: `
+          <div class="hero-stat">
+            <span class="hero-title">Time Saved by Dictating</span>
+            <span class="hero-value">${s.usage.measured_wpm || s.usage.typed_estimate ? s.usage.all_time.time_saved : "—"}</span>
+            <span class="hero-sub">${s.usage.measured_wpm ? `Computed from ${s.usage.measured_wpm} WPM baseline minus speaking duration` : "Take typing test below to measure saved time"}</span>
+          </div>
+
+          <div class="stat-grid">
+            <div class="stat-box"><span class="label">Today</span><div class="val">${s.usage.today.words} w</div><div class="count">${s.usage.today.dictations} dictations</div></div>
+            <div class="stat-box"><span class="label">This Week</span><div class="val">${s.usage.this_week.words} w</div><div class="count">${s.usage.this_week.dictations} dictations</div></div>
+            <div class="stat-box"><span class="label">All Time</span><div class="val">${s.usage.all_time.words} w</div><div class="count">${s.usage.all_time.dictations} dictations</div></div>
+          </div>
+
+          <div class="b1-caption">Typing Baseline</div>
+          <div class="b1-group">
+            <div class="b1-row">
+              <div>
+                <span class="label">${s.usage.measured_wpm ? `${s.usage.measured_wpm} WPM (Measured)` : (s.usage.typed_estimate ? `${s.usage.typed_estimate} WPM (Estimate)` : "Not Measured")}</span>
+                <span class="sub">${s.usage.completed_challenges === 3 ? "3 of 3 typing challenges completed" : `${s.usage.completed_challenges} of 3 challenges done`}</span>
+              </div>
+              ${s.usage.completed_challenges === 3 ? `<button type="button" data-action="redo-challenges">Redo Test</button>`
+                : (s.usage.completed_challenges > 0 ? `<button type="button" class="primary" data-action="continue-challenges">Continue (${s.usage.completed_challenges}/3)</button>`
+                : `<button type="button" class="primary" data-action="start-challenges">Measure Speed</button>`)}
+            </div>
+          </div>
+
+          <div class="b1-caption">Data Privacy</div>
+          <div class="b1-group">
+            <div class="b1-row">
+              <div><span class="label">Store Local Counts</span><span class="sub">Word counts kept offline on this device</span></div>
+              <label class="toggle"><input type="checkbox" data-prop="store_usage" ${s.store_usage ? "checked" : ""}><span class="slider"></span></label>
+            </div>
+          </div>
+          ${showDeleteConfirm ? `
+            <div class="warn-banner" style="margin-top:10px">
+              <div><strong>Delete Stored Counts?</strong><small>Typing baseline will be preserved.</small></div>
+              <div style="display:flex;gap:6px"><button type="button" class="danger" data-action="confirm-delete">Delete</button><button type="button" data-action="cancel-delete">Cancel</button></div>
+            </div>` : ""}`,
+
+        engine: `
+          <div class="b1-caption">Local Speech Model</div>
+          <div class="b1-group">
+            <div class="b1-row">
+              <div><span class="label">${s.model.id}</span><span class="sub">${s.model.present ? `Installed · ${s.model.mb} MB` : `${s.model.mb} MB download`}</span></div>
+              ${s.model.present ? `<button type="button" class="danger" data-action="delete-model">Delete</button>` : `<button type="button" class="primary" data-action="download-model">Download</button>`}
+            </div>
+            ${s.model.present ? `
+            <div class="b1-row">
+              <div><span class="label">Storage Location</span><span class="sub" style="font-family:ui-monospace,monospace;font-size:0.7rem">${modelPath}</span></div>
+              <button type="button" class="ghost">Reveal</button>
+            </div>` : ""}
+          </div>
+
+          <div class="b1-caption">Decoding Engine</div>
+          <div class="b1-group">
+            <div class="b1-row">
+              <div><span class="label">Primary Engine</span><span class="sub">${os === "omarchy" ? "Local Whisper (CPU / Vulkan / CUDA)" : "Local speech decoder"}</span></div>
+              <select data-prop="primary_engine">
+                <option value="whisper" ${s.primary_engine === "whisper" ? "selected" : ""}>Whisper (High accuracy)</option>
+                <option value="parakeet" ${s.primary_engine === "parakeet" ? "selected" : ""}>Parakeet (Low latency)</option>
+                ${os === "macos" ? `<option value="apple" ${s.primary_engine === "apple" ? "selected" : ""}>Apple SpeechTranscriber</option>` : ""}
+              </select>
+            </div>
+            <div class="b1-row">
+              <div><span class="label">Second Opinion</span><span class="sub">Cross-validate uncertain segments</span></div>
+              <select data-prop="second_opinion">
+                <option value="off" ${s.second_opinion === "off" ? "selected" : ""}>Off</option>
+                <option value="automatic" ${s.second_opinion === "automatic" ? "selected" : ""}>Automatic (Recommended)</option>
+              </select>
+            </div>
+            <div class="b1-row">
+              <div><span class="label">Speed Profile</span><span class="sub">Accuracy tradeoff</span></div>
+              <div class="segmented" data-prop="speed_profile">
+                <button type="button" data-val="fast" aria-pressed="${s.speed_profile === "fast"}">Fast</button>
+                <button type="button" data-val="balanced" aria-pressed="${s.speed_profile === "balanced"}">Balanced</button>
+                <button type="button" data-val="accurate" aria-pressed="${s.speed_profile === "accurate"}">Accurate</button>
+              </div>
+            </div>
+          </div>`,
+
+        general: `
+          <div class="b1-caption">Startup & Integration</div>
+          <div class="b1-group">
+            <div class="b1-row">
+              <div><span class="label">Launch at Login</span><span class="sub">${os === "omarchy" ? "systemd user service or hyprland autostart" : "Start Slugtale in tray automatically"}</span></div>
+              <label class="toggle"><input type="checkbox" data-prop="launch_at_login" ${s.launch_at_login ? "checked" : ""}><span class="slider"></span></label>
+            </div>
+            <div class="b1-row">
+              <div><span class="label">Appearance</span><span class="sub">${os === "omarchy" ? "Follows Omarchy active theme (Gruvbox)" : "Match OS theme"}</span></div>
+              <div class="segmented" data-prop="theme_setting">
+                <button type="button" data-val="auto" aria-pressed="${s.theme_setting === "auto"}">Auto</button>
+                <button type="button" data-val="light" aria-pressed="${s.theme_setting === "light"}">Light</button>
+                <button type="button" data-val="dark" aria-pressed="${s.theme_setting === "dark"}">Dark</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="b1-caption">Diagnostics</div>
+          <div class="b1-group">
+            <div class="b1-row">
+              <div><span class="label">Diagnostic Log</span><span class="sub">${os === "omarchy" ? "~/.local/share/slugtale/logs" : "Troubleshooting logs without audio/text"}</span></div>
+              <button type="button" class="ghost">Reveal Log</button>
+            </div>
+            <div class="b1-row">
+              <div><span class="label">Version</span><span class="sub">Slugtale v0.1.1 (${os === "omarchy" ? "Linux x86_64" : "macOS Universal"})</span></div>
+              <button type="button">Check Updates</button>
+            </div>
+          </div>`
+      };
+
+      return `
+      <div class="b1-wrap">
+        <nav class="b1-rail">
+          ${TABS.map((t) => `
+            <button class="b1-tab" type="button" data-tab="${t.id}" aria-current="${tab === t.id}">
+              ${icon(t.icon)}<span>${t.label}</span>${badgeForTab(s, t.id, os) ? '<span class="badge"></span>' : ""}
+            </button>
+          `).join("")}
+        </nav>
+        <div class="b1-main">
+          <div class="b1-toolbar">
+            <h2>${TABS.find((t) => t.id === tab).label}</h2>
+            ${hotkey && tab !== "dictation" ? keycapsHtml(hotkey, os) : ""}
+          </div>
+          <div class="scrollable">${panes[tab] || ""}</div>
+        </div>
+      </div>`;
+    }
+
+    function render() {
+      const { os, state, theme } = getQueryParams();
+
+      // Update document attributes
+      document.documentElement.dataset.os = os;
+      document.documentElement.dataset.theme = theme;
+
+      // Update data scenario if switching state
+      if (appState.label !== SCENARIOS[state].label) {
+        appState = JSON.parse(JSON.stringify(SCENARIOS[state]));
+      }
+
+      // Render Active View
+      document.getElementById("viewport").innerHTML = renderB1(appState, os);
+
+      // Update Switcher Bar
+      document.getElementById("os-btn").textContent = `OS: ${os === "omarchy" ? "Omarchy Linux (Hyprland)" : "macOS"}`;
+      document.getElementById("theme-btn").textContent = `Theme: ${theme}`;
+      document.getElementById("variant-label").textContent = `B1 Inset Grouped`;
+      document.getElementById("state-btn").textContent = `State: ${state}`;
+      document.title = `PROTOTYPE B1 — ${os === "omarchy" ? "Omarchy Linux" : "macOS"} (${theme})`;
+    }
+
+    function toggleOS() {
+      const cur = getQueryParams().os;
+      const next = cur === "omarchy" ? "macos" : "omarchy";
+      const theme = next === "omarchy" ? "gruvbox-dark" : "light";
+      updateParams({ os: next, theme: theme });
+    }
+
+    function cycleTheme() {
+      const cur = getQueryParams().theme;
+      const idx = (THEME_CYCLE.indexOf(cur) + 1) % THEME_CYCLE.length;
+      updateParams({ theme: THEME_CYCLE[idx] });
+    }
+
+    function cycleState() {
+      const cur = getQueryParams().state;
+      const next = cur === "ready" ? "fresh" : "ready";
+      updateParams({ state: next });
+    }
+
+    // Switcher controls
+    document.getElementById("os-btn").addEventListener("click", toggleOS);
+    document.getElementById("theme-btn").addEventListener("click", cycleTheme);
+    document.getElementById("state-btn").addEventListener("click", cycleState);
+
+    // Global Keyboard shortcuts
+    document.addEventListener("keydown", (e) => {
+      if (e.target.matches("input, textarea, select")) return;
+      if (e.key.toLowerCase() === "o") toggleOS();
+      if (e.key.toLowerCase() === "d") cycleTheme();
+      if (e.key.toLowerCase() === "s") cycleState();
+      if (["1", "2", "3", "4", "5", "6"].includes(e.key)) {
+        const tabIdx = parseInt(e.key, 10) - 1;
+        if (TABS[tabIdx]) {
+          activeTab = TABS[tabIdx].id;
+          render();
+        }
+      }
+    });
+
+    // In-viewport interactions (Delegation)
+    document.getElementById("viewport").addEventListener("click", (e) => {
+      const tabTarget = e.target.closest("[data-tab]");
+      if (tabTarget) {
+        activeTab = tabTarget.dataset.tab;
+        render();
+        return;
+      }
+
+      const navTarget = e.target.closest("[data-nav]");
+      if (navTarget) {
+        activeTab = navTarget.dataset.nav;
+        render();
+        return;
+      }
+
+      const swatchTarget = e.target.closest("[data-accent]");
+      if (swatchTarget) {
+        appState.bar_accent = swatchTarget.dataset.accent;
+        render();
+        return;
+      }
+
+      const segBtn = e.target.closest(".segmented button");
+      if (segBtn) {
+        const parent = segBtn.closest(".segmented");
+        const prop = parent.dataset.prop;
+        const val = segBtn.dataset.val;
+        if (prop && val) {
+          appState[prop] = val;
+          render();
+        }
+        return;
+      }
+
+      const actionBtn = e.target.closest("[data-action]");
+      if (actionBtn) {
+        const action = actionBtn.dataset.action;
+        const os = getQueryParams().os;
+        if (action === "record-hotkey") {
+          if (os === "omarchy") {
+            appState.hotkey_linux = appState.hotkey_linux ? "Super+Shift+D" : "Super+Space";
+          } else {
+            appState.hotkey_macos = appState.hotkey_macos ? "Cmd+Shift+D" : "Cmd+Option+Space";
+          }
+          render();
+        } else if (action === "download-model") {
+          appState.model.present = true;
+          render();
+        } else if (action === "delete-model") {
+          appState.model.present = false;
+          render();
+        } else if (action === "start-challenges" || action === "continue-challenges") {
+          appState.usage.completed_challenges = 3;
+          appState.usage.measured_wpm = 68;
+          render();
+        } else if (action === "redo-challenges") {
+          appState.usage.completed_challenges = 0;
+          appState.usage.measured_wpm = null;
+          render();
+        } else if (action === "confirm-delete") {
+          appState.usage.today = { dictations: 0, words: 0, time_saved: "0 min" };
+          appState.usage.this_week = { dictations: 0, words: 0, time_saved: "0 min" };
+          appState.usage.all_time = { dictations: 0, words: 0, time_saved: "0 min" };
+          showDeleteConfirm = false;
+          render();
+        } else if (action === "cancel-delete") {
+          showDeleteConfirm = false;
+          render();
+        }
+      }
+    });
+
+    // Inputs change
+    document.getElementById("viewport").addEventListener("change", (e) => {
+      const target = e.target;
+      const prop = target.dataset.prop;
+      if (prop) {
+        if (target.type === "checkbox") {
+          if (prop === "store_usage" && !target.checked) {
+            showDeleteConfirm = true;
+          } else {
+            appState[prop] = target.checked;
+          }
+        } else {
+          appState[prop] = target.value;
+        }
+        render();
+      }
+    });
+
+    window.addEventListener("popstate", render);
+    render();
+  </script>
+</body>
+</html>

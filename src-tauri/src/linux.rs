@@ -36,6 +36,9 @@ use crate::{
 };
 use cpal::traits::HostTrait;
 
+mod portal_accelerator;
+pub use portal_accelerator::{PortalAccelerator, PortalAcceleratorError};
+
 /// Which display server the current session runs (ADR-0023). Phase 1 supports
 /// X11; a Wayland or unknown session is reported as not-yet-supported so the
 /// readiness copy can steer the user to an X11 session.
