@@ -109,7 +109,7 @@ impl DiagnosticEvent {
 }
 
 /// Format one [`DiagnosticEvent`] as a single redacted Local Diagnostic Log line.
-pub fn render_diagnostic_event(event: &DiagnosticEvent) -> String {
+fn render_diagnostic_event(event: &DiagnosticEvent) -> String {
     match event {
         DiagnosticEvent::ReadinessIncomplete { missing } => {
             format!("readiness: not ready (missing: {})", missing.join(", "))
@@ -173,7 +173,7 @@ where
 /// The Local Diagnostic Log (ADR-0019): development troubleshooting output gated
 /// by the user's `diagnostic_logging` preference (off by default). When disabled
 /// it records nothing, so no log file accumulates unless the user opts in.
-pub struct LocalDiagnosticLog<S> {
+struct LocalDiagnosticLog<S> {
     enabled: bool,
     sink: S,
 }

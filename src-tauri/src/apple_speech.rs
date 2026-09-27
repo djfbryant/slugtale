@@ -80,17 +80,17 @@ macro_rules! bridge_convention {
 }
 
 /// The engine this module provides.
-pub const APPLE_SPEECH_ENGINE: TranscriptionEngine = TranscriptionEngine::AppleSpeech;
+const APPLE_SPEECH_ENGINE: TranscriptionEngine = TranscriptionEngine::AppleSpeech;
 
 /// The operating systems this engine can ever run on. Used in both the Settings
 /// metadata and the unsupported-platform reason, so the two cannot drift.
-pub const APPLE_SPEECH_SUPPORTED_PLATFORMS: &str = "macOS 26 and later";
+const APPLE_SPEECH_SUPPORTED_PLATFORMS: &str = "macOS 26 and later";
 
 /// The Dictation Language the provider assumes when the caller does not name
 /// one. Slugtale is English-only by default (ADR-0011), and Apple keys its
 /// speech assets by locale rather than by language, so this has to be a full
 /// locale identifier rather than a bare `en`.
-pub const DEFAULT_APPLE_SPEECH_LOCALE: &str = "en-US";
+const DEFAULT_APPLE_SPEECH_LOCALE: &str = "en-US";
 
 bridge_convention! {
     /// The macOS this engine needs, phrased for the Settings copy that renders
@@ -109,16 +109,6 @@ bridge_convention! {
     /// low-confidence engine, and the Second Opinion router must not confuse the
     /// two.
     const CONFIDENCE_UNREPORTED: f64 = -1.0;
-}
-
-/// The answer [`AppleSpeechProvider::availability`] gives on every operating
-/// system that is not macOS.
-///
-/// Exposed as a function rather than being inlined into a `cfg` branch so the
-/// Linux and Windows wording is testable from a macOS developer machine — the
-/// only place most of this code is ever compiled.
-pub fn apple_speech_unsupported_platform() -> EngineAvailability {
-    EngineAvailability::Unavailable(unsupported_platform_reason())
 }
 
 /// The same answer as an [`EngineUnavailable`], for the places that need the
@@ -659,23 +649,20 @@ mod tests {
         // Settings renders this verbatim on machines that will never run the
         // engine, so it has to read as an explanation rather than an error.
         assert_eq!(
-            apple_speech_unsupported_platform(),
+            EngineAvailability::Unavailable(unsupported_platform_reason()),
             EngineAvailability::Unavailable(EngineUnavailable::UnsupportedPlatform {
                 detail: "Apple SpeechTranscriber is available only on macOS 26 and later"
                     .to_string(),
             })
         );
-        assert!(!apple_speech_unsupported_platform().is_available());
+        assert!(!EngineAvailability::Unavailable(unsupported_platform_reason()).is_available());
     }
 
     #[test]
     fn an_unsupported_platform_offers_the_user_nothing_to_fix() {
         // A missing-assets answer earns an install button; "you are on Linux"
         // must not, or Settings would offer a dead end.
-        let EngineAvailability::Unavailable(reason) = apple_speech_unsupported_platform() else {
-            panic!("the engine must never be available off macOS");
-        };
-        assert!(!reason.is_user_resolvable());
+        assert!(!unsupported_platform_reason().is_user_resolvable());
     }
 
     #[test]
