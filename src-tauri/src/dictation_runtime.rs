@@ -100,7 +100,10 @@ impl DictationRuntime {
         Self::start_with_pause(host, Arc::new(voice_watermark), usage_sink, SEGMENT_PAUSE)
     }
 
-    fn start_with_pause(
+    /// Start the workers with a Segment Pause of the caller's choosing. The
+    /// five-second default is what users get; a test reaching this from another
+    /// module drives the same trigger at a pause it does not have to wait for.
+    pub(crate) fn start_with_pause(
         host: impl DictationRuntimeHost + Send + 'static,
         voice_watermark: Arc<dyn Fn() -> u64 + Send + Sync>,
         usage_sink: Arc<UsageSink>,

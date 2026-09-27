@@ -22,9 +22,9 @@ pub use recording_feedback::*;
 
 /// Audio Capture (CONTEXT.md): microphone recording and the perceptual voice
 /// level the dictation waveform renders. Extracted into its own module; the
-/// `AudioRecorder` trait stays the test seam and `cpal` an impl detail behind
-/// `CpalAudioRecorder`. Re-exported so existing `slugtale_lib::*` call sites keep
-/// compiling.
+/// `DictationRecorder` and `VoiceActivationRecorder` traits stay the test seams
+/// and `cpal` an impl detail behind `CpalAudioRecorder`. Re-exported so existing
+/// `slugtale_lib::*` call sites keep compiling.
 mod audio_capture;
 pub use audio_capture::*;
 
