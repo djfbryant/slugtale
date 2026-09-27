@@ -53,7 +53,10 @@ impl DiagnosticEvent {
     /// Reduce unmet [`ReadinessItem`]s to their ids for logging.
     pub fn readiness_incomplete(missing: &[ReadinessItem]) -> Self {
         Self::ReadinessIncomplete {
-            missing: missing.iter().map(|item| item.id.clone()).collect(),
+            missing: missing
+                .iter()
+                .map(|item| item.id.as_str().to_string())
+                .collect(),
         }
     }
 
@@ -359,7 +362,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Settings;
+    use crate::{ReadinessItemId, Settings};
 
     #[test]
     fn enabled_diagnostic_log_records_a_readiness_failure_line() {
@@ -367,7 +370,7 @@ mod tests {
         let mut log = LocalDiagnosticLog::new(true, |line: &str| lines.push(line.to_string()));
 
         log.record(DiagnosticEvent::readiness_incomplete(&[
-            ReadinessItem::missing("microphone", "Microphone access", true),
+            ReadinessItem::missing(ReadinessItemId::Microphone, true),
         ]));
 
         assert_eq!(lines.len(), 1);
@@ -381,7 +384,7 @@ mod tests {
         let mut log = LocalDiagnosticLog::new(false, |line: &str| lines.push(line.to_string()));
 
         log.record(DiagnosticEvent::readiness_incomplete(&[
-            ReadinessItem::missing("microphone", "Microphone access", true),
+            ReadinessItem::missing(ReadinessItemId::Microphone, true),
         ]));
 
         assert!(lines.is_empty());
