@@ -378,24 +378,36 @@ where
         position: crate::DictationSegmentPosition,
     ) -> Result<crate::DictationSegmentOutcome, String> {
         let settings = self.surface.settings();
-        let diagnostic_log = self.surface.diagnostic_log(&settings);
         let stack = self.surface.dictation_stack(&settings)?;
         let target_pid = self.focus_target.lock().ok().and_then(|guard| *guard);
 
         let prepared = self.surface.prepared_insertion(target_pid)?;
-        let runtime = stack.asr_runtime();
-        let insertion =
-            crate::DiagnosticTextInsertion::new(&prepared.insertion, diagnostic_log.clone());
-        let rescue =
-            crate::DiagnosticInsertionRescue::new(prepared.rescue.as_ref(), diagnostic_log);
-        crate::DictationWorkflow::new(
-            &runtime,
-            &insertion,
-            &rescue,
+        let completed = crate::DictationWorkflow::new(
+            &stack,
+            &prepared.insertion,
+            prepared.rescue.as_ref(),
             settings.transcript_cleanup,
         )
-        .complete(audio, position)
-        .map_err(|error| error.to_string())
+        .complete(audio, position);
+
+        match completed {
+            Ok(outcome) => {
+                record_insertion_diagnostics(
+                    self.surface.as_ref(),
+                    outcome.insertion_failure.as_ref(),
+                    outcome.rescued,
+                );
+                Ok(outcome)
+            }
+            Err(error) => {
+                record_insertion_diagnostics(
+                    self.surface.as_ref(),
+                    error.insertion_failure(),
+                    false,
+                );
+                Err(error.to_string())
+            }
+        }
     }
 
     /// Take the speech captured so far as a Dictation Segment, leaving the
@@ -416,6 +428,24 @@ where
                 None
             }
         }
+    }
+}
+
+/// Report how one segment's Text Insertion went. A rescued segment is the case
+/// where insertion failed and the transcription was preserved anyway, so it is
+/// the one that produces both lines. The Dictation Workflow has no Local
+/// Diagnostic Log of its own, which is why this is asked of the surface here
+/// rather than from inside it.
+fn record_insertion_diagnostics(
+    surface: &dyn DictationSurface,
+    insertion_failure: Option<&crate::TextInsertionError>,
+    rescued: bool,
+) {
+    if let Some(error) = insertion_failure {
+        surface.record_diagnostic_event(crate::DiagnosticEvent::insertion_failed(error));
+    }
+    if rescued {
+        surface.record_diagnostic_event(crate::DiagnosticEvent::insertion_rescued());
     }
 }
 
@@ -485,6 +515,9 @@ mod tests {
         transcriptions: Arc<std::sync::Mutex<Vec<String>>>,
         inserted: Arc<std::sync::Mutex<Vec<String>>>,
         rescued: Arc<std::sync::Mutex<Vec<String>>>,
+        /// Set by a test that needs Text Insertion to fail, so the Insertion
+        /// Rescue is the path the segment takes.
+        insertion_fails: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeSurface {
@@ -514,6 +547,12 @@ mod tests {
         fn inserted(&self) -> Vec<String> {
             self.inserted.lock().unwrap().clone()
         }
+
+        fn with_failing_insertion(self: &Arc<Self>) -> Arc<Self> {
+            self.insertion_fails
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.clone()
+        }
     }
 
     impl DictationSurface for FakeSurface {
@@ -526,6 +565,8 @@ mod tests {
             let tag = match event {
                 crate::DiagnosticEvent::HotkeyTransition { .. } => "hotkey_transition",
                 crate::DiagnosticEvent::AudioCaptureFailed { .. } => "audio_capture_failed",
+                crate::DiagnosticEvent::InsertionFailed { .. } => "insertion_failed",
+                crate::DiagnosticEvent::InsertionRescued => "insertion_rescued",
                 _ => "other",
             };
             self.record(Call::Diagnostic(tag));
@@ -585,6 +626,7 @@ mod tests {
                 insertion: SettledTextInsertion::new(
                     Box::new(RecordingInsertion {
                         inserted: self.inserted.clone(),
+                        fails: self.insertion_fails.load(std::sync::atomic::Ordering::SeqCst),
                     }),
                     None,
                 ),
@@ -640,6 +682,7 @@ mod tests {
 
     struct RecordingInsertion {
         inserted: Arc<std::sync::Mutex<Vec<String>>>,
+        fails: bool,
     }
 
     impl TextInsertion for RecordingInsertion {
@@ -648,6 +691,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(transcription.text.clone());
+            if self.fails {
+                return Err(TextInsertionError::new("fake insertion failure"));
+            }
             Ok(())
         }
     }
@@ -935,6 +981,63 @@ mod tests {
             DictationHost::with_recorder(surface.clone(), recorder, discarding_usage_queue());
         host.set_runtime(started_runtime()).unwrap();
         host
+    }
+
+    #[test]
+    fn a_rescued_segment_records_both_the_failure_and_the_rescue() {
+        // Text Insertion failed and the Insertion Rescue preserved the
+        // transcription anyway. Both facts belong in the Local Diagnostic Log,
+        // because "insertion failed" alone reads as lost text and "rescued"
+        // alone hides why the path was taken at all (ADR-0019).
+        let secret = "do not log these dictated words";
+        let surface = Arc::new(FakeSurface::default()).transcribing_as(&[secret]);
+        let surface = surface.with_failing_insertion();
+        let host = host_with(&surface, FakeRecorder::healthy());
+
+        let outcome = host
+            .run_dictation_segment(
+                CapturedAudio::mono_16khz(vec![0.0, 0.25]),
+                DictationSegmentPosition::First,
+            )
+            .expect("the rescue preserved the transcription");
+
+        assert!(outcome.rescued);
+        assert!(outcome.insertion_failure.is_some());
+        assert_eq!(
+            surface.calls(),
+            vec![
+                Call::ReadSettings,
+                Call::Diagnostic("insertion_failed"),
+                Call::Diagnostic("insertion_rescued"),
+            ]
+        );
+        // The recorded events are reasons, never the text they were about.
+        for event in [
+            crate::DiagnosticEvent::InsertionFailed {
+                reason: "text insertion failed: fake insertion failure".to_string(),
+            },
+            crate::DiagnosticEvent::InsertionRescued,
+        ] {
+            assert!(
+                !format!("{event:?}").contains(secret),
+                "leaked transcript text: {event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_segment_that_inserts_records_nothing_about_insertion() {
+        let surface = Arc::new(FakeSurface::default()).transcribing_as(&["typed straight in"]);
+        let host = host_with(&surface, FakeRecorder::healthy());
+
+        host.run_dictation_segment(
+            CapturedAudio::mono_16khz(vec![0.0, 0.25]),
+            DictationSegmentPosition::First,
+        )
+        .expect("insertion succeeded");
+
+        assert_eq!(surface.calls(), vec![Call::ReadSettings]);
+        assert_eq!(surface.inserted(), vec!["Typed straight in"]);
     }
 
     #[test]
