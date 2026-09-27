@@ -267,6 +267,17 @@ where
         }
     }
 
+    /// Turn recording on or off. The log is created once for the app's life and
+    /// cloned into every recorder, so the user's `diagnostic_logging`
+    /// preference has to be able to reach it after startup instead of only at
+    /// construction.
+    pub fn set_enabled(&self, enabled: bool) {
+        match self.inner.lock() {
+            Ok(mut log) => log.enabled = enabled,
+            Err(poisoned) => poisoned.into_inner().enabled = enabled,
+        }
+    }
+
     pub fn record(&self, event: DiagnosticEvent) {
         match self.inner.lock() {
             Ok(mut log) => log.record(event),

@@ -31,7 +31,7 @@ pub(super) fn save_settings(
         return Err("Voice activation is not available in this version of Slugtale.".to_string());
     }
 
-    let previous = load_current_settings(app);
+    let previous = super::app_files(app).settings();
     slugtale_lib::apply_and_persist(
         &previous,
         |settings| slugtale_lib::apply_voice_activation_settings(settings, enabled),
@@ -48,7 +48,7 @@ pub(super) fn save_settings(
             }
             sync_worker(app, settings.voice_activation_enabled)
         },
-        |settings| save_current_settings(app, settings),
+        |settings| super::app_files(app).save_settings(settings),
     )
 }
 
@@ -120,7 +120,7 @@ fn listening_channel() -> Result<
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 fn whisper_ready(app: &tauri::AppHandle) -> bool {
-    let settings = load_current_settings(app);
+    let settings = super::app_files(app).settings();
     app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
         .whisper_provider(&settings)
         .is_some()
@@ -240,7 +240,7 @@ impl slugtale_lib::WakeListener for AppWakeListener {
         let audio = slugtale_lib::CapturedAudio::mono_16khz(samples);
         // Wake checks always use greedy decoding. The user's wider beam is
         // useful for dictation text, but wasteful for a two-word phrase.
-        let mut settings = load_current_settings(&self.app);
+        let mut settings = super::app_files(&self.app).settings();
         settings.speed_profile = slugtale_lib::SpeedProfile::Fast;
         let Some(provider) = self
             .app

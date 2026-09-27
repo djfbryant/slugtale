@@ -99,21 +99,40 @@ impl From<std::io::Error> for ModelError {
     }
 }
 
+/// Downloads and deletes the managed default Local Model, and points the
+/// Settings File at whatever is installed.
+///
+/// It writes the Settings File through the [`crate::AppFiles`] store rather than
+/// a path of its own, so the store's cached Settings value is the same one the
+/// engine and Dictation Readiness read.
 pub struct LocalModelManager {
     model_dir: std::path::PathBuf,
-    settings_path: std::path::PathBuf,
+    files: crate::AppFiles,
 }
 
 impl LocalModelManager {
-    pub fn new(model_dir: std::path::PathBuf, settings_path: std::path::PathBuf) -> Self {
-        Self {
-            model_dir,
-            settings_path,
-        }
+    pub fn new(files: crate::AppFiles) -> Result<Self, ModelError> {
+        let model_dir = files.model_dir().map_err(ModelError::Download)?;
+        Ok(Self { model_dir, files })
     }
 
     pub fn status(&self) -> LocalModelStatus {
         local_model_status(&self.model_dir)
+    }
+
+    /// Record `model_path` as the Local Model the Settings File names, or clear
+    /// it when there is nothing installed. Public so the store's own tests can
+    /// drive the bypass that used to exist without a download.
+    pub fn record_installed_model(
+        &self,
+        model_path: Option<std::path::PathBuf>,
+    ) -> Result<(), ModelError> {
+        let mut settings = self.files.settings();
+        settings.model = model_path.map(|path| path.to_string_lossy().to_string());
+        self.files
+            .save_settings(&settings)
+            .map_err(ModelError::Download)?;
+        Ok(())
     }
 
     pub fn download_default(
@@ -139,13 +158,13 @@ impl LocalModelManager {
             expected_sha256,
             on_progress,
         )?;
-        self.persist_active_model(status.present.then(|| status.path.clone()))?;
+        self.record_installed_model(status.present.then(|| status.path.clone()))?;
         Ok(status)
     }
 
     pub fn delete_default(&self) -> Result<LocalModelStatus, ModelError> {
         let status = delete_default_model(&self.model_dir)?;
-        self.persist_active_model(None)?;
+        self.record_installed_model(None)?;
         Ok(status)
     }
 
@@ -155,16 +174,6 @@ impl LocalModelManager {
 
     pub fn open_in_file_manager(&self) -> std::io::Result<()> {
         open_in_file_manager(&self.reveal_location())
-    }
-
-    fn persist_active_model(
-        &self,
-        model_path: Option<std::path::PathBuf>,
-    ) -> Result<(), ModelError> {
-        let mut settings = crate::load_settings(&self.settings_path);
-        settings.model = model_path.map(|path| path.to_string_lossy().to_string());
-        crate::save_settings(&self.settings_path, &settings)?;
-        Ok(())
     }
 }
 
@@ -556,19 +565,26 @@ mod tests {
         const TRUSTED_SHA256: &str =
             "6d6065cea517391b0166d6a74be33c924cc416b959fa1eee6a146094195b639d";
         let model_dir = unique_test_dir("manager-model");
-        let settings_path = model_dir.join("settings.json");
-        let manager = LocalModelManager::new(model_dir.clone(), settings_path.clone());
+        let files = crate::AppFiles::from_dirs_for_test(
+            Some(model_dir.clone()),
+            Some(model_dir.join("data")),
+        );
+        let manager = LocalModelManager::new(files.clone()).unwrap();
         let downloader = FakeModelDownloader::new(b"trusted model");
 
         let status = manager
             .download_default_with_sha256(&downloader, TRUSTED_SHA256, &mut |_| {})
             .unwrap();
-        let settings = crate::load_settings(&settings_path);
+        let settings = files.settings();
 
         assert!(status.present);
         assert_eq!(
             settings.model,
-            Some(default_model_path(&model_dir).to_string_lossy().to_string())
+            Some(
+                default_model_path(&files.model_dir().unwrap())
+                    .to_string_lossy()
+                    .to_string()
+            )
         );
 
         std::fs::remove_dir_all(model_dir).ok();
@@ -792,21 +808,23 @@ mod tests {
     #[test]
     fn local_model_manager_deletes_model_and_clears_active_model_path() {
         let model_dir = unique_test_dir("manager-delete");
-        let settings_path = model_dir.join("settings.json");
-        std::fs::create_dir_all(&model_dir).unwrap();
-        std::fs::write(default_model_path(&model_dir), b"local model bytes").unwrap();
-        crate::save_settings(
-            &settings_path,
-            &crate::Settings {
-                model: Some(default_model_path(&model_dir).to_string_lossy().to_string()),
+        let files = crate::AppFiles::from_dirs_for_test(
+            Some(model_dir.clone()),
+            Some(model_dir.join("data")),
+        );
+        let installed = default_model_path(&files.model_dir().unwrap());
+        std::fs::create_dir_all(files.model_dir().unwrap()).unwrap();
+        std::fs::write(&installed, b"local model bytes").unwrap();
+        files
+            .save_settings(&crate::Settings {
+                model: Some(installed.to_string_lossy().to_string()),
                 ..crate::Settings::default()
-            },
-        )
-        .unwrap();
-        let manager = LocalModelManager::new(model_dir.clone(), settings_path.clone());
+            })
+            .unwrap();
+        let manager = LocalModelManager::new(files.clone()).unwrap();
 
         let status = manager.delete_default().expect("manager deletes model");
-        let settings = crate::load_settings(&settings_path);
+        let settings = files.settings();
 
         assert!(!status.present);
         assert_eq!(settings.model, None);
