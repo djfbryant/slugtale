@@ -267,36 +267,6 @@ fn dictation_host(app: &tauri::AppHandle) -> Arc<DictationHost> {
     app.state::<Arc<DictationHost>>().inner().clone()
 }
 
-/// The host half of the Dictation Runtime's adapter: microphone cuts, the
-/// transcription-and-insertion workflow, the Usage handoff, and the bar hide
-/// that follows the final job. Everything OS-touching lives here; the runtime
-/// owns ordering, rescue suspension, and panic containment.
-struct AppHost {
-    app: tauri::AppHandle,
-    host: Arc<DictationHost>,
-}
-
-impl slugtale_lib::DictationRuntimeHost for AppHost {
-    fn take_pause_segment(&mut self, cut: u64) -> Option<slugtale_lib::CapturedAudio> {
-        self.host.take_dictation_segment(cut)
-    }
-
-    fn complete(
-        &mut self,
-        audio: slugtale_lib::CapturedAudio,
-        position: slugtale_lib::DictationSegmentPosition,
-    ) -> Result<slugtale_lib::DictationSegmentOutcome, String> {
-        self.host.run_dictation_segment(audio, position)
-    }
-
-    fn last_job_settled(&mut self) {
-        // The worker calls this after the final job settles whatever the
-        // outcome, so the bar stays up until every earlier Segment Pause has
-        // landed too, not just this last one (slugtale-0t4).
-        hide_dictation_bar(&self.app);
-    }
-}
-
 /// Hand the pointer to whichever of Slugtale and the app underneath it is
 /// actually over, and tell the bar which one that is.
 ///
@@ -1389,34 +1359,36 @@ fn main() {
             // Every local file path resolves through this one store, so it has
             // to exist before anything that reads or writes a file.
             app.manage(AppFiles::from_app(app.handle()));
+            // Usage writes happen off the Dictation Workflow path (ADR-0025), so
+            // the queue that carries them has to exist before the first segment.
+            let usage = slugtale_lib::UsageQueue::start(usage_writer(app.handle().clone()))
+                .map_err(std::io::Error::other)?;
             // The dictation lifecycle host owns its own state; it is managed
             // here, before the hotkey worker starts, so every activation input
-            // finds it in place.
-            let host = Arc::new(DictationHost::new(Arc::new(TauriSurface {
-                app: app.handle().clone(),
-            })));
-            app.manage(host.clone());
+            // finds it in place. The Dictation Segment worker reaches the same
+            // host from its own thread, so the runtime is handed a second handle
+            // on it rather than a copy of anything the host already answers.
+            let host: Arc<DictationHost> = Arc::new(DictationHost::new(
+                Arc::new(TauriSurface {
+                    app: app.handle().clone(),
+                }),
+                usage,
+            ));
+            app.manage(Arc::clone(&host));
             slugtale_lib::setup_tray(app)?;
             // The Dictation Segment worker outlives every dictation: it is what
             // keeps segments landing in the order they were spoken.
             // The runtime probes the capture ring's voiced-sample watermark at
             // the moment a Pause Flush is due — the microphone half of the
             // watermark cut (ADR-0026).
-            let watermark_host = host.clone();
-            let runtime = slugtale_lib::DictationRuntime::start(
-                AppHost {
-                    app: app.handle().clone(),
-                    host: host.clone(),
-                },
-                move || watermark_host.voice_watermark(),
-                usage_writer(app.handle().clone()),
-            )
+            let watermark_host = Arc::clone(&host);
+            let runtime_host = Arc::clone(&host);
+            let runtime = slugtale_lib::DictationRuntime::start(runtime_host, move || {
+                watermark_host.voice_watermark()
+            })
             .map_err(std::io::Error::other)?;
             host.set_runtime(Arc::new(runtime))
                 .map_err(std::io::Error::other)?;
-            // Usage writes happen off the Dictation Workflow path (ADR-0025), so
-            // the queue that carries them has to exist before the first segment.
-            // The Dictation Runtime starts that writer; nothing to do here.
             // The hotkey worker starts last: from here on every activation
             // input finds both the host and the runtime in place, so a press
             // during setup cannot hit DictationHost::runtime()'s

@@ -10,8 +10,13 @@
 //! and whatever the Typing Baseline says right now, so redoing the Typing
 //! Challenges moves historical Time Saved rather than leaving a frozen number
 //! that no longer matches the user's typing.
+//!
+//! The queue that carries a Counted Segment from the Dictation Runtime to the
+//! writer lives here too: what a segment counts is this module's business, and
+//! what it costs the Dictation to record it is a thread.
 
 use serde::{Deserialize, Serialize};
+use std::sync::{mpsc, Arc, Mutex};
 
 /// A local calendar date, stored as the ISO `YYYY-MM-DD` string a Daily Usage
 /// Record is keyed by.
@@ -289,6 +294,52 @@ pub fn record_counted_segment(usage: &mut UsageFile, date: LocalDate, segment: C
     record.speaking_seconds += segment.speaking_seconds.max(0.0);
 }
 
+/// Where Counted Segments go once the Dictation Runtime has decided they count.
+/// The sink runs on the writer thread, where being slow costs nothing and
+/// failing costs only a count (ADR-0025): it re-checks the opt-in at the last
+/// possible moment and writes the Usage File.
+pub type UsageSink = dyn Fn(LocalDate, CountedSegment) + Send + Sync;
+
+/// The queue that carries Counted Segments to the Usage File.
+///
+/// Usage must never slow or fail Dictation (ADR-0025), so this only ever does a
+/// non-blocking channel send. The local date rides along at enqueue time rather
+/// than being resolved by the writer, because a Counted Segment belongs to the
+/// date it landed on and by the time a backed-up queue is drained, midnight may
+/// have passed.
+pub struct UsageQueue {
+    jobs: Mutex<Option<mpsc::Sender<(LocalDate, CountedSegment)>>>,
+}
+
+impl UsageQueue {
+    /// Start the writer thread and hand back the queue that feeds it.
+    pub fn start(sink: Arc<UsageSink>) -> Result<Arc<Self>, String> {
+        let (sender, receiver) = mpsc::channel::<(LocalDate, CountedSegment)>();
+        std::thread::Builder::new()
+            .name("slugtale-usage".to_string())
+            .spawn(move || {
+                while let Ok((date, segment)) = receiver.recv() {
+                    sink(date, segment);
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(Arc::new(Self {
+            jobs: Mutex::new(Some(sender)),
+        }))
+    }
+
+    /// Hand a Counted Segment to the writer without waiting for it. A closed or
+    /// unstarted queue drops it on the floor: the insertion already happened,
+    /// which is the part that mattered.
+    pub fn record(&self, segment: CountedSegment) {
+        if let Ok(guard) = self.jobs.lock() {
+            if let Some(sender) = guard.as_ref() {
+                let _ = sender.send((today_local(), segment));
+            }
+        }
+    }
+}
+
 /// Totals for exactly one local day.
 pub fn totals_for_day(usage: &UsageFile, date: LocalDate) -> UsageTotals {
     let iso = date.to_iso();
@@ -407,6 +458,28 @@ mod tests {
             speaking_seconds: seconds,
             starts_dictation: starts,
         }
+    }
+
+    /// A queue whose writer never runs, so a test reads what was enqueued.
+    fn queue_that_reads_back() -> (UsageQueue, mpsc::Receiver<(LocalDate, CountedSegment)>) {
+        let (sender, receiver) = mpsc::channel();
+        (
+            UsageQueue {
+                jobs: Mutex::new(Some(sender)),
+            },
+            receiver,
+        )
+    }
+
+    #[test]
+    fn a_counted_segment_is_stamped_with_the_day_it_lands_on() {
+        let (queue, enqueued) = queue_that_reads_back();
+
+        queue.record(segment(3, 1.0, true));
+
+        // A Counted Segment belongs to the date it landed on, stamped at enqueue
+        // time rather than whenever the writer gets round to draining.
+        assert_eq!(enqueued.recv().unwrap().0, today_local());
     }
 
     #[test]

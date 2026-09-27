@@ -44,9 +44,11 @@ mod json_file;
 mod settings;
 pub use settings::*;
 
-/// Usage (CONTEXT.md, ADR-0025): the opt-in Daily Usage Records and the Time
-/// Saved derived from them. Aggregates only — no transcription, no audio, no
-/// text target — which is what keeps this outside Dictation History (ADR-0002).
+/// Usage (CONTEXT.md, ADR-0025): the opt-in Daily Usage Records, the Time Saved
+/// derived from them, and the queue that carries a Counted Segment from the
+/// Dictation Runtime to the writer without ever making a Dictation wait.
+/// Aggregates only — no transcription, no audio, no text target — which is what
+/// keeps this outside Dictation History (ADR-0002).
 mod usage;
 pub use usage::*;
 
@@ -106,13 +108,12 @@ pub use segmentation::*;
 mod dictation_workflow;
 pub use dictation_workflow::*;
 
-mod dictation_segments;
-pub use dictation_segments::*;
-
-/// The Dictation Runtime (CONTEXT.md, ADR-0026): the module that coordinates
-/// ordered Dictation Segment execution — the segment channel, the single
-/// worker that preserves spoken order, and the Counted Segment handoff — with
-/// everything OS-touching behind the `DictationRuntimeHost` adapter.
+/// The Dictation Runtime (CONTEXT.md, ADR-0015, ADR-0026): the module that
+/// coordinates ordered Dictation Segment execution — spoken order, the
+/// watermark cut, rescue suspension, panic containment, and the Counted Segment
+/// handoff — with everything OS-touching behind the `DictationRuntimeHost`
+/// adapter, which the Dictation Host implements. Usage counting is its half:
+/// `usage` owns the queue those counted segments travel to the Usage File on.
 mod dictation_runtime;
 pub use dictation_runtime::*;
 
