@@ -5,8 +5,8 @@
 //! same module, so they cannot disagree about what can run.
 
 use crate::{
-    default_model_path, engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticEvent,
-    DiagnosticSink, EngineAvailability, LocalWhisperRuntime, ParakeetProvider,
+    engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticEvent, DiagnosticSink,
+    EngineAvailability, LocalModelRef, LocalWhisperRuntime, ParakeetProvider,
     SecondOpinionCoordinator, SecondOpinionMode, SecondOpinionRouter, Settings,
     SharedDiagnosticLog, TranscriptionEngine, TranscriptionProvider, WhisperRuntimeCache,
     WhisperTranscriptionProvider,
@@ -66,20 +66,22 @@ impl TranscriptionEngineCatalogue {
         }
     }
 
-    pub fn model_path(&self, settings: &Settings) -> Option<PathBuf> {
-        settings.model.as_ref().map(PathBuf::from).or_else(|| {
-            self.model_dir
-                .lock()
-                .ok()
-                .and_then(|dir| dir.as_deref().map(default_model_path))
-        })
+    /// The Local Model file this dictation would open: the Settings File's own
+    /// choice, then the managed default. Both Dictation Readiness and the
+    /// Whisper engine ask this, so they cannot answer from two different files.
+    pub fn local_model(&self, settings: &Settings) -> Option<LocalModelRef> {
+        let model_dir = self.model_dir.lock().ok();
+        LocalModelRef::resolve(
+            settings,
+            model_dir.as_deref().and_then(|dir| dir.as_deref()),
+        )
     }
 
     /// The loaded Whisper model for `settings`, or `None` when no model path
     /// resolves. Read-only: the Transcription Speed Profile is not here, because
     /// this runtime is shared by every caller naming the same model path.
     fn whisper_runtime(&self, settings: &Settings) -> Option<Arc<LocalWhisperRuntime>> {
-        Some(self.whisper.runtime_for(&self.model_path(settings)?))
+        Some(self.whisper.runtime_for(&self.local_model(settings)?))
     }
 
     /// The Whisper provider for one caller, carrying the Transcription Speed
@@ -411,7 +413,9 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(
-            catalogue.model_path(&settings),
+            catalogue
+                .local_model(&settings)
+                .map(|model| model.path().to_path_buf()),
             Some(PathBuf::from("chosen.ggml"))
         );
     }
@@ -420,11 +424,15 @@ mod tests {
     fn default_model_path_requires_a_models_directory() {
         let settings = Settings::default();
         assert_eq!(
-            TranscriptionEngineCatalogue::default().model_path(&settings),
+            TranscriptionEngineCatalogue::default()
+                .local_model(&settings)
+                .map(|model| model.path().to_path_buf()),
             None
         );
         assert_eq!(
-            TranscriptionEngineCatalogue::new(Some(PathBuf::from("models"))).model_path(&settings),
+            TranscriptionEngineCatalogue::new(Some(PathBuf::from("models")))
+                .local_model(&settings)
+                .map(|model| model.path().to_path_buf()),
             Some(std::path::Path::new("models").join("ggml-base.en.bin")),
         );
     }

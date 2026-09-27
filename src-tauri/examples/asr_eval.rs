@@ -67,9 +67,9 @@
 //! records it as unavailable rather than failing to build.
 
 use slugtale_lib::{
-    AppleSpeechProvider, CapturedAudio, EngineAvailability, EscalationReason, LocalWhisperRuntime,
-    ParakeetProvider, SecondOpinionMode, SecondOpinionRouter, SpeedProfile, TranscriptionProvider,
-    WhisperTranscriptionProvider,
+    AppleSpeechProvider, CapturedAudio, EngineAvailability, EscalationReason, LocalModelRef,
+    LocalWhisperRuntime, ParakeetProvider, SecondOpinionMode, SecondOpinionRouter, SpeedProfile,
+    TranscriptionProvider, WhisperTranscriptionProvider,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -1020,7 +1020,9 @@ fn main() {
         // app-internal type this harness has no reason to depend on), so
         // unlike Parakeet below there is nothing to release here explicitly.
         // The process exit at the end of `main` frees it either way.
-        let runtime = Arc::new(LocalWhisperRuntime::new(model_path.clone()));
+        let runtime = Arc::new(LocalWhisperRuntime::new(LocalModelRef::at(
+            model_path.clone(),
+        )));
         // Balanced, the app's default: the benchmark that produced the profile
         // numbers was measured with the profile a fresh install runs.
         let provider: Arc<dyn TranscriptionProvider> = Arc::new(WhisperTranscriptionProvider::new(

@@ -1,4 +1,4 @@
-use crate::{CapturedAudio, SpeedProfile};
+use crate::{CapturedAudio, LocalModelRef, SpeedProfile};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "local-whisper-runtime"))]
 use std::num::NonZeroUsize;
@@ -178,7 +178,7 @@ pub fn transcribe_captured_audio(
 /// whose Settings name the same model path, and a decode strategy stored here
 /// would be whichever caller spoke last.
 pub struct LocalWhisperRuntime {
-    model_path: std::path::PathBuf,
+    model: LocalModelRef,
     // The loaded model is expensive to read and parse, so it is initialized once
     // and reused across transcriptions rather than rebuilt on every call. The
     // mutex also owns the model lifetime: shutdown takes it before dropping the
@@ -190,9 +190,9 @@ pub struct LocalWhisperRuntime {
 }
 
 impl LocalWhisperRuntime {
-    pub fn new(model_path: std::path::PathBuf) -> Self {
+    pub fn new(model: LocalModelRef) -> Self {
         Self {
-            model_path,
+            model,
             #[cfg(feature = "local-whisper-runtime")]
             context: Mutex::new(None),
             #[cfg(feature = "local-whisper-runtime")]
@@ -200,8 +200,8 @@ impl LocalWhisperRuntime {
         }
     }
 
-    pub fn model_path(&self) -> &std::path::Path {
-        &self.model_path
+    pub fn model(&self) -> &LocalModelRef {
+        &self.model
     }
 }
 
@@ -218,9 +218,9 @@ struct WhisperRuntimeCacheState {
 }
 
 impl WhisperRuntimeCache {
-    pub fn runtime_for(&self, model_path: &std::path::Path) -> Arc<LocalWhisperRuntime> {
+    pub fn runtime_for(&self, model: &LocalModelRef) -> Arc<LocalWhisperRuntime> {
         let mut state = self.0.lock().expect("whisper runtime cache mutex poisoned");
-        let runtime = Self::runtime_for_locked(&mut state, model_path);
+        let runtime = Self::runtime_for_locked(&mut state, model);
         if state.shutting_down {
             // A dictation task can race ExitRequested after obtaining the app
             // handle. Return a permanently stopped runtime so it cannot create
@@ -263,15 +263,15 @@ impl WhisperRuntimeCache {
 
     fn runtime_for_locked(
         state: &mut WhisperRuntimeCacheState,
-        model_path: &std::path::Path,
+        model: &LocalModelRef,
     ) -> Arc<LocalWhisperRuntime> {
         if let Some(existing) = state.runtime.as_ref() {
-            if existing.model_path() == model_path {
+            if existing.model().path() == model.path() {
                 return existing.clone();
             }
         }
 
-        let runtime = Arc::new(LocalWhisperRuntime::new(model_path.to_path_buf()));
+        let runtime = Arc::new(LocalWhisperRuntime::new(model.clone()));
         state.runtime = Some(runtime.clone());
         runtime
     }
@@ -309,16 +309,16 @@ impl LocalWhisperRuntime {
         }
 
         if context.is_none() {
-            if !self.model_path.exists() {
+            if !self.model.is_present() {
                 return Err(AsrError::ModelMissing {
-                    path: self.model_path.clone(),
+                    path: self.model.path().to_path_buf(),
                 });
             }
 
-            let model_path = self
-                .model_path
-                .to_str()
-                .ok_or_else(|| AsrError::Runtime("model path is not valid UTF-8".to_string()))?;
+            let model_path =
+                self.model.path().to_str().ok_or_else(|| {
+                    AsrError::Runtime("model path is not valid UTF-8".to_string())
+                })?;
             let initialized = whisper_rs::WhisperContext::new_with_params(
                 model_path,
                 whisper_rs::WhisperContextParameters::default(),
@@ -421,12 +421,7 @@ fn transcript_from_whisper_segments(
 #[cfg(not(feature = "local-whisper-runtime"))]
 impl LocalWhisperRuntime {
     pub fn warm_up(&self) -> Result<(), AsrError> {
-        if !self.model_path.exists() {
-            return Err(AsrError::ModelMissing {
-                path: self.model_path.clone(),
-            });
-        }
-
+        self.require_present_model()?;
         Err(local_whisper_runtime_disabled_error())
     }
 
@@ -435,13 +430,17 @@ impl LocalWhisperRuntime {
         _audio: CapturedAudio,
         _speed_profile: SpeedProfile,
     ) -> Result<FinalTranscription, AsrError> {
-        if !self.model_path.exists() {
-            return Err(AsrError::ModelMissing {
-                path: self.model_path.clone(),
-            });
-        }
-
+        self.require_present_model()?;
         Err(local_whisper_runtime_disabled_error())
+    }
+
+    fn require_present_model(&self) -> Result<(), AsrError> {
+        if self.model.is_present() {
+            return Ok(());
+        }
+        Err(AsrError::ModelMissing {
+            path: self.model.path().to_path_buf(),
+        })
     }
 
     fn shutdown(&self) {}
@@ -516,7 +515,7 @@ impl crate::TranscriptionProvider for WhisperTranscriptionProvider {
                 crate::EngineUnavailable::RuntimeNotBuilt,
             );
         }
-        if !self.runtime.model_path().exists() {
+        if !self.runtime.model().is_present() {
             return crate::EngineAvailability::Unavailable(
                 crate::EngineUnavailable::AssetsMissing {
                     detail: "The Whisper model has not been downloaded yet.".to_string(),
@@ -580,7 +579,7 @@ mod tests {
     #[test]
     fn local_whisper_runtime_reports_missing_model_before_transcription() {
         let model_path = unique_test_dir("missing-model").join(DEFAULT_MODEL_FILENAME);
-        let runtime = LocalWhisperRuntime::new(model_path.clone());
+        let runtime = LocalWhisperRuntime::new(LocalModelRef::at(model_path.clone()));
 
         let error = runtime
             .transcribe(
@@ -658,9 +657,9 @@ mod tests {
     fn one_loaded_model_serves_providers_that_decode_differently() {
         // The whole point of putting the profile on the provider: two callers
         // share the model context and neither can move the other's Beam Search.
-        let runtime = Arc::new(LocalWhisperRuntime::new(
+        let runtime = Arc::new(LocalWhisperRuntime::new(LocalModelRef::at(
             unique_test_dir("shared-model-profiles").join(DEFAULT_MODEL_FILENAME),
-        ));
+        )));
 
         let fast = WhisperTranscriptionProvider::new(Arc::clone(&runtime), SpeedProfile::Fast);
         let accurate =
@@ -673,10 +672,11 @@ mod tests {
     #[test]
     fn whisper_runtime_cache_reuses_runtime_for_same_model_path() {
         let cache = WhisperRuntimeCache::default();
-        let model_path = unique_test_dir("whisper-cache").join(DEFAULT_MODEL_FILENAME);
+        let model =
+            LocalModelRef::at(unique_test_dir("whisper-cache").join(DEFAULT_MODEL_FILENAME));
 
-        let first = cache.runtime_for(&model_path);
-        let second = cache.runtime_for(&model_path);
+        let first = cache.runtime_for(&model);
+        let second = cache.runtime_for(&model);
 
         assert!(std::sync::Arc::ptr_eq(&first, &second));
     }
@@ -688,11 +688,11 @@ mod tests {
         let first_path = model_dir.join(DEFAULT_MODEL_FILENAME);
         let second_path = model_dir.join("custom-model.bin");
 
-        let first = cache.runtime_for(&first_path);
-        let second = cache.runtime_for(&second_path);
+        let first = cache.runtime_for(&LocalModelRef::at(first_path));
+        let second = cache.runtime_for(&LocalModelRef::at(second_path.clone()));
 
         assert!(!std::sync::Arc::ptr_eq(&first, &second));
-        assert_eq!(second.model_path(), second_path);
+        assert_eq!(second.model().path(), second_path);
     }
 
     #[test]
@@ -703,10 +703,11 @@ mod tests {
         let model_path = model_dir.join(DEFAULT_MODEL_FILENAME);
         std::fs::write(&model_path, b"model").unwrap();
 
-        let warmed = cache.runtime_for(&model_path);
+        let model = LocalModelRef::at(model_path);
+        let warmed = cache.runtime_for(&model);
         cache.release();
 
-        let after_release = cache.runtime_for(&model_path);
+        let after_release = cache.runtime_for(&model);
 
         assert!(!std::sync::Arc::ptr_eq(&warmed, &after_release));
 
@@ -723,7 +724,7 @@ mod tests {
 
         cache.shutdown();
         cache.release();
-        let runtime = cache.runtime_for(&model_path);
+        let runtime = cache.runtime_for(&LocalModelRef::at(model_path));
 
         // A released runtime must behave like a shut-down one: the next warm-up
         // or transcription fails instead of creating a new context.
@@ -741,7 +742,7 @@ mod tests {
         std::fs::write(&model_path, b"not-a-real-model").unwrap();
 
         cache.shutdown();
-        let runtime = cache.runtime_for(&model_path);
+        let runtime = cache.runtime_for(&LocalModelRef::at(model_path));
         let error = runtime.warm_up().unwrap_err();
 
         assert_eq!(
