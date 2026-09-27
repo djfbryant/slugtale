@@ -1,5 +1,6 @@
 use crate::{
-    engine_blocked_reason, engine_that_can_run, EngineAvailability, Settings, TranscriptionEngine,
+    engine_blocked_reason, engine_that_can_run, EngineAvailability, LocalModelRef, Settings,
+    TranscriptionEngine,
 };
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +20,11 @@ pub trait ReadinessProbes {
     fn settings(&self) -> Settings;
     fn microphone_granted(&self) -> bool;
     fn insertion_granted(&self) -> bool;
-    fn local_model_ready(&self) -> bool;
+    /// The Local Model this dictation would open, resolved from the same
+    /// Settings and the same model directory the engines resolve it from. The
+    /// answer is [`LocalModelRef::is_present`], not a second opinion about the
+    /// default path, so readiness and Engine Availability cannot disagree.
+    fn local_model(&self, settings: &Settings) -> Option<LocalModelRef>;
     /// Asked of the same providers the dictation path uses, so the report and
     /// the engine decision cannot disagree.
     fn engine_availability(
@@ -41,10 +46,13 @@ pub fn readiness_snapshot(
         microphone: probes.microphone_granted(),
         insertion: probes.insertion_granted(),
     };
+    let local_model_present = probes
+        .local_model(&settings)
+        .is_some_and(|model| model.is_present());
     DictationActivation::build_for_input(
         settings,
         &permissions,
-        probes.local_model_ready(),
+        local_model_present,
         engines,
         chosen_input,
     )
@@ -502,7 +510,7 @@ mod tests {
         settings: Settings,
         microphone: bool,
         insertion: bool,
-        model_ready: bool,
+        model: Option<LocalModelRef>,
         settings_loads: RefCell<usize>,
         mic_probes: RefCell<usize>,
         insertion_probes: RefCell<usize>,
@@ -515,13 +523,20 @@ mod tests {
                 settings,
                 microphone: true,
                 insertion: true,
-                model_ready: true,
+                model: Some(an_existing_path()),
                 settings_loads: RefCell::new(0),
                 mic_probes: RefCell::new(0),
                 insertion_probes: RefCell::new(0),
                 engine_probes: RefCell::new(0),
             }
         }
+    }
+
+    /// The model probe only ever asks `is_present`, so pointing it at the
+    /// platform temp directory answers true without the test writing a file or
+    /// leaking one.
+    fn an_existing_path() -> LocalModelRef {
+        LocalModelRef::at(std::env::temp_dir())
     }
 
     impl ReadinessProbes for CountingProbes {
@@ -540,8 +555,8 @@ mod tests {
             self.insertion
         }
 
-        fn local_model_ready(&self) -> bool {
-            self.model_ready
+        fn local_model(&self, _settings: &Settings) -> Option<LocalModelRef> {
+            self.model.clone()
         }
 
         fn engine_availability(
@@ -821,8 +836,67 @@ mod tests {
         );
     }
 
+    /// The production wiring's own Local Model answer, over a real model
+    /// directory: the probe asks the engine catalogue, exactly as
+    /// `AppReadinessProbes` does in the Tauri tier.
+    struct CatalogueProbes {
+        catalogue: crate::TranscriptionEngineCatalogue,
+        settings: Settings,
+    }
+
+    impl ReadinessProbes for CatalogueProbes {
+        fn settings(&self) -> Settings {
+            self.settings.clone()
+        }
+
+        fn microphone_granted(&self) -> bool {
+            true
+        }
+
+        fn insertion_granted(&self) -> bool {
+            true
+        }
+
+        fn local_model(&self, settings: &Settings) -> Option<LocalModelRef> {
+            self.catalogue.local_model(settings)
+        }
+
+        fn engine_availability(
+            &self,
+            settings: &Settings,
+        ) -> Vec<(TranscriptionEngine, EngineAvailability)> {
+            self.catalogue.availability(settings)
+        }
+    }
+
+    /// A readiness report built the way the app builds one: from Settings and a
+    /// model directory, with the probe reading the model through the engine
+    /// catalogue rather than computing the answer itself.
+    fn readiness_report_over(
+        settings: &Settings,
+        model_dir: &std::path::Path,
+    ) -> Vec<ReadinessItem> {
+        let probes = CatalogueProbes {
+            catalogue: crate::TranscriptionEngineCatalogue::new(Some(model_dir.to_path_buf())),
+            settings: settings.clone(),
+        };
+
+        readiness_snapshot(&probes, |_| DictationInput::Hotkey)
+            .report
+            .items
+    }
+
+    fn local_model_item(items: &[ReadinessItem]) -> &ReadinessItem {
+        items
+            .iter()
+            .find(|item| item.id == ReadinessItemId::LocalModel)
+            .expect("every report names the Local Model")
+    }
+
     #[test]
-    fn readiness_uses_default_local_model_when_settings_model_is_unset() {
+    fn readiness_uses_the_default_local_model_when_settings_model_is_unset() {
+        // Settings name no model, so the managed default in the model directory
+        // is the file a dictation would open.
         let model_dir = unique_test_dir("readiness-default-model");
         std::fs::create_dir_all(&model_dir).unwrap();
         std::fs::write(crate::default_model_path(&model_dir), b"model").unwrap();
@@ -831,30 +905,48 @@ mod tests {
             hotkey: Some("cmd+shift+d".to_string()),
             ..Settings::default()
         };
-        let report = settings_readiness_report(
-            &settings,
-            &FakePlatform::all_ready(),
-            crate::local_model_ready(&model_dir),
-            &whisper_available(),
-        );
-        let local_model = report
-            .items
-            .iter()
-            .find(|item| item.id == ReadinessItemId::LocalModel)
-            .unwrap();
+        let items = readiness_report_over(&settings, &model_dir);
 
-        assert!(local_model.ready);
+        assert!(local_model_item(&items).ready);
 
         std::fs::remove_dir_all(&model_dir).ok();
     }
 
     #[test]
-    fn readiness_uses_default_local_model_when_settings_model_is_stale() {
+    fn readiness_uses_the_settings_model_when_it_is_the_one_that_exists() {
+        // The defect: readiness looked only at the default path, so a user who
+        // chose a custom model in Settings was told dictation could not start
+        // and warm-up was suppressed, while the engine reported that very model
+        // available and ready to decode.
+        let model_dir = unique_test_dir("readiness-custom-model");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let custom = model_dir.join("custom-model.bin");
+        std::fs::write(&custom, b"model").unwrap();
+
+        let settings = Settings {
+            hotkey: Some("cmd+shift+d".to_string()),
+            model: Some(custom.to_string_lossy().to_string()),
+            ..Settings::default()
+        };
+        let items = readiness_report_over(&settings, &model_dir);
+
+        assert!(local_model_item(&items).ready);
+
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[test]
+    fn readiness_reports_a_stale_settings_model_as_missing_rather_than_falling_back() {
+        // The Settings File still names a model the user has since deleted, and
+        // the engine resolves that same stale path. Falling back to the default
+        // here is what let the report say "ready" about a file the engine would
+        // never open.
         let model_dir = unique_test_dir("readiness-stale-model-setting");
         std::fs::create_dir_all(&model_dir).unwrap();
         std::fs::write(crate::default_model_path(&model_dir), b"model").unwrap();
 
-        let stale_settings = Settings {
+        let settings = Settings {
+            hotkey: Some("cmd+shift+d".to_string()),
             model: Some(
                 model_dir
                     .join("missing-custom-model.bin")
@@ -863,21 +955,64 @@ mod tests {
             ),
             ..Settings::default()
         };
-        let report = settings_readiness_report(
-            &stale_settings,
-            &FakePlatform::all_ready(),
-            crate::local_model_ready(&model_dir),
-            &whisper_available(),
-        );
-        let local_model = report
-            .items
-            .iter()
-            .find(|item| item.id == ReadinessItemId::LocalModel)
-            .unwrap();
+        let items = readiness_report_over(&settings, &model_dir);
 
-        assert!(local_model.ready);
+        assert_eq!(
+            local_model_item(&items),
+            &ReadinessItem::missing(ReadinessItemId::LocalModel, true)
+        );
 
         std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    /// Every combination of a Settings override and a model directory's
+    /// contents. The report's Local Model item and the Whisper engine must be
+    /// talking about one file: whatever the Settings name is what both open.
+    #[test]
+    fn readiness_and_engine_availability_agree_about_the_same_file() {
+        for settings_model in [None, Some("custom-present.bin"), Some("custom-deleted.bin")] {
+            for default_present in [false, true] {
+                let model_dir = unique_test_dir("model-agreement");
+                std::fs::create_dir_all(&model_dir).unwrap();
+                if default_present {
+                    std::fs::write(crate::default_model_path(&model_dir), b"model").unwrap();
+                }
+                std::fs::write(model_dir.join("custom-present.bin"), b"model").unwrap();
+
+                let settings = Settings {
+                    hotkey: Some("cmd+shift+d".to_string()),
+                    model: settings_model
+                        .map(|name| model_dir.join(name).to_string_lossy().to_string()),
+                    ..Settings::default()
+                };
+                let items = readiness_report_over(&settings, &model_dir);
+                let present = crate::TranscriptionEngineCatalogue::new(Some(model_dir.clone()))
+                    .local_model(&settings)
+                    .expect("a model directory always resolves a model path")
+                    .is_present();
+                let availability =
+                    crate::TranscriptionEngineCatalogue::new(Some(model_dir.clone()))
+                        .whisper_provider(&settings)
+                        .expect("a model directory always resolves a model path")
+                        .availability();
+
+                assert_eq!(
+                    local_model_item(&items).ready,
+                    present,
+                    "settings.model={settings_model:?} default_present={default_present}"
+                );
+                // A build without the Whisper runtime cannot decode the file
+                // whatever is on disk; that half is the report's own
+                // transcription_engine item, not the Local Model one.
+                assert_eq!(
+                    availability.is_available(),
+                    present && cfg!(feature = "local-whisper-runtime"),
+                    "settings.model={settings_model:?} default_present={default_present}"
+                );
+
+                std::fs::remove_dir_all(&model_dir).ok();
+            }
+        }
     }
 
     #[test]

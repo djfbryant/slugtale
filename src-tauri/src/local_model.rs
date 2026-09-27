@@ -20,6 +20,49 @@ pub fn default_model_path(model_dir: &std::path::Path) -> std::path::PathBuf {
     model_dir.join(DEFAULT_MODEL_FILENAME)
 }
 
+/// The Local Model file a dictation would actually open, resolved once.
+///
+/// The Settings File's own choice wins over the managed default, exactly as the
+/// engine catalogue resolves it, so Dictation Readiness and Engine Availability
+/// cannot answer "is the Local Model ready?" from two different files. They used
+/// to: readiness looked only at the default path, so a user with a valid custom
+/// model in Settings was told dictation could not start while the engine
+/// reported the model available and warm-up was suppressed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalModelRef {
+    path: std::path::PathBuf,
+}
+
+impl LocalModelRef {
+    /// The Settings override, then the managed default. `None` when Settings
+    /// name nothing and there is no model directory to fall back to.
+    pub fn resolve(
+        settings: &crate::Settings,
+        model_dir: Option<&std::path::Path>,
+    ) -> Option<Self> {
+        settings
+            .model
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .or_else(|| model_dir.map(default_model_path))
+            .map(|path| Self { path })
+    }
+
+    /// A reference to one already-named file, for callers that resolved the
+    /// path themselves and only want the readiness question answered one way.
+    pub fn at(path: impl Into<std::path::PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    pub fn is_present(&self) -> bool {
+        self.path.exists()
+    }
+}
+
 fn local_model_status(model_dir: &std::path::Path) -> LocalModelStatus {
     let path = default_model_path(model_dir);
     let bytes = path.metadata().ok().map(|metadata| metadata.len());
@@ -31,10 +74,6 @@ fn local_model_status(model_dir: &std::path::Path) -> LocalModelStatus {
         present: bytes.is_some(),
         bytes,
     }
-}
-
-pub fn local_model_ready(model_dir: &std::path::Path) -> bool {
-    local_model_status(model_dir).present
 }
 
 #[derive(Debug)]
@@ -75,10 +114,6 @@ impl LocalModelManager {
 
     pub fn status(&self) -> LocalModelStatus {
         local_model_status(&self.model_dir)
-    }
-
-    pub fn ready(&self) -> bool {
-        self.status().present
     }
 
     pub fn download_default(
@@ -428,14 +463,41 @@ mod tests {
         assert_eq!(status.bytes, None);
     }
     #[test]
-    fn local_model_ready_reports_default_model_presence() {
-        let model_dir = unique_test_dir("model-ready");
+    fn a_local_model_ref_prefers_the_settings_override_over_the_default() {
+        let model_dir = unique_test_dir("ref-resolve");
         std::fs::create_dir_all(&model_dir).unwrap();
-        assert!(!local_model_ready(&model_dir));
-
         std::fs::write(default_model_path(&model_dir), b"model").unwrap();
+        let custom = model_dir.join("custom.bin");
+        std::fs::write(&custom, b"model").unwrap();
 
-        assert!(local_model_ready(&model_dir));
+        let default = LocalModelRef::resolve(&crate::Settings::default(), Some(&model_dir));
+        assert_eq!(
+            default.clone().map(|model| model.path().to_path_buf()),
+            Some(default_model_path(&model_dir))
+        );
+        assert!(default.unwrap().is_present());
+
+        let chosen = LocalModelRef::resolve(
+            &crate::Settings {
+                model: Some(custom.to_string_lossy().to_string()),
+                ..crate::Settings::default()
+            },
+            Some(&model_dir),
+        );
+        assert_eq!(chosen.map(|model| model.path().to_path_buf()), Some(custom));
+
+        // A Settings File still naming a model the user deleted resolves to that
+        // missing file, not to the default: the engine opens it, so readiness
+        // has to report the same file missing.
+        let stale = LocalModelRef::resolve(
+            &crate::Settings {
+                model: Some(model_dir.join("deleted.bin").to_string_lossy().to_string()),
+                ..crate::Settings::default()
+            },
+            Some(&model_dir),
+        );
+        assert!(!stale.unwrap().is_present());
+
         std::fs::remove_dir_all(&model_dir).ok();
     }
     #[test]

@@ -1154,7 +1154,7 @@ fn whisper_adapter(options: &CliOptions) -> Result<(), String> {
             .to_string(),
         revision: options.optional("--revision")?.map(str::to_string),
     };
-    let runtime = LocalWhisperRuntime::new(model_path);
+    let runtime = LocalWhisperRuntime::new(slugtale_lib::LocalModelRef::at(model_path));
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {

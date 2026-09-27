@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
@@ -314,8 +313,13 @@ impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_> {
         slugtale_lib::PlatformReadiness::insertion_granted(&CurrentPlatform::new())
     }
 
-    fn local_model_ready(&self) -> bool {
-        local_model_ready(self.app)
+    fn local_model(
+        &self,
+        settings: &slugtale_lib::Settings,
+    ) -> Option<slugtale_lib::LocalModelRef> {
+        self.app
+            .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+            .local_model(settings)
     }
 
     fn engine_availability(
@@ -347,18 +351,6 @@ fn readiness_snapshot_for(
     input: impl FnOnce(&slugtale_lib::Settings) -> slugtale_lib::DictationInput,
 ) -> slugtale_lib::DictationActivation {
     slugtale_lib::readiness_snapshot(&AppReadinessProbes { app }, input)
-}
-
-/// Whether the Whisper ggml file — or a user-selected custom model — is on disk.
-fn local_model_ready(app: &tauri::AppHandle) -> bool {
-    model_manager(app)
-        .map(|manager| manager.ready())
-        .unwrap_or_else(|_| {
-            load_current_settings(app)
-                .model
-                .as_ref()
-                .is_some_and(|path| PathBuf::from(path).exists())
-        })
 }
 
 fn build_activation_snapshot_for(
