@@ -50,8 +50,8 @@
 //! reaches the Local Diagnostic Log or the network.
 
 use crate::{
-    AsrError, CapturedAudio, EngineAvailability, EngineMetadata, EngineTranscription,
-    TranscriptionEngine, TranscriptionProvider,
+    AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssets, EngineAvailability,
+    EngineMetadata, EngineTranscription, TranscriptionEngine, TranscriptionProvider,
 };
 // Named separately because only the portable half and the tests refer to it by
 // this path; on macOS with the runtime the bridge imports its own. The import
@@ -177,7 +177,7 @@ impl AppleSpeechProvider {
     /// version and the hardware but wrong for installed assets — those change
     /// the moment [`AppleSpeechProvider::request_asset_installation`] finishes,
     /// or when the user adds a language in System Settings.
-    pub fn refresh_availability(&self) -> EngineAvailability {
+    fn refresh_availability(&self) -> EngineAvailability {
         let probed = probe_availability(&self.locale);
         *self.lock_cache() = Some(probed.clone());
         probed
@@ -194,7 +194,7 @@ impl AppleSpeechProvider {
     ///
     /// The assets remain owned and updated by macOS; Slugtale learns only
     /// whether they are present.
-    pub fn request_asset_installation(&self) -> Result<EngineAvailability, String> {
+    fn request_asset_installation(&self) -> Result<EngineAvailability, String> {
         install_assets(&self.locale)?;
         Ok(self.refresh_availability())
     }
@@ -264,6 +264,40 @@ impl TranscriptionProvider for AppleSpeechProvider {
         }
         validate_recording(audio)?;
         transcribe_with_apple_speech(&self.locale, audio)
+    }
+
+    fn assets(&self) -> EngineAssets {
+        // macOS neither publishes the installed size nor lets an application
+        // inventory another application's copy, so there is nothing to report
+        // that the availability probe has not already said.
+        EngineAssets::unmeasured()
+    }
+
+    fn can_install_assets(&self) -> bool {
+        true
+    }
+
+    fn install_assets(
+        &self,
+        on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<AssetInstall, String> {
+        // A blocking system request rather than a download, so it reports no
+        // progress and never did: the progress sink is simply unused here.
+        let _ = on_progress;
+        self.request_asset_installation()?;
+        Ok(AssetInstall {
+            // The Dictation Runtime asks macOS for these assets on its first
+            // use anyway, so an install is not a reason to load anything.
+            warm_up: false,
+        })
+    }
+
+    fn remove_assets(&self) -> Result<(), String> {
+        Err(
+            "Apple SpeechTranscriber's assets are installed and managed by macOS; \
+             Slugtale cannot remove them."
+                .to_string(),
+        )
     }
 }
 
@@ -687,9 +721,35 @@ mod tests {
         assert!(metadata.license.contains("macOS"));
     }
 
+    /// The refusal that lives with the engine that owns the bytes, so nobody
+    /// outside this module has to word it on Apple's behalf. Asserted as one
+    /// literal because it reaches the user verbatim.
+    #[test]
+    fn removing_assets_it_does_not_own_is_refused_in_apples_own_words() {
+        let error = AppleSpeechProvider::new().remove_assets().unwrap_err();
+
+        assert_eq!(
+            error,
+            "Apple SpeechTranscriber's assets are installed and managed by macOS; \
+             Slugtale cannot remove them."
+        );
+    }
+
+    #[test]
+    fn the_assets_are_macos_to_measure_and_macos_to_install() {
+        // Slugtale measures neither the size nor the presence of Apple's weights,
+        // and the install it can offer is macOS's own request rather than a
+        // download Slugtale performs.
+        let provider = AppleSpeechProvider::new();
+
+        assert_eq!(provider.assets(), EngineAssets::unmeasured());
+        assert!(provider.can_install_assets());
+        assert!(provider.metadata().system_managed);
+    }
+
     #[test]
     fn the_default_dictation_language_is_a_full_locale_identifier() {
-        // Apple keys speech assets by locale, not by language, so a bare "en"
+        // Apple keys speech assets by locale, not by language, so a bare `en`
         // would resolve to nothing.
         let provider = AppleSpeechProvider::new();
         assert_eq!(provider.locale(), "en-US");

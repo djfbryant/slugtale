@@ -105,6 +105,11 @@ impl From<std::io::Error> for ModelError {
 /// It writes the Settings File through the [`crate::AppFiles`] store rather than
 /// a path of its own, so the store's cached Settings value is the same one the
 /// engine and Dictation Readiness read.
+///
+/// Cheap to clone: a model directory and a handle to the file store, so the
+/// engine that owns the Local Model can be handed one without being handed the
+/// whole app.
+#[derive(Clone)]
 pub struct LocalModelManager {
     model_dir: std::path::PathBuf,
     files: crate::AppFiles,
@@ -114,6 +119,13 @@ impl LocalModelManager {
     pub fn new(files: crate::AppFiles) -> Result<Self, ModelError> {
         let model_dir = files.model_dir().map_err(ModelError::Download)?;
         Ok(Self { model_dir, files })
+    }
+
+    /// The directory this manager installs the Local Model into. The engine
+    /// catalogue asks for it so the engines it builds and the manager that
+    /// installs for them can never point at two different directories.
+    pub fn model_dir(&self) -> &std::path::Path {
+        &self.model_dir
     }
 
     pub fn status(&self) -> LocalModelStatus {

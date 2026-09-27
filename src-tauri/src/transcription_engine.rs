@@ -13,12 +13,16 @@
 //!   per-word confidence. These live only in [`EngineTranscription`], are passed
 //!   in-process to the router and the Text Insertion path, and must never reach
 //!   the Local Diagnostic Log, analytics, or the network.
-//! - **Non-content diagnostics** — engine identity, availability reasons,
-//!   latency, and escalation reason codes. These are safe to log and to render
-//!   in Settings, and every type carrying them is a closed enum or a number so
-//!   a caller cannot accidentally smuggle speech through them.
+//! - **Non-content diagnostics** — engine identity, availability reasons, asset
+//!   accounting, latency, and escalation reason codes. These are safe to log and
+//!   to render in Settings, and every type carrying them is a closed enum or a
+//!   number so a caller cannot accidentally smuggle speech through them. The
+//!   Settings surface asks four questions of an engine — what it is licensed as
+//!   ([`EngineMetadata`]), whether it can run ([`EngineAvailability`]), what it
+//!   has on disk ([`EngineAssets`]), and whether its assets can be installed or
+//!   removed — and the [`EngineView`] row is built from nothing else.
 
-use crate::{AsrError, CapturedAudio, FinalTranscription};
+use crate::{AsrError, CapturedAudio, DownloadProgress, FinalTranscription};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -58,6 +62,24 @@ impl TranscriptionEngine {
             Self::Whisper => "Whisper base.en",
             Self::Parakeet => "Parakeet TDT v2",
             Self::AppleSpeech => "Apple SpeechTranscriber",
+        }
+    }
+
+    /// Why Settings has no row for this engine, worded for the user.
+    ///
+    /// The catalogue resolves providers and knows only whether it could. Which
+    /// prerequisite is missing is the engine's own fact, so the wording lives
+    /// with the engine rather than at the place that noticed.
+    pub fn missing_provider_reason(self) -> &'static str {
+        match self {
+            // Whisper opens one Local Model file, so a Settings File naming no
+            // model and a catalogue holding no model directory leave it nothing
+            // to open.
+            Self::Whisper => "could not resolve a local model directory for Whisper",
+            // The catalogue registers Parakeet once it has a model directory to
+            // put its assets in, and Apple when it is built, so reaching this
+            // means Settings was asked before startup finished.
+            Self::Parakeet | Self::AppleSpeech => "transcription engines are not ready yet",
         }
     }
 }
@@ -268,6 +290,109 @@ pub struct EngineMetadata {
     pub supported_platforms: &'static str,
 }
 
+/// Installed-asset accounting for one Transcription Engine.
+///
+/// Kept apart from [`EngineAvailability`] for two reasons: an engine can be
+/// unavailable for reasons that have nothing to do with its assets (wrong
+/// operating system, a build without its runtime), and the operating system
+/// may own those bytes outright, in which case Slugtale measures neither how
+/// many there are nor whether they are there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct EngineAssets {
+    /// Bytes on disk for assets Slugtale itself owns. `None` for Apple
+    /// SpeechTranscriber, whose assets Slugtale never downloads or measures.
+    pub installed_bytes: Option<u64>,
+    /// Whether Slugtale's own copy of the assets is fully installed. `None` for
+    /// system-managed engines, where a `false` would be a guess and
+    /// [`EngineAvailability`] is the honest answer instead.
+    pub present: Option<bool>,
+}
+
+impl EngineAssets {
+    /// Assets Slugtale neither measures nor owns: the operating system's, and any
+    /// Slugtale cannot even see the directory of. The pair of `None`s says so by
+    /// answering nothing, rather than reporting a zero nobody verified.
+    pub fn unmeasured() -> Self {
+        Self {
+            installed_bytes: None,
+            present: None,
+        }
+    }
+}
+
+/// What one install of a Transcription Engine's assets left for the Dictation
+/// Runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssetInstall {
+    /// Whether the app should load the model the next dictation is about to
+    /// need. True for the engine whose assets are the Local Model, so a cold
+    /// load does not land on the user's first dictation; false for an engine
+    /// the Dictation Runtime opens on first use anyway.
+    pub warm_up: bool,
+}
+
+/// What Settings needs to render one row of the Transcription Engines list
+/// (slugtale-vjs.4): whether it is the current primary, its licence and
+/// provenance from [`EngineMetadata`], whether it can run right now, and how
+/// much of its assets are actually on disk.
+///
+/// It mirrors `EngineMetadata`/`EngineAvailability` rather than replacing them —
+/// Settings renders the licence and attribution strings straight out of
+/// `metadata` so the CC BY 4.0 wording is never retyped in the frontend. It
+/// knows no engine: every fact is asked of the engine's own provider, so a
+/// fourth engine changes nothing here.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EngineView {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub is_primary: bool,
+    pub metadata: EngineMetadata,
+    pub availability: EngineAvailability,
+    /// `availability`'s reason rendered through [`EngineUnavailable`]'s
+    /// `Display`, so Settings shows the same wording the rest of Slugtale does
+    /// rather than re-deriving copy per reason code in JavaScript. `None` when
+    /// the engine is available.
+    pub unavailable_reason: Option<String>,
+    /// Whether Settings should offer an Install action right now. Both halves
+    /// have to agree: the engine's reason must be one the user can fix
+    /// ([`EngineUnavailable::is_user_resolvable`], so never an unsupported
+    /// operating system or a build without the feature) *and* the engine must
+    /// have a way to fetch its assets
+    /// ([`TranscriptionProvider::can_install_assets`]). A row therefore never
+    /// offers a button that can only refuse.
+    pub installable: bool,
+    pub assets: EngineAssets,
+}
+
+impl EngineView {
+    /// One row, asked of the engine's own provider plus whether the Settings
+    /// File names it the primary. Answers from the same cached availability the
+    /// dictation path reads, so Settings and the Dictation Runtime cannot
+    /// disagree about an engine.
+    pub fn of(provider: &dyn TranscriptionProvider, is_primary: bool) -> Self {
+        let engine = provider.engine();
+        let availability = provider.availability();
+        let (unavailable_reason, installable) = match &availability {
+            EngineAvailability::Available => (None, false),
+            EngineAvailability::Unavailable(reason) => (
+                Some(reason.to_string()),
+                reason.is_user_resolvable() && provider.can_install_assets(),
+            ),
+        };
+
+        Self {
+            id: engine.id(),
+            display_name: engine.display_name(),
+            is_primary,
+            metadata: provider.metadata(),
+            availability,
+            unavailable_reason,
+            installable,
+            assets: provider.assets(),
+        }
+    }
+}
+
 /// A Transcription Engine Slugtale can ask for a complete transcription.
 ///
 /// Providers take `&CapturedAudio` rather than owning it because a Second
@@ -279,13 +404,21 @@ pub struct EngineMetadata {
 /// until [`TranscriptionProvider::transcribe`] or an explicit warm-up runs.
 /// [`TranscriptionProvider::availability`] is called from Settings and from the
 /// router's fast path, so it must answer from cached state rather than probing
-/// the filesystem or the OS on every dictation.
+/// the filesystem or the OS on every dictation. The asset methods below are the
+/// deliberate exception: only Settings asks them, their answer changes only when
+/// the user installs or removes something, and Settings cannot render an honest
+/// row without them.
 pub trait TranscriptionProvider: Send + Sync {
     fn engine(&self) -> TranscriptionEngine;
 
     fn metadata(&self) -> EngineMetadata;
 
     fn availability(&self) -> EngineAvailability;
+
+    /// How much of this engine's assets are on disk, in bytes and in full.
+    /// An engine the operating system owns answers
+    /// [`EngineAssets::system_managed`].
+    fn assets(&self) -> EngineAssets;
 
     fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError>;
 
@@ -295,6 +428,51 @@ pub trait TranscriptionProvider: Send + Sync {
     fn warm_up(&self) -> Result<(), AsrError> {
         Ok(())
     }
+
+    /// Whether this engine has a way to fetch its own assets. False by default,
+    /// because an engine that cannot install must not look installable in
+    /// Settings; every engine that can install says so.
+    fn can_install_assets(&self) -> bool {
+        false
+    }
+
+    /// Fetch this engine's assets as an explicit user action, reporting download
+    /// progress on `on_progress` for the engines that download. The honest
+    /// default refuses: an engine with no download behind it must not look like
+    /// a silent success.
+    fn install_assets(
+        &self,
+        on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<AssetInstall, String> {
+        let _ = on_progress;
+        Err(assets_cannot_be_installed(self.engine()))
+    }
+
+    /// Delete this engine's installed assets as an explicit user action. An
+    /// engine whose bytes belong to the operating system overrides this with its
+    /// own refusal rather than pretending to free space Slugtale never claimed.
+    fn remove_assets(&self) -> Result<(), String> {
+        Err(assets_cannot_be_removed(self.engine()))
+    }
+}
+
+/// The refusal an engine gives when Settings asks it to fetch assets it has no
+/// way to fetch. Also the answer an engine gives that *has* a mechanism it
+/// cannot reach, so one wording covers both.
+pub(crate) fn assets_cannot_be_installed(engine: TranscriptionEngine) -> String {
+    format!(
+        "{} has no installation path in Slugtale.",
+        engine.display_name()
+    )
+}
+
+/// The refusal an engine gives when there is nothing of its own on disk to
+/// delete.
+pub(crate) fn assets_cannot_be_removed(engine: TranscriptionEngine) -> String {
+    format!(
+        "{} has no assets for Slugtale to remove.",
+        engine.display_name()
+    )
 }
 
 /// Which Transcription Engine will actually transcribe the next dictation, given
@@ -373,6 +551,265 @@ pub fn captured_audio_duration(audio: &CapturedAudio) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A provider that answers whatever a test needs it to, so the Settings row
+    /// can be asked about any engine state without a running app, a models
+    /// directory, or a real engine.
+    struct StatedProvider {
+        engine: TranscriptionEngine,
+        availability: EngineAvailability,
+        assets: EngineAssets,
+        can_install: bool,
+    }
+
+    impl StatedProvider {
+        fn new(
+            engine: TranscriptionEngine,
+            availability: EngineAvailability,
+            assets: EngineAssets,
+        ) -> Self {
+            Self {
+                engine,
+                availability,
+                assets,
+                can_install: false,
+            }
+        }
+
+        fn installable(mut self) -> Self {
+            self.can_install = true;
+            self
+        }
+    }
+
+    impl TranscriptionProvider for StatedProvider {
+        fn engine(&self) -> TranscriptionEngine {
+            self.engine
+        }
+
+        fn metadata(&self) -> EngineMetadata {
+            EngineMetadata {
+                engine: self.engine,
+                model_id: "test",
+                revision: "test",
+                approximate_bytes: None,
+                source_url: None,
+                license: "test",
+                license_url: "https://example.test",
+                attribution: None,
+                modifications: None,
+                system_managed: self.assets == EngineAssets::unmeasured(),
+                supported_platforms: "test",
+            }
+        }
+
+        fn availability(&self) -> EngineAvailability {
+            self.availability.clone()
+        }
+
+        fn assets(&self) -> EngineAssets {
+            self.assets
+        }
+
+        fn can_install_assets(&self) -> bool {
+            self.can_install
+        }
+
+        fn transcribe(&self, _audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
+            Err(AsrError::Runtime(
+                "this provider never transcribes".to_string(),
+            ))
+        }
+    }
+
+    fn missing_assets() -> EngineAvailability {
+        EngineAvailability::Unavailable(EngineUnavailable::AssetsMissing {
+            detail: "The model has not been downloaded yet.".to_string(),
+        })
+    }
+
+    #[test]
+    fn a_system_managed_engine_reports_no_bytes_and_never_an_install_slugtale_does() {
+        // Apple SpeechTranscriber's weights are macOS's. Reporting a size Slugtale
+        // never measured, or offering a download Slugtale cannot perform, would
+        // describe assets Slugtale does not own.
+        let row = EngineView::of(
+            &crate::AppleSpeechProvider::new(),
+            TranscriptionEngine::AppleSpeech == crate::TranscriptionEngine::Whisper,
+        );
+
+        assert_eq!(row.assets, EngineAssets::unmeasured());
+        assert_eq!(row.assets.installed_bytes, None);
+        assert_eq!(row.assets.present, None);
+        assert!(row.metadata.system_managed);
+        assert_eq!(row.metadata.approximate_bytes, None);
+        assert_eq!(row.metadata.source_url, None);
+
+        // The only thing that may put an Install button on a system-managed row is
+        // the engine's own reason: on a fresh macOS install that reason is
+        // `AssetsMissing`, and macOS — not Slugtale — is what installing means.
+        assert_eq!(
+            row.installable,
+            matches!(
+                row.availability,
+                EngineAvailability::Unavailable(EngineUnavailable::AssetsMissing { .. })
+            ),
+            "a system-managed row is installable only on the OS's own reason"
+        );
+    }
+
+    #[test]
+    fn the_install_button_needs_both_a_reason_the_user_can_fix_and_an_install_path() {
+        // Every reason the user cannot fix from Settings, with an install path
+        // behind it: a button here would dead-end.
+        for unavailable in [
+            EngineAvailability::Available,
+            EngineAvailability::Unavailable(EngineUnavailable::UnsupportedPlatform {
+                detail: "available only on macOS 26+".to_string(),
+            }),
+            EngineAvailability::Unavailable(EngineUnavailable::UnsupportedOsVersion {
+                required: "macOS 26".to_string(),
+                detected: "macOS 15".to_string(),
+            }),
+            EngineAvailability::Unavailable(EngineUnavailable::UnsupportedLocale {
+                detected: "fr-FR".to_string(),
+            }),
+            EngineAvailability::Unavailable(EngineUnavailable::RuntimeNotBuilt),
+            EngineAvailability::Unavailable(EngineUnavailable::ProbeFailed {
+                detail: "could not read the asset directory".to_string(),
+            }),
+        ] {
+            let row = EngineView::of(
+                &StatedProvider::new(
+                    TranscriptionEngine::Parakeet,
+                    unavailable.clone(),
+                    EngineAssets {
+                        installed_bytes: None,
+                        present: Some(false),
+                    },
+                )
+                .installable(),
+                false,
+            );
+            assert!(
+                !row.installable,
+                "{unavailable:?} must not earn an install button"
+            );
+        }
+
+        // Missing assets with an install path behind them: the one true case.
+        let installable = EngineView::of(
+            &StatedProvider::new(
+                TranscriptionEngine::Parakeet,
+                missing_assets(),
+                EngineAssets {
+                    installed_bytes: Some(0),
+                    present: Some(false),
+                },
+            )
+            .installable(),
+            false,
+        );
+        assert!(installable.installable);
+    }
+
+    #[test]
+    fn no_engine_reports_installable_when_it_has_no_install_path() {
+        // Missing assets, but nothing behind them to fetch the bytes with. The
+        // row must not offer a button whose only outcome is a refusal.
+        let row = EngineView::of(
+            &StatedProvider::new(
+                TranscriptionEngine::Whisper,
+                missing_assets(),
+                EngineAssets {
+                    installed_bytes: Some(0),
+                    present: Some(false),
+                },
+            ),
+            true,
+        );
+
+        assert!(!row.installable);
+        assert_eq!(
+            row.unavailable_reason.as_deref(),
+            Some("The model has not been downloaded yet.")
+        );
+        assert!(row.is_primary);
+    }
+
+    #[test]
+    fn the_default_asset_operations_refuse_instead_of_pretending() {
+        // A provider that inherits them has no download and nothing of its own to
+        // delete. A silent `Ok(())` would be a Settings row that frees space
+        // Slugtale never claimed.
+        let provider = StatedProvider::new(
+            TranscriptionEngine::Parakeet,
+            missing_assets(),
+            EngineAssets::unmeasured(),
+        );
+
+        assert_eq!(
+            provider.install_assets(&mut |_| {}).unwrap_err(),
+            "Parakeet TDT v2 has no installation path in Slugtale."
+        );
+        assert_eq!(
+            provider.remove_assets().unwrap_err(),
+            "Parakeet TDT v2 has no assets for Slugtale to remove."
+        );
+    }
+
+    #[test]
+    fn the_row_keeps_the_field_names_the_settings_window_reads() {
+        // The frontend reads these names out of the serialised row, so renaming
+        // one is a silent breakage in the Settings surface.
+        let row = EngineView::of(
+            &StatedProvider::new(
+                TranscriptionEngine::Parakeet,
+                missing_assets(),
+                EngineAssets {
+                    installed_bytes: Some(41),
+                    present: Some(false),
+                },
+            )
+            .installable(),
+            true,
+        );
+
+        assert_eq!(
+            serde_json::to_value(&row).unwrap(),
+            serde_json::json!({
+                "id": "parakeet",
+                "display_name": "Parakeet TDT v2",
+                "is_primary": true,
+                "metadata": serde_json::to_value(row.metadata.clone()).unwrap(),
+                "availability": serde_json::json!({
+                    "state": "unavailable",
+                    "reason": "assets-missing",
+                    "detail": "The model has not been downloaded yet.",
+                }),
+                "unavailable_reason": "The model has not been downloaded yet.",
+                "installable": true,
+                "assets": { "installed_bytes": 41, "present": false },
+            })
+        );
+    }
+
+    #[test]
+    fn each_engine_words_its_own_missing_provider() {
+        // Settings shows these verbatim when the catalogue resolved no provider.
+        assert_eq!(
+            TranscriptionEngine::Whisper.missing_provider_reason(),
+            "could not resolve a local model directory for Whisper"
+        );
+        assert_eq!(
+            TranscriptionEngine::Parakeet.missing_provider_reason(),
+            "transcription engines are not ready yet"
+        );
+        assert_eq!(
+            TranscriptionEngine::AppleSpeech.missing_provider_reason(),
+            "transcription engines are not ready yet"
+        );
+    }
 
     #[test]
     fn engine_ids_are_stable_and_distinct() {
