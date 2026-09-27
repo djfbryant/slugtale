@@ -410,11 +410,11 @@ fn report_not_ready(
 #[tauri::command]
 fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
     let report = current_settings_readiness(&app);
-    let local_model_ready = report
-        .items
-        .iter()
-        .find(|item| item.id == "local_model")
-        .is_some_and(|item| item.ready);
+    // The report is also the signal to start loading the Local Model in the
+    // background, so opening Settings is what gets the first dictation fast.
+    let local_model_ready =
+        slugtale_lib::ReadinessItem::find(&report, slugtale_lib::ReadinessItemId::LocalModel)
+            .is_some_and(|item| item.ready);
     if local_model_ready {
         warm_effective_primary_engine(&app);
     }

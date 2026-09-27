@@ -178,12 +178,98 @@ fn whisper_model_is_required(
     engine_in_play(settings, engines) == TranscriptionEngine::Whisper
 }
 
+/// One of the facts Dictation Readiness (CONTEXT.md) is built from.
+///
+/// The name is the wire string: it is what the settings window keys its
+/// checklist, its banner and its pane badges on, and what the Local Diagnostic
+/// Log names an unmet item by. Typing it once here means a rename is a change in
+/// one place, and the seam test in `tests/frontend-seam.test.mjs` fails if the
+/// settings window's list of ids does not move with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadinessItemId {
+    Microphone,
+    TextInsertion,
+    Hotkey,
+    LocalModel,
+    TranscriptionEngine,
+    LaunchAtLogin,
+}
+
+impl ReadinessItemId {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReadinessItemId::Microphone => "microphone",
+            ReadinessItemId::TextInsertion => "text_insertion",
+            ReadinessItemId::Hotkey => "hotkey",
+            ReadinessItemId::LocalModel => "local_model",
+            ReadinessItemId::TranscriptionEngine => "transcription_engine",
+            ReadinessItemId::LaunchAtLogin => "launch_at_login",
+        }
+    }
+
+    /// What the settings window calls this item. Stated here so the settings
+    /// window's own fallback copy and this report cannot drift apart.
+    pub fn label(self) -> &'static str {
+        match self {
+            ReadinessItemId::Microphone => "Microphone permission",
+            ReadinessItemId::TextInsertion => "Text insertion permission",
+            ReadinessItemId::Hotkey => "Hotkey",
+            ReadinessItemId::LocalModel => "Local model",
+            ReadinessItemId::TranscriptionEngine => "Transcription engine",
+            ReadinessItemId::LaunchAtLogin => "Launch at login",
+        }
+    }
+
+    /// The settings pane whose control settles this item, when settling it is a
+    /// matter of changing a setting rather than of granting an OS permission.
+    /// `None` means there is no such pane: the two permissions are answered in
+    /// system settings, which the report names as a command instead.
+    pub fn pane(self) -> Option<ReadinessPane> {
+        match self {
+            // Engine choice lives on the Dictation pane, next to the engine list
+            // that states why each one is unavailable.
+            ReadinessItemId::Hotkey | ReadinessItemId::TranscriptionEngine => {
+                Some(ReadinessPane::Dictation)
+            }
+            ReadinessItemId::LocalModel => Some(ReadinessPane::Model),
+            ReadinessItemId::LaunchAtLogin => Some(ReadinessPane::General),
+            ReadinessItemId::Microphone | ReadinessItemId::TextInsertion => None,
+        }
+    }
+}
+
+/// One of the settings window's panes, by the id the window routes on. A subset
+/// of the window's sections: the panes a readiness item can send the user to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadinessPane {
+    Dictation,
+    Model,
+    General,
+}
+
+impl ReadinessPane {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReadinessPane::Dictation => "dictation",
+            ReadinessPane::Model => "model",
+            ReadinessPane::General => "general",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadinessItem {
-    pub id: String,
+    pub id: ReadinessItemId,
+    /// Derived from `id` and never set independently, so an item cannot claim a
+    /// name the backend does not know or a pane that does not exist.
     pub label: String,
     pub ready: bool,
     pub required: bool,
+    /// The settings pane that settles this item, when it has one. `None` for the
+    /// two OS permissions, which are settled in system settings.
+    pub pane: Option<ReadinessPane>,
     /// Why this item is not ready, when the reason is specific to this machine
     /// or this build rather than fixed guidance the settings window already
     /// knows. `None` means the static copy for `id` is the whole story.
@@ -191,22 +277,24 @@ pub struct ReadinessItem {
 }
 
 impl ReadinessItem {
-    pub fn ready(id: &str, label: &str, required: bool) -> Self {
+    pub fn ready(id: ReadinessItemId, required: bool) -> Self {
         Self {
-            id: id.to_string(),
-            label: label.to_string(),
+            id,
+            label: id.label().to_string(),
             ready: true,
             required,
+            pane: id.pane(),
             detail: None,
         }
     }
 
-    pub fn missing(id: &str, label: &str, required: bool) -> Self {
+    pub fn missing(id: ReadinessItemId, required: bool) -> Self {
         Self {
-            id: id.to_string(),
-            label: label.to_string(),
+            id,
+            label: id.label().to_string(),
             ready: false,
             required,
+            pane: id.pane(),
             detail: None,
         }
     }
@@ -214,6 +302,11 @@ impl ReadinessItem {
     pub fn with_detail(mut self, detail: Option<String>) -> Self {
         self.detail = detail;
         self
+    }
+
+    /// This item, if the report carries one with this id.
+    pub fn find(report: &SettingsReadinessReport, id: ReadinessItemId) -> Option<&ReadinessItem> {
+        report.items.iter().find(|item| item.id == id)
     }
 }
 
@@ -281,27 +374,15 @@ pub fn settings_readiness_report_checked_for_input(
             input,
         ),
         items: vec![
+            readiness_item(ReadinessItemId::Microphone, true, microphone_granted),
+            readiness_item(ReadinessItemId::TextInsertion, true, insertion_granted),
             readiness_item(
-                "microphone",
-                "Microphone permission",
-                true,
-                microphone_granted,
-            ),
-            readiness_item(
-                "text_insertion",
-                "Text insertion permission",
-                true,
-                insertion_granted,
-            ),
-            readiness_item(
-                "hotkey",
-                "Hotkey",
+                ReadinessItemId::Hotkey,
                 input.hotkey_required(),
                 !input.hotkey_required() || settings.hotkey.is_some(),
             ),
             readiness_item(
-                "local_model",
-                "Local model",
+                ReadinessItemId::LocalModel,
                 whisper_model_required,
                 local_model_ready,
             )
@@ -314,22 +395,21 @@ pub fn settings_readiness_report_checked_for_input(
                 ))
             }),
             readiness_item(
-                "transcription_engine",
-                "Transcription engine",
+                ReadinessItemId::TranscriptionEngine,
                 true,
                 engine_blocker.is_none(),
             )
             .with_detail(engine_blocker),
-            readiness_item("launch_at_login", "Launch at login", false, true),
+            readiness_item(ReadinessItemId::LaunchAtLogin, false, true),
         ],
     }
 }
 
-fn readiness_item(id: &str, label: &str, required: bool, ready: bool) -> ReadinessItem {
+fn readiness_item(id: ReadinessItemId, required: bool, ready: bool) -> ReadinessItem {
     if ready {
-        ReadinessItem::ready(id, label, required)
+        ReadinessItem::ready(id, required)
     } else {
-        ReadinessItem::missing(id, label, required)
+        ReadinessItem::missing(id, required)
     }
 }
 
@@ -474,6 +554,77 @@ mod tests {
     }
 
     #[test]
+    fn every_readiness_id_still_travels_to_the_settings_window_under_its_old_name() {
+        // The settings window keys four separate tables off these names. Changing
+        // one here is safe for the compiler and invisible everywhere else, so the
+        // old names are pinned: a rename has to be a deliberate change to both
+        // sides at once, and tests/frontend-seam.test.mjs is what enforces that.
+        let ids = [
+            (ReadinessItemId::Microphone, "microphone"),
+            (ReadinessItemId::TextInsertion, "text_insertion"),
+            (ReadinessItemId::Hotkey, "hotkey"),
+            (ReadinessItemId::LocalModel, "local_model"),
+            (ReadinessItemId::TranscriptionEngine, "transcription_engine"),
+            (ReadinessItemId::LaunchAtLogin, "launch_at_login"),
+        ];
+
+        for (id, wire) in ids {
+            assert_eq!(id.as_str(), wire);
+            let json = serde_json::to_value(id).expect("a readiness id serialises");
+            assert_eq!(json, serde_json::Value::String(wire.to_string()));
+            assert_eq!(
+                serde_json::from_value::<ReadinessItemId>(json).ok(),
+                Some(id),
+                "{wire} does not come back as the same id"
+            );
+        }
+    }
+
+    #[test]
+    fn an_items_name_and_pane_come_from_its_id_and_cannot_disagree_with_it() {
+        // A report is built by naming ids and nothing else, so an item cannot
+        // claim a name the backend does not know or point the settings window at
+        // a pane that does not exist.
+        let report = settings_readiness_report(
+            &configured_settings(),
+            &FakePlatform::all_ready(),
+            false,
+            &whisper_available(),
+        );
+
+        for item in &report.items {
+            assert_eq!(item.label, item.id.label());
+            assert_eq!(item.pane, item.id.pane());
+        }
+    }
+
+    #[test]
+    fn the_two_os_permissions_name_no_pane_because_no_setting_settles_them() {
+        assert_eq!(ReadinessItemId::Microphone.pane(), None);
+        assert_eq!(ReadinessItemId::TextInsertion.pane(), None);
+    }
+
+    #[test]
+    fn an_item_is_found_by_its_id_rather_than_by_matching_a_string() {
+        let report = settings_readiness_report(
+            &configured_settings(),
+            &FakePlatform::all_ready(),
+            true,
+            &whisper_available(),
+        );
+
+        let local_model =
+            ReadinessItem::find(&report, ReadinessItemId::LocalModel).expect("the item exists");
+        assert!(local_model.ready);
+        assert_eq!(
+            ReadinessItem::find(&report, ReadinessItemId::Microphone)
+                .expect("the item exists")
+                .label,
+            "Microphone permission"
+        );
+    }
+
+    #[test]
     fn one_snapshot_probes_every_fact_exactly_once() {
         let probes = CountingProbes::all_ready(configured_settings());
 
@@ -518,7 +669,7 @@ mod tests {
         // launch_at_login is not ready=false here by default; force an optional
         // item to be unready so the filter must skip it.
         for item in report.items.iter_mut() {
-            if item.id == "launch_at_login" {
+            if item.id == ReadinessItemId::LaunchAtLogin {
                 item.ready = false;
             }
         }
@@ -527,7 +678,10 @@ mod tests {
             .into_iter()
             .map(|item| item.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, ["microphone", "local_model"]);
+        assert_eq!(
+            ids,
+            [ReadinessItemId::Microphone, ReadinessItemId::LocalModel]
+        );
     }
 
     #[test]
@@ -617,16 +771,16 @@ mod tests {
         assert_eq!(
             report.items,
             vec![
-                ReadinessItem::missing("microphone", "Microphone permission", true),
-                ReadinessItem::missing("text_insertion", "Text insertion permission", true),
-                ReadinessItem::missing("hotkey", "Hotkey", true),
-                ReadinessItem::missing("local_model", "Local model", true),
-                ReadinessItem::missing("transcription_engine", "Transcription engine", true)
+                ReadinessItem::missing(ReadinessItemId::Microphone, true),
+                ReadinessItem::missing(ReadinessItemId::TextInsertion, true),
+                ReadinessItem::missing(ReadinessItemId::Hotkey, true),
+                ReadinessItem::missing(ReadinessItemId::LocalModel, true),
+                ReadinessItem::missing(ReadinessItemId::TranscriptionEngine, true)
                     .with_detail(Some(
                         "Whisper base.en cannot run: this build was compiled without support for this engine"
                             .to_string(),
                     )),
-                ReadinessItem::ready("launch_at_login", "Launch at login", false),
+                ReadinessItem::ready(ReadinessItemId::LaunchAtLogin, false),
             ]
         );
     }
@@ -657,13 +811,13 @@ mod tests {
         let local_model = report
             .items
             .iter()
-            .find(|item| item.id == "local_model")
+            .find(|item| item.id == ReadinessItemId::LocalModel)
             .unwrap();
 
         assert!(!report.dictation_available);
         assert_eq!(
             local_model,
-            &ReadinessItem::missing("local_model", "Local model", true)
+            &ReadinessItem::missing(ReadinessItemId::LocalModel, true)
         );
     }
 
@@ -686,7 +840,7 @@ mod tests {
         let local_model = report
             .items
             .iter()
-            .find(|item| item.id == "local_model")
+            .find(|item| item.id == ReadinessItemId::LocalModel)
             .unwrap();
 
         assert!(local_model.ready);
@@ -718,7 +872,7 @@ mod tests {
         let local_model = report
             .items
             .iter()
-            .find(|item| item.id == "local_model")
+            .find(|item| item.id == ReadinessItemId::LocalModel)
             .unwrap();
 
         assert!(local_model.ready);
@@ -760,7 +914,7 @@ mod tests {
         let engine = report
             .items
             .iter()
-            .find(|item| item.id == "transcription_engine")
+            .find(|item| item.id == ReadinessItemId::TranscriptionEngine)
             .unwrap();
 
         assert!(!report.dictation_available);
@@ -787,13 +941,13 @@ mod tests {
         let engine = report
             .items
             .iter()
-            .find(|item| item.id == "transcription_engine")
+            .find(|item| item.id == ReadinessItemId::TranscriptionEngine)
             .unwrap();
 
         assert!(report.dictation_available);
         assert_eq!(
             engine,
-            &ReadinessItem::ready("transcription_engine", "Transcription engine", true)
+            &ReadinessItem::ready(ReadinessItemId::TranscriptionEngine, true)
         );
     }
 
@@ -821,13 +975,13 @@ mod tests {
         let local_model = report
             .items
             .iter()
-            .find(|item| item.id == "local_model")
+            .find(|item| item.id == ReadinessItemId::LocalModel)
             .unwrap();
 
         assert!(report.dictation_available);
         assert_eq!(
             local_model,
-            &ReadinessItem::missing("local_model", "Local model", false).with_detail(Some(
+            &ReadinessItem::missing(ReadinessItemId::LocalModel, false).with_detail(Some(
                 "Not needed: Parakeet TDT v2 transcribes without the Whisper model.".to_string()
             ))
         );
@@ -859,13 +1013,13 @@ mod tests {
         let local_model = report
             .items
             .iter()
-            .find(|item| item.id == "local_model")
+            .find(|item| item.id == ReadinessItemId::LocalModel)
             .unwrap();
 
         assert!(!report.dictation_available);
         assert_eq!(
             local_model,
-            &ReadinessItem::missing("local_model", "Local model", true)
+            &ReadinessItem::missing(ReadinessItemId::LocalModel, true)
         );
     }
 
@@ -882,7 +1036,7 @@ mod tests {
         let local_model = report
             .items
             .iter()
-            .find(|item| item.id == "local_model")
+            .find(|item| item.id == ReadinessItemId::LocalModel)
             .unwrap();
 
         assert!(!report.dictation_available);
@@ -1015,7 +1169,7 @@ mod tests {
             .report
             .items
             .iter()
-            .any(|item| item.id == "microphone" && item.required && !item.ready));
+            .any(|item| item.id == ReadinessItemId::Microphone && item.required && !item.ready));
         assert_eq!(platform.microphone_calls.get(), 1);
     }
 
@@ -1055,7 +1209,7 @@ mod tests {
             .report
             .items
             .iter()
-            .find(|item| item.id == "hotkey")
+            .find(|item| item.id == ReadinessItemId::Hotkey)
             .unwrap();
         assert!(!hotkey.required);
         assert!(hotkey.ready);
@@ -1080,7 +1234,7 @@ mod tests {
             .report
             .items
             .iter()
-            .find(|item| item.id == "transcription_engine")
+            .find(|item| item.id == ReadinessItemId::TranscriptionEngine)
             .unwrap();
         assert!(engine_item.ready);
     }
