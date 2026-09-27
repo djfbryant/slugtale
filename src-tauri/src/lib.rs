@@ -4,6 +4,12 @@
 mod app_shell;
 pub use app_shell::*;
 
+/// Window identity: the label every window Slugtale owns is reached by, and the
+/// close and focus policy that follows from which window it is. One place, so a
+/// misspelled label cannot quietly become a window that never appears.
+mod window_label;
+pub use window_label::*;
+
 mod app_update;
 pub use app_update::*;
 
