@@ -101,23 +101,23 @@ pub enum SelectionReason {
 /// The router's complete, non-content account of one dictation, plus the single
 /// transcript to insert.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RoutedTranscription {
+struct RoutedTranscription {
     /// The one transcript to insert. Never a merge of two engines.
-    pub selected: EngineTranscription,
+    selected: EngineTranscription,
     /// Which rule fired, if any. `None` means the primary was trusted outright.
-    pub escalation: Option<EscalationReason>,
-    pub selection: SelectionReason,
+    escalation: Option<EscalationReason>,
+    selection: SelectionReason,
     /// Which engine was asked for a second opinion, when one was asked.
-    pub second_opinion_engine: Option<TranscriptionEngine>,
+    second_opinion_engine: Option<TranscriptionEngine>,
     /// Wall-clock time for the whole routed dictation, including any escalation.
-    pub total_latency: Duration,
+    total_latency: Duration,
 }
 
 impl RoutedTranscription {
     /// The non-content summary safe to record in the Local Diagnostic Log.
     /// Deliberately returns owned copies of only the codes and the timings, so
     /// a caller cannot reach the transcript through it by accident.
-    pub fn diagnostics(&self) -> RoutingDiagnostics {
+    fn diagnostics(&self) -> RoutingDiagnostics {
         RoutingDiagnostics {
             selected_engine: self.selected.engine,
             escalation: self.escalation,
@@ -155,7 +155,7 @@ pub struct EscalationPolicy {
     /// today only Apple SpeechTranscriber reports one at all (see
     /// [`EscalationReason::LowConfidence`]). The number is a placeholder until
     /// slugtale-9dv calibrates it against real dictations.
-    pub minimum_confidence: f32,
+    minimum_confidence: f32,
     /// Escalate below this many words per second of recording. Ordinary speech
     /// runs 2–3 words per second, so this only catches near-total loss rather
     /// than someone speaking slowly.
@@ -163,9 +163,9 @@ pub struct EscalationPolicy {
     /// Recordings shorter than this are not judged on length or emptiness. A
     /// half-second of silence legitimately transcribes to nothing, and treating
     /// that as a failure would escalate every accidental hotkey press.
-    pub minimum_judged_duration: Duration,
+    minimum_judged_duration: Duration,
     /// How many consecutive repeats of the same short phrase count as a loop.
-    pub repeated_phrase_run: usize,
+    repeated_phrase_run: usize,
     /// How long a second opinion may take before the router gives up and keeps
     /// the first result. Bounded so a slow or wedged engine can never hold a
     /// dictation hostage.
@@ -185,12 +185,28 @@ impl Default for EscalationPolicy {
 }
 
 impl EscalationPolicy {
+    /// Override the second-opinion budget, so a test can prove the router gives
+    /// up rather than holding the dictation.
+    #[cfg(test)]
+    pub(crate) fn with_budget(mut self, budget: Duration) -> Self {
+        self.second_opinion_budget = budget;
+        self
+    }
+
+    /// Override the words-per-second floor, so a threshold can be checked at a
+    /// number other than the default rather than only in passing.
+    #[cfg(test)]
+    pub(crate) fn with_minimum_words_per_second(mut self, words_per_second: f32) -> Self {
+        self.minimum_words_per_second = words_per_second;
+        self
+    }
+
     /// The first rule this result trips, or `None` when it looks healthy.
     ///
     /// Rules are checked in order of how confident we are that they indicate a
     /// real failure, so the reported reason is the strongest explanation rather
     /// than whichever happened to be checked first.
-    pub fn escalation_for(
+    fn escalation_for(
         &self,
         result: &EngineTranscription,
         audio_duration: Duration,
@@ -343,7 +359,10 @@ impl SecondOpinionRouter {
         self
     }
 
-    pub fn with_policy(mut self, policy: EscalationPolicy) -> Self {
+    /// Production runs the default policy; only the tests below change a
+    /// threshold, which is why this door is closed outside the test build.
+    #[cfg(test)]
+    fn with_policy(mut self, policy: EscalationPolicy) -> Self {
         self.policy = policy;
         self
     }
@@ -369,7 +388,7 @@ impl SecondOpinionRouter {
     /// Named `route` rather than `transcribe` so it reads distinctly from the
     /// [`crate::AsrRuntime`] implementation below, which discards the reason
     /// codes this returns.
-    pub fn route(&self, audio: &CapturedAudio) -> Result<RoutedTranscription, AsrError> {
+    fn route(&self, audio: &CapturedAudio) -> Result<RoutedTranscription, AsrError> {
         let routed = self.routed(audio)?;
         if let Some(observer) = self.observer.as_ref() {
             observer(routed.diagnostics());
@@ -752,12 +771,7 @@ mod tests {
         let primary = FakeProvider::new(TranscriptionEngine::Whisper, "");
         let second = FakeProvider::new(TranscriptionEngine::Parakeet, "too late to matter")
             .slow(Duration::from_millis(400));
-        let router = router_with(primary, second, SecondOpinionMode::Automatic).with_policy(
-            EscalationPolicy {
-                second_opinion_budget: Duration::from_millis(40),
-                ..EscalationPolicy::default()
-            },
-        );
+        let router = router_with(primary, second, SecondOpinionMode::Automatic).with_policy(EscalationPolicy::default().with_budget(Duration::from_millis(40)));
 
         let started = Instant::now();
         let routed = router.route(&speech_of_seconds(3.0)).unwrap();
@@ -788,10 +802,7 @@ mod tests {
             SecondOpinionMode::Automatic,
         )
         .with_coordinator(coordinator.clone())
-        .with_policy(EscalationPolicy {
-            second_opinion_budget: Duration::from_millis(50),
-            ..EscalationPolicy::default()
-        });
+        .with_policy(EscalationPolicy::default().with_budget(Duration::from_millis(50)));
 
         let routed_first = first_segment.route(&speech_of_seconds(3.0)).unwrap();
         assert_eq!(
@@ -834,10 +845,7 @@ mod tests {
             SecondOpinionMode::Automatic,
         )
         .with_coordinator(coordinator.clone())
-        .with_policy(EscalationPolicy {
-            second_opinion_budget: Duration::from_millis(30),
-            ..EscalationPolicy::default()
-        });
+        .with_policy(EscalationPolicy::default().with_budget(Duration::from_millis(30)));
         assert_eq!(
             first_segment
                 .route(&speech_of_seconds(3.0))
@@ -1005,6 +1013,27 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn the_words_per_second_floor_is_the_number_the_router_uses() {
+        // The floor is a placeholder until slugtale-9dv calibrates it, so it has
+        // to be checkable at a number other than the default.
+        let ten_seconds = Duration::from_secs(10);
+        let four_words = plain("book the flight please");
+        let rate = |policy: &EscalationPolicy| policy.escalation_for(&four_words, ten_seconds);
+
+        // Four words in ten seconds is 0.4 per second, exactly the default floor.
+        assert_eq!(rate(&EscalationPolicy::default()), None);
+
+        let stricter = EscalationPolicy::default().with_minimum_words_per_second(0.5);
+        assert_eq!(
+            rate(&stricter),
+            Some(EscalationReason::ImplausiblyShortForDuration)
+        );
+
+        let looser = EscalationPolicy::default().with_minimum_words_per_second(0.3);
+        assert_eq!(rate(&looser), None);
     }
 
     fn plain(text: &str) -> EngineTranscription {
