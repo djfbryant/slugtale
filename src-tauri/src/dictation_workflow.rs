@@ -1,19 +1,40 @@
 use crate::{
     transcribe_captured_audio, AsrError, AsrRuntime, CapturedAudio, FinalTranscription,
-    InsertionRescue, InsertionRescueError, TextInsertion, TranscriptCleanupMode,
+    InsertionRescue, InsertionRescueError, TextInsertion, TextInsertionError,
+    TranscriptCleanupMode,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictationWorkflowError {
     Transcription(AsrError),
-    InsertionRescue(InsertionRescueError),
+    /// Text Insertion failed and so did the Insertion Rescue, so the
+    /// transcription is not preserved anywhere. Both errors travel out: the
+    /// rescue failure is what the user is told, and the insertion failure is
+    /// what the Local Diagnostic Log records.
+    InsertionRescue {
+        insertion: TextInsertionError,
+        rescue: InsertionRescueError,
+    },
+}
+
+impl DictationWorkflowError {
+    /// Why Text Insertion failed, when it did. `None` for a transcription that
+    /// never got as far as insertion.
+    pub fn insertion_failure(&self) -> Option<&TextInsertionError> {
+        match self {
+            Self::Transcription(_) => None,
+            Self::InsertionRescue { insertion, .. } => Some(insertion),
+        }
+    }
 }
 
 impl std::fmt::Display for DictationWorkflowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Transcription(error) => write!(f, "{error}"),
-            Self::InsertionRescue(error) => write!(f, "{error}"),
+            // The rescue failure is the one that means the text was lost, so it
+            // is the one the message names.
+            Self::InsertionRescue { rescue, .. } => write!(f, "{rescue}"),
         }
     }
 }
@@ -45,6 +66,11 @@ pub struct DictationSegmentOutcome {
     pub inserted: bool,
     /// Whether Text Insertion failed and the Insertion Rescue took over.
     pub rescued: bool,
+    /// Why Text Insertion failed, when it did and the rescue took over. Carries
+    /// the error description only, never the transcription, and travels out so
+    /// the caller can record it: the Dictation Workflow itself has no Local
+    /// Diagnostic Log to write to.
+    pub insertion_failure: Option<TextInsertionError>,
 }
 
 pub struct DictationWorkflow<'a> {
@@ -92,21 +118,25 @@ impl<'a> DictationWorkflow<'a> {
                 transcription,
                 inserted: false,
                 rescued: false,
+                insertion_failure: None,
             });
         }
 
         let mut rescued = false;
-        if self.text_insertion.insert(&transcription).is_err() {
+        let mut insertion_failure = None;
+        if let Err(insertion) = self.text_insertion.insert(&transcription) {
             rescued = true;
-            self.insertion_rescue
-                .rescue(&transcription)
-                .map_err(DictationWorkflowError::InsertionRescue)?;
+            if let Err(rescue) = self.insertion_rescue.rescue(&transcription) {
+                return Err(DictationWorkflowError::InsertionRescue { insertion, rescue });
+            }
+            insertion_failure = Some(insertion);
         }
 
         Ok(DictationSegmentOutcome {
             transcription,
             inserted: true,
             rescued,
+            insertion_failure,
         })
     }
 }
