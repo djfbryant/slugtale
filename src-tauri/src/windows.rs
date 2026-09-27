@@ -1,6 +1,6 @@
 //! Windows implementation of the Platform Adapter seams (ADR-0021, PRD
 //! slugtale-5pc). This module mirrors `macos.rs`: it fills the same
-//! `PlatformReadiness`, `TextInsertion`, `InsertionRescue`, permission-setup,
+//! permission reads, `TextInsertion`, `InsertionRescue`, permission-setup,
 //! and focus-targeting seams so the core Dictation Workflow runs unchanged on
 //! Windows.
 //!
@@ -43,9 +43,9 @@
 
 use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
-    InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, PlatformReadiness,
-    TextInsertion, TextInsertionError, TextInsertionPermissionSetup, TextInsertionPipeline,
-    TextInsertionSystem, WeekStart,
+    InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, TextInsertion,
+    TextInsertionError, TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem,
+    WeekStart,
 };
 use std::ptr;
 use windows_sys::core::PCWSTR;
@@ -100,15 +100,15 @@ impl Default for WindowsPlatform {
     }
 }
 
-impl PlatformReadiness for WindowsPlatform {
-    fn microphone_granted(&self) -> bool {
+impl WindowsPlatform {
+    pub fn microphone_granted(&self) -> bool {
         microphone_access_granted(
             microphone_consent_value().ok().as_deref(),
             non_packaged_microphone_consent_value().ok().as_deref(),
         )
     }
 
-    fn insertion_granted(&self) -> bool {
+    pub fn insertion_granted(&self) -> bool {
         // Windows has no Accessibility-equivalent trust gate for synthesized
         // input. Elevated targets can still reject input through UIPI, but that
         // is a delivery failure for the insertion pipeline/rescue rather than a

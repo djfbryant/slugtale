@@ -1,8 +1,8 @@
 use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
-    InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, PlatformReadiness,
-    TextInsertion, TextInsertionError, TextInsertionPermissionSetup, TextInsertionPipeline,
-    TextInsertionSystem, WeekStart,
+    InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, TextInsertion,
+    TextInsertionError, TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem,
+    WeekStart,
 };
 use block2::RcBlock;
 use objc2::runtime::Bool;
@@ -66,8 +66,8 @@ impl Default for MacosPlatform {
     }
 }
 
-impl PlatformReadiness for MacosPlatform {
-    fn microphone_granted(&self) -> bool {
+impl MacosPlatform {
+    pub fn microphone_granted(&self) -> bool {
         // Safe: passing a framework-provided media-type constant to a class method.
         unsafe {
             let audio = AVMediaTypeAudio.expect("AVMediaTypeAudio constant is always present");
@@ -76,7 +76,7 @@ impl PlatformReadiness for MacosPlatform {
         }
     }
 
-    fn insertion_granted(&self) -> bool {
+    pub fn insertion_granted(&self) -> bool {
         // Accessibility trust governs text insertion via synthesized events.
         unsafe { AXIsProcessTrusted() }
     }

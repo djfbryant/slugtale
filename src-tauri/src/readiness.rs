@@ -4,17 +4,10 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Platform Adapter boundary (ADR-0021) for the OS-specific facts that gate
-/// dictation: microphone permission and text insertion permission.
-pub trait PlatformReadiness {
-    fn microphone_granted(&self) -> bool;
-    fn insertion_granted(&self) -> bool;
-}
-
-/// The five facts every readiness snapshot is built from. Both snapshot paths —
-/// the Settings pane's report and an activation's snapshot — probe through this
-/// one interface so their answers cannot drift apart (slugtale-g1o.6: each
-/// probe is paid for exactly once per snapshot).
+/// The five facts every readiness answer is built from. Both callers — the
+/// Settings pane's report and an activation's snapshot — probe through this one
+/// interface, so their answers cannot drift apart (slugtale-g1o.6: each probe is
+/// paid for exactly once per snapshot).
 pub trait ReadinessProbes {
     /// The Settings value this snapshot sees. Loaded once and shared.
     fn settings(&self) -> Settings;
@@ -33,8 +26,12 @@ pub trait ReadinessProbes {
     ) -> Vec<(TranscriptionEngine, EngineAvailability)>;
 }
 
-/// One readiness snapshot over any probe source. Every consumer reads the same
-/// Settings value, permission answers, model answer, and engine table.
+/// The one place a Dictation Readiness answer is built.
+///
+/// Every fact is probed exactly once and the report is derived from the same
+/// values the answer is, so `dictation_available` can never contradict an item in
+/// `items` and a consumer cannot disagree with the start decision about which
+/// item is missing.
 pub fn readiness_snapshot(
     probes: &dyn ReadinessProbes,
     input: impl FnOnce(&Settings) -> DictationInput,
@@ -42,37 +39,30 @@ pub fn readiness_snapshot(
     let settings = probes.settings();
     let engines = probes.engine_availability(&settings);
     let chosen_input = input(&settings);
-    let permissions = ProbedPermissions {
+    let permissions = Permissions {
         microphone: probes.microphone_granted(),
         insertion: probes.insertion_granted(),
     };
     let local_model_present = probes
         .local_model(&settings)
         .is_some_and(|model| model.is_present());
-    DictationActivation::build_for_input(
+
+    DictationActivation {
+        report: readiness_report(
+            &settings,
+            &permissions,
+            local_model_present,
+            &engines,
+            chosen_input,
+        ),
         settings,
-        &permissions,
-        local_model_present,
-        engines,
-        chosen_input,
-    )
+    }
 }
 
-/// Permission answers already collected, so [`readiness_snapshot`] can hand
-/// [`DictationActivation`] a [`PlatformReadiness`] without re-probing.
-struct ProbedPermissions {
+/// The two OS permission answers, collected so they are asked once per snapshot.
+struct Permissions {
     microphone: bool,
     insertion: bool,
-}
-
-impl PlatformReadiness for ProbedPermissions {
-    fn microphone_granted(&self) -> bool {
-        self.microphone
-    }
-
-    fn insertion_granted(&self) -> bool {
-        self.insertion
-    }
 }
 
 /// The required items of a report that are not ready. Written once here so
@@ -104,59 +94,23 @@ impl DictationInput {
 /// Dictation Readiness (ADR-0013): dictation is only available once microphone
 /// permission, text insertion permission, a configured hotkey, the assets for
 /// the engine that will run, and a Transcription Engine that can actually run
-/// are all ready.
+/// are all ready. This is the whole rule, in the order the terms are checked.
 ///
 /// The engine check is separate from the model check on purpose. A downloaded
 /// model says only that the weights are on disk; whether anything in *this
 /// binary* can decode them is a fact about the build, and a build compiled
 /// without `local-whisper-runtime` has the file and no runtime (slugtale-bre).
-pub fn dictation_ready(
+fn dictation_available(
     settings: &Settings,
-    platform: &dyn PlatformReadiness,
-    local_model_ready: bool,
-    engines: &[(TranscriptionEngine, EngineAvailability)],
-) -> bool {
-    dictation_ready_checked(
-        settings,
-        platform.microphone_granted(),
-        platform.insertion_granted(),
-        local_model_ready,
-        engines,
-    )
-}
-
-/// [`dictation_ready`] with the external permission answers already collected,
-/// so one activation can probe each OS permission exactly once and share the
-/// results (slugtale-g1o.6).
-pub fn dictation_ready_checked(
-    settings: &Settings,
-    microphone_granted: bool,
-    insertion_granted: bool,
-    local_model_ready: bool,
-    engines: &[(TranscriptionEngine, EngineAvailability)],
-) -> bool {
-    dictation_ready_checked_for_input(
-        settings,
-        microphone_granted,
-        insertion_granted,
-        local_model_ready,
-        engines,
-        DictationInput::Hotkey,
-    )
-}
-
-fn dictation_ready_checked_for_input(
-    settings: &Settings,
-    microphone_granted: bool,
-    insertion_granted: bool,
-    local_model_ready: bool,
+    permissions: &Permissions,
+    local_model_present: bool,
     engines: &[(TranscriptionEngine, EngineAvailability)],
     input: DictationInput,
 ) -> bool {
     (!input.hotkey_required() || settings.hotkey.is_some())
-        && microphone_granted
-        && insertion_granted
-        && (local_model_ready || !whisper_model_is_required(settings, engines))
+        && permissions.microphone
+        && permissions.insertion
+        && (local_model_present || !whisper_model_is_required(settings, engines))
         && engine_that_can_run(settings.primary_engine, engines).is_some()
 }
 
@@ -285,7 +239,7 @@ pub struct ReadinessItem {
 }
 
 impl ReadinessItem {
-    pub fn ready(id: ReadinessItemId, required: bool) -> Self {
+    fn ready(id: ReadinessItemId, required: bool) -> Self {
         Self {
             id,
             label: id.label().to_string(),
@@ -307,7 +261,7 @@ impl ReadinessItem {
         }
     }
 
-    pub fn with_detail(mut self, detail: Option<String>) -> Self {
+    fn with_detail(mut self, detail: Option<String>) -> Self {
         self.detail = detail;
         self
     }
@@ -324,48 +278,12 @@ pub struct SettingsReadinessReport {
     pub items: Vec<ReadinessItem>,
 }
 
-pub fn settings_readiness_report(
+/// The readiness report for one activation input. Voice Activation can make a
+/// hotkey optional; every other term is the same.
+fn readiness_report(
     settings: &Settings,
-    platform: &dyn PlatformReadiness,
-    local_model_ready: bool,
-    engines: &[(TranscriptionEngine, EngineAvailability)],
-) -> SettingsReadinessReport {
-    settings_readiness_report_checked(
-        settings,
-        platform.microphone_granted(),
-        platform.insertion_granted(),
-        local_model_ready,
-        engines,
-    )
-}
-
-/// [`settings_readiness_report`] with the external permission answers already
-/// collected (slugtale-g1o.6).
-pub fn settings_readiness_report_checked(
-    settings: &Settings,
-    microphone_granted: bool,
-    insertion_granted: bool,
-    local_model_ready: bool,
-    engines: &[(TranscriptionEngine, EngineAvailability)],
-) -> SettingsReadinessReport {
-    settings_readiness_report_checked_for_input(
-        settings,
-        microphone_granted,
-        insertion_granted,
-        local_model_ready,
-        engines,
-        DictationInput::Hotkey,
-    )
-}
-
-/// Build a readiness report for the activation inputs available in this app
-/// build. Voice Activation can make a hotkey optional, while every other
-/// readiness check stays the same.
-pub fn settings_readiness_report_checked_for_input(
-    settings: &Settings,
-    microphone_granted: bool,
-    insertion_granted: bool,
-    local_model_ready: bool,
+    permissions: &Permissions,
+    local_model_present: bool,
     engines: &[(TranscriptionEngine, EngineAvailability)],
     input: DictationInput,
 ) -> SettingsReadinessReport {
@@ -373,17 +291,16 @@ pub fn settings_readiness_report_checked_for_input(
     let whisper_model_required = whisper_model_is_required(settings, engines);
 
     SettingsReadinessReport {
-        dictation_available: dictation_ready_checked_for_input(
+        dictation_available: dictation_available(
             settings,
-            microphone_granted,
-            insertion_granted,
-            local_model_ready,
+            permissions,
+            local_model_present,
             engines,
             input,
         ),
         items: vec![
-            readiness_item(ReadinessItemId::Microphone, true, microphone_granted),
-            readiness_item(ReadinessItemId::TextInsertion, true, insertion_granted),
+            readiness_item(ReadinessItemId::Microphone, true, permissions.microphone),
+            readiness_item(ReadinessItemId::TextInsertion, true, permissions.insertion),
             readiness_item(
                 ReadinessItemId::Hotkey,
                 input.hotkey_required(),
@@ -392,7 +309,7 @@ pub fn settings_readiness_report_checked_for_input(
             readiness_item(
                 ReadinessItemId::LocalModel,
                 whisper_model_required,
-                local_model_ready,
+                local_model_present,
             )
             .with_detail(if whisper_model_required {
                 None
@@ -421,79 +338,29 @@ fn readiness_item(id: ReadinessItemId, required: bool, ready: bool) -> Readiness
     }
 }
 
-/// One Hotkey activation's immutable view of everything outside the audio and
+/// One activation's immutable view of everything outside the audio and
 /// transcription engines themselves (slugtale-g1o.6).
 ///
-/// Built once at the activation entry point: one Settings value, one external
-/// probe per OS permission, one local-model answer, and the derived readiness
-/// report and engine decision. Every consumer in the activation reads this
-/// snapshot instead of re-reading global state, so they cannot disagree with
-/// each other or with the start decision — even if the Settings File changes
-/// mid-activation. It is request-scoped by construction: a later Hotkey builds
-/// a fresh one and therefore sees current OS permission state, honouring
-/// ADR-0013's live-readiness rule.
+/// Built once, by [`readiness_snapshot`], at the activation entry point: one
+/// Settings value, one probe per OS permission, one local-model answer, and the
+/// report derived from those same values. Consumers in the activation read this
+/// instead of re-reading global state, so they cannot disagree with each other
+/// or with the start decision even if the Settings File changes mid-activation.
+/// That is a promise about consistency between readers of one snapshot, not
+/// about any individual fact being right: whether a fact is right is the
+/// probes' business, and the Local Model term is exactly the fact that used to
+/// be answered from a different file than the engine opened.
+///
+/// It is request-scoped by construction: a later Hotkey builds a fresh one and
+/// therefore sees current OS permission state, honouring ADR-0013's
+/// live-readiness rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DictationActivation {
     pub settings: Settings,
-    pub microphone_granted: bool,
-    pub insertion_granted: bool,
-    pub local_model_ready: bool,
-    /// The engines' availability as seen when the activation started.
-    pub engines: Vec<(TranscriptionEngine, EngineAvailability)>,
-    /// Which engine this activation's dictations would be transcribed by.
-    pub engine_in_play: Option<TranscriptionEngine>,
     pub report: SettingsReadinessReport,
 }
 
 impl DictationActivation {
-    /// Probe every external fact exactly once and derive the rest. `engines`
-    /// is asked of the Engine Catalogue once by the caller and shared between
-    /// the readiness report and the engine decision.
-    pub fn build(
-        settings: Settings,
-        platform: &dyn PlatformReadiness,
-        local_model_ready: bool,
-        engines: Vec<(TranscriptionEngine, EngineAvailability)>,
-    ) -> Self {
-        Self::build_for_input(
-            settings,
-            platform,
-            local_model_ready,
-            engines,
-            DictationInput::Hotkey,
-        )
-    }
-
-    pub fn build_for_input(
-        settings: Settings,
-        platform: &dyn PlatformReadiness,
-        local_model_ready: bool,
-        engines: Vec<(TranscriptionEngine, EngineAvailability)>,
-        input: DictationInput,
-    ) -> Self {
-        let microphone_granted = platform.microphone_granted();
-        let insertion_granted = platform.insertion_granted();
-        let report = settings_readiness_report_checked_for_input(
-            &settings,
-            microphone_granted,
-            insertion_granted,
-            local_model_ready,
-            &engines,
-            input,
-        );
-        let engine_in_play = engine_that_can_run(settings.primary_engine, &engines);
-
-        Self {
-            settings,
-            microphone_granted,
-            insertion_granted,
-            local_model_ready,
-            engine_in_play,
-            engines,
-            report,
-        }
-    }
-
     pub fn dictation_available(&self) -> bool {
         self.report.dictation_available
     }
@@ -504,54 +371,38 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// A probe source that counts how often each fact is asked for, so tests
-    /// can hold snapshots to the "probe exactly once" contract.
-    struct CountingProbes {
+    /// Every readiness fact, settable one at a time, so the rule can be read as
+    /// a table of terms rather than as one call per permutation.
+    struct FakeProbes {
         settings: Settings,
         microphone: bool,
         insertion: bool,
         model: Option<LocalModelRef>,
-        settings_loads: RefCell<usize>,
-        mic_probes: RefCell<usize>,
-        insertion_probes: RefCell<usize>,
-        engine_probes: RefCell<usize>,
+        engines: Vec<(TranscriptionEngine, EngineAvailability)>,
     }
 
-    impl CountingProbes {
-        fn all_ready(settings: Settings) -> Self {
+    impl FakeProbes {
+        fn all_ready() -> Self {
             Self {
-                settings,
+                settings: configured_settings(),
                 microphone: true,
                 insertion: true,
-                model: Some(an_existing_path()),
-                settings_loads: RefCell::new(0),
-                mic_probes: RefCell::new(0),
-                insertion_probes: RefCell::new(0),
-                engine_probes: RefCell::new(0),
+                model: Some(present_model()),
+                engines: whisper_available(),
             }
         }
     }
 
-    /// The model probe only ever asks `is_present`, so pointing it at the
-    /// platform temp directory answers true without the test writing a file or
-    /// leaking one.
-    fn an_existing_path() -> LocalModelRef {
-        LocalModelRef::at(std::env::temp_dir())
-    }
-
-    impl ReadinessProbes for CountingProbes {
+    impl ReadinessProbes for FakeProbes {
         fn settings(&self) -> Settings {
-            *self.settings_loads.borrow_mut() += 1;
             self.settings.clone()
         }
 
         fn microphone_granted(&self) -> bool {
-            *self.mic_probes.borrow_mut() += 1;
             self.microphone
         }
 
         fn insertion_granted(&self) -> bool {
-            *self.insertion_probes.borrow_mut() += 1;
             self.insertion
         }
 
@@ -563,8 +414,71 @@ mod tests {
             &self,
             _settings: &Settings,
         ) -> Vec<(TranscriptionEngine, EngineAvailability)> {
+            self.engines.clone()
+        }
+    }
+
+    /// A Local Model file that exists. The probe only ever asks `is_present`, so
+    /// pointing it at the platform temp directory answers true without a test
+    /// writing a model file or leaking one.
+    fn present_model() -> LocalModelRef {
+        LocalModelRef::at(std::env::temp_dir())
+    }
+
+    /// A Local Model that resolves to a path with nothing on it, which is what a
+    /// user who has not downloaded the model yet sees.
+    fn absent_model() -> LocalModelRef {
+        LocalModelRef::at(unique_test_dir("no-such-model"))
+    }
+
+    /// The same facts, counted, so tests can hold snapshots to the "probe
+    /// exactly once" contract (slugtale-g1o.6).
+    struct CountingProbes {
+        inner: FakeProbes,
+        settings_loads: RefCell<usize>,
+        mic_probes: RefCell<usize>,
+        insertion_probes: RefCell<usize>,
+        engine_probes: RefCell<usize>,
+    }
+
+    impl CountingProbes {
+        fn all_ready() -> Self {
+            Self {
+                inner: FakeProbes::all_ready(),
+                settings_loads: RefCell::new(0),
+                mic_probes: RefCell::new(0),
+                insertion_probes: RefCell::new(0),
+                engine_probes: RefCell::new(0),
+            }
+        }
+    }
+
+    impl ReadinessProbes for CountingProbes {
+        fn settings(&self) -> Settings {
+            *self.settings_loads.borrow_mut() += 1;
+            self.inner.settings()
+        }
+
+        fn microphone_granted(&self) -> bool {
+            *self.mic_probes.borrow_mut() += 1;
+            self.inner.microphone_granted()
+        }
+
+        fn insertion_granted(&self) -> bool {
+            *self.insertion_probes.borrow_mut() += 1;
+            self.inner.insertion_granted()
+        }
+
+        fn local_model(&self, settings: &Settings) -> Option<LocalModelRef> {
+            self.inner.local_model(settings)
+        }
+
+        fn engine_availability(
+            &self,
+            settings: &Settings,
+        ) -> Vec<(TranscriptionEngine, EngineAvailability)> {
             *self.engine_probes.borrow_mut() += 1;
-            whisper_available()
+            self.inner.engine_availability(settings)
         }
     }
 
@@ -600,12 +514,8 @@ mod tests {
         // A report is built by naming ids and nothing else, so an item cannot
         // claim a name the backend does not know or point the settings window at
         // a pane that does not exist.
-        let report = settings_readiness_report(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            false,
-            &whisper_available(),
-        );
+        let probes = FakeProbes::all_ready();
+        let report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
 
         for item in &report.items {
             assert_eq!(item.label, item.id.label());
@@ -621,12 +531,8 @@ mod tests {
 
     #[test]
     fn an_item_is_found_by_its_id_rather_than_by_matching_a_string() {
-        let report = settings_readiness_report(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            true,
-            &whisper_available(),
-        );
+        let probes = FakeProbes::all_ready();
+        let report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
 
         let local_model =
             ReadinessItem::find(&report, ReadinessItemId::LocalModel).expect("the item exists");
@@ -641,7 +547,7 @@ mod tests {
 
     #[test]
     fn one_snapshot_probes_every_fact_exactly_once() {
-        let probes = CountingProbes::all_ready(configured_settings());
+        let probes = CountingProbes::all_ready();
 
         let snapshot = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
 
@@ -652,37 +558,150 @@ mod tests {
         assert_eq!(*probes.engine_probes.borrow(), 1);
     }
 
+    /// The five terms of Dictation Readiness (ADR-0013), each flipped on its own
+    /// from an all-ready baseline. This table is the rule: a term that stops
+    /// mattering, or stops naming itself, cannot hide here.
     #[test]
-    fn the_snapshot_and_the_checked_report_answer_alike() {
-        let settings = configured_settings();
-        let direct = settings_readiness_report_checked_for_input(
-            &settings,
-            true,
-            true,
-            true,
-            &whisper_available(),
-            DictationInput::Hotkey,
-        );
-        let probes = CountingProbes::all_ready(settings);
+    fn each_readiness_term_flips_availability_and_names_itself() {
+        struct Term {
+            term: &'static str,
+            probes: FakeProbes,
+            dictation_available: bool,
+            item: ReadinessItemId,
+            item_ready: bool,
+            item_required: bool,
+        }
 
-        assert_eq!(
-            readiness_snapshot(&probes, |_| DictationInput::Hotkey).report,
-            direct
-        );
+        let terms = [
+            Term {
+                term: "every term met",
+                probes: FakeProbes::all_ready(),
+                dictation_available: true,
+                item: ReadinessItemId::LaunchAtLogin,
+                item_ready: true,
+                item_required: false,
+            },
+            Term {
+                term: "no configured hotkey",
+                probes: FakeProbes {
+                    settings: Settings::default(),
+                    ..FakeProbes::all_ready()
+                },
+                dictation_available: false,
+                item: ReadinessItemId::Hotkey,
+                item_ready: false,
+                item_required: true,
+            },
+            Term {
+                term: "microphone permission denied",
+                probes: FakeProbes {
+                    microphone: false,
+                    ..FakeProbes::all_ready()
+                },
+                dictation_available: false,
+                item: ReadinessItemId::Microphone,
+                item_ready: false,
+                item_required: true,
+            },
+            Term {
+                term: "text insertion permission denied",
+                probes: FakeProbes {
+                    insertion: false,
+                    ..FakeProbes::all_ready()
+                },
+                dictation_available: false,
+                item: ReadinessItemId::TextInsertion,
+                item_ready: false,
+                item_required: true,
+            },
+            Term {
+                term: "no Local Model for the engine in play",
+                probes: FakeProbes {
+                    model: Some(absent_model()),
+                    ..FakeProbes::all_ready()
+                },
+                dictation_available: false,
+                item: ReadinessItemId::LocalModel,
+                item_ready: false,
+                item_required: true,
+            },
+            Term {
+                term: "no engine can run",
+                probes: FakeProbes {
+                    engines: whisper_runtime_not_built(),
+                    ..FakeProbes::all_ready()
+                },
+                dictation_available: false,
+                item: ReadinessItemId::TranscriptionEngine,
+                item_ready: false,
+                item_required: true,
+            },
+            Term {
+                term: "the engine in play needs no Whisper model",
+                // slugtale-y4m: Parakeet decodes its own installed assets, so
+                // blocking dictation on a 148 MB download the user will never
+                // open is over-blocking, not safety.
+                probes: FakeProbes {
+                    settings: parakeet_settings(),
+                    model: Some(absent_model()),
+                    engines: parakeet_available(),
+                    ..FakeProbes::all_ready()
+                },
+                dictation_available: true,
+                item: ReadinessItemId::LocalModel,
+                item_ready: false,
+                item_required: false,
+            },
+        ];
+
+        for term in terms {
+            let activation = readiness_snapshot(&term.probes, |_| DictationInput::Hotkey);
+            let item = activation
+                .report
+                .items
+                .iter()
+                .find(|item| item.id == term.item)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}: the report names no {} item",
+                        term.term,
+                        term.item.as_str()
+                    )
+                });
+
+            assert_eq!(
+                item.ready,
+                term.item_ready,
+                "{}: {} readiness",
+                term.term,
+                term.item.as_str()
+            );
+            assert_eq!(
+                item.required,
+                term.item_required,
+                "{}: {} required",
+                term.term,
+                term.item.as_str()
+            );
+            assert_eq!(
+                activation.dictation_available(),
+                term.dictation_available,
+                "{}: dictation availability",
+                term.term
+            );
+        }
     }
 
     #[test]
     fn missing_required_items_lists_only_unmet_requirements() {
-        let mut report = settings_readiness_report_checked_for_input(
-            &configured_settings(),
-            false, // microphone missing and required
-            true,
-            false, // local model missing; required for Whisper
-            &whisper_available(),
-            DictationInput::Hotkey,
-        );
-        // launch_at_login is not ready=false here by default; force an optional
-        // item to be unready so the filter must skip it.
+        let probes = FakeProbes {
+            microphone: false,
+            model: Some(absent_model()),
+            ..FakeProbes::all_ready()
+        };
+        let mut report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
+        // launch_at_login is ready here; force an optional item to be unready so
+        // the filter has an optional one to skip.
         for item in report.items.iter_mut() {
             if item.id == ReadinessItemId::LaunchAtLogin {
                 item.ready = false;
@@ -700,87 +719,17 @@ mod tests {
     }
 
     #[test]
-    fn dictation_is_not_ready_when_nothing_is_ready() {
-        let platform = FakePlatform {
+    fn a_report_names_every_missing_required_item_with_its_reason() {
+        let probes = FakeProbes {
+            settings: Settings::default(),
             microphone: false,
             insertion: false,
+            model: Some(absent_model()),
+            engines: whisper_runtime_not_built(),
+            ..FakeProbes::all_ready()
         };
-        assert!(!dictation_ready(
-            &Settings::default(),
-            &platform,
-            false,
-            &whisper_available()
-        ));
-    }
-    #[test]
-    fn dictation_is_not_ready_without_microphone_permission() {
-        let platform = FakePlatform {
-            microphone: false,
-            ..FakePlatform::all_ready()
-        };
-        assert!(!dictation_ready(
-            &configured_settings(),
-            &platform,
-            true,
-            &whisper_available()
-        ));
-    }
-    #[test]
-    fn dictation_is_not_ready_without_insertion_permission() {
-        let platform = FakePlatform {
-            insertion: false,
-            ..FakePlatform::all_ready()
-        };
-        assert!(!dictation_ready(
-            &configured_settings(),
-            &platform,
-            true,
-            &whisper_available()
-        ));
-    }
-    #[test]
-    fn dictation_is_not_ready_without_configured_hotkey() {
-        let settings = Settings {
-            hotkey: None,
-            ..Settings::default()
-        };
-        assert!(!dictation_ready(
-            &settings,
-            &FakePlatform::all_ready(),
-            true,
-            &whisper_available()
-        ));
-    }
-    #[test]
-    fn dictation_is_not_ready_without_local_model() {
-        assert!(!dictation_ready(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            false,
-            &whisper_available()
-        ));
-    }
-    #[test]
-    fn dictation_is_ready_when_all_requirements_are_met() {
-        assert!(dictation_ready(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            true,
-            &whisper_available()
-        ));
-    }
-    #[test]
-    fn settings_readiness_report_shows_missing_required_items() {
-        let platform = FakePlatform {
-            microphone: false,
-            insertion: false,
-        };
-        let report = settings_readiness_report(
-            &Settings::default(),
-            &platform,
-            false,
-            &whisper_runtime_not_built(),
-        );
+
+        let report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
 
         assert!(!report.dictation_available);
         assert_eq!(
@@ -799,30 +748,161 @@ mod tests {
             ]
         );
     }
-    #[test]
-    fn settings_readiness_report_allows_dictation_when_required_items_are_ready() {
-        let report = settings_readiness_report(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            true,
-            &whisper_available(),
-        );
 
-        assert!(report.dictation_available);
-        assert!(report
+    #[test]
+    fn a_permission_denial_fails_the_activation_and_names_the_missing_item() {
+        // This is the fact the Settings-window fallback is driven from: the
+        // report must list the denied permission as a missing required item.
+        let probes = FakeProbes {
+            microphone: false,
+            ..FakeProbes::all_ready()
+        };
+
+        let activation = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
+
+        assert!(!activation.dictation_available());
+        assert_eq!(
+            activation.report.dictation_available,
+            activation.dictation_available()
+        );
+        assert!(activation
+            .report
             .items
             .iter()
-            .filter(|item| item.required)
-            .all(|item| item.ready));
+            .any(|item| item.id == ReadinessItemId::Microphone && item.required && !item.ready));
     }
+
     #[test]
-    fn model_readiness_is_supplied_outside_the_platform_adapter() {
-        let report = settings_readiness_report(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            false,
-            &whisper_available(),
+    fn every_consumer_sees_one_consistent_snapshot_even_if_settings_change_midway() {
+        let settings = configured_settings();
+        let probes = FakeProbes {
+            settings: settings.clone(),
+            ..FakeProbes::all_ready()
+        };
+
+        let activation = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
+
+        // A later Settings save lands in storage; the in-flight activation was
+        // built from the value it captured and must not shift under it.
+        let mut changed = settings.clone();
+        changed.hotkey = None;
+
+        assert_eq!(activation.settings.hotkey, settings.hotkey);
+        assert_ne!(activation.settings.hotkey, changed.hotkey);
+        assert!(activation.dictation_available());
+    }
+
+    #[test]
+    fn voice_activation_is_an_input_when_no_hotkey_is_configured() {
+        let probes = FakeProbes {
+            settings: Settings::default(),
+            ..FakeProbes::all_ready()
+        };
+
+        let activation = readiness_snapshot(&probes, |_| DictationInput::VoiceActivation);
+
+        assert!(activation.dictation_available());
+        let hotkey = activation
+            .report
+            .items
+            .iter()
+            .find(|item| item.id == ReadinessItemId::Hotkey)
+            .unwrap();
+        assert!(!hotkey.required);
+        assert!(hotkey.ready);
+    }
+
+    #[test]
+    fn a_build_without_the_whisper_runtime_reports_why_rather_than_ready() {
+        let probes = FakeProbes {
+            engines: whisper_runtime_not_built(),
+            ..FakeProbes::all_ready()
+        };
+
+        let activation = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
+        let engine = activation
+            .report
+            .items
+            .iter()
+            .find(|item| item.id == ReadinessItemId::TranscriptionEngine)
+            .unwrap();
+
+        assert!(!activation.dictation_available());
+        assert!(!engine.ready);
+        assert!(engine.required);
+        // The user is told what is actually wrong with the binary, not sent to
+        // re-download a model they already have.
+        assert_eq!(
+            engine.detail.as_deref(),
+            Some(
+                "Whisper base.en cannot run: this build was compiled without support for this engine"
+            )
         );
+    }
+
+    #[test]
+    fn a_whisper_only_build_that_can_transcribe_reports_no_engine_blocker() {
+        let activation = readiness_snapshot(&FakeProbes::all_ready(), |_| DictationInput::Hotkey);
+        let engine = activation
+            .report
+            .items
+            .iter()
+            .find(|item| item.id == ReadinessItemId::TranscriptionEngine)
+            .unwrap();
+
+        assert!(activation.dictation_available());
+        assert_eq!(
+            engine,
+            &ReadinessItem::ready(ReadinessItemId::TranscriptionEngine, true)
+        );
+    }
+
+    #[test]
+    fn the_local_model_is_optional_and_says_why_when_another_engine_runs() {
+        let probes = FakeProbes {
+            settings: parakeet_settings(),
+            model: Some(absent_model()),
+            engines: parakeet_available(),
+            ..FakeProbes::all_ready()
+        };
+
+        let report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
+        let local_model = report
+            .items
+            .iter()
+            .find(|item| item.id == ReadinessItemId::LocalModel)
+            .unwrap();
+
+        assert!(report.dictation_available);
+        assert_eq!(
+            local_model,
+            &ReadinessItem::missing(ReadinessItemId::LocalModel, false).with_detail(Some(
+                "Not needed: Parakeet TDT v2 transcribes without the Whisper model.".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_whisper_model_is_required_again_when_the_fallback_is_whisper() {
+        // The chosen engine lost its assets, so the router falls back to Whisper
+        // — which means the Whisper download is once more the thing standing
+        // between this machine and a transcription.
+        let probes = FakeProbes {
+            settings: parakeet_settings(),
+            model: Some(absent_model()),
+            engines: vec![
+                (
+                    TranscriptionEngine::Parakeet,
+                    EngineAvailability::Unavailable(crate::EngineUnavailable::AssetsMissing {
+                        detail: "Parakeet assets are not installed.".to_string(),
+                    }),
+                ),
+                (TranscriptionEngine::Whisper, EngineAvailability::Available),
+            ],
+            ..FakeProbes::all_ready()
+        };
+
+        let report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
         let local_model = report
             .items
             .iter()
@@ -834,6 +914,27 @@ mod tests {
             local_model,
             &ReadinessItem::missing(ReadinessItemId::LocalModel, true)
         );
+    }
+
+    #[test]
+    fn the_whisper_model_stays_required_when_nothing_can_run_for_a_whisper_user() {
+        // Nothing runs, so there is no engine in play to defer to; the user
+        // chose Whisper, so the report keeps describing Whisper's requirements.
+        let probes = FakeProbes {
+            model: Some(absent_model()),
+            engines: whisper_runtime_not_built(),
+            ..FakeProbes::all_ready()
+        };
+
+        let report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
+        let local_model = report
+            .items
+            .iter()
+            .find(|item| item.id == ReadinessItemId::LocalModel)
+            .unwrap();
+
+        assert!(!report.dictation_available);
+        assert!(local_model.required);
     }
 
     /// The production wiring's own Local Model answer, over a real model
@@ -1015,169 +1116,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dictation_is_not_ready_when_no_engine_can_run() {
-        // slugtale-bre: a default-feature build compiles no Whisper runtime. The
-        // model file on disk says nothing about whether anything can decode it,
-        // so readiness must not be satisfied by the download alone.
-        assert!(!dictation_ready(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            true,
-            &whisper_runtime_not_built(),
-        ));
-    }
-
-    #[test]
-    fn dictation_is_ready_on_a_whisper_only_build_with_the_model_downloaded() {
-        assert!(dictation_ready(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            true,
-            &whisper_available(),
-        ));
-    }
-
-    #[test]
-    fn a_build_without_the_whisper_runtime_reports_why_rather_than_ready() {
-        let report = settings_readiness_report(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            true,
-            &whisper_runtime_not_built(),
-        );
-        let engine = report
-            .items
-            .iter()
-            .find(|item| item.id == ReadinessItemId::TranscriptionEngine)
-            .unwrap();
-
-        assert!(!report.dictation_available);
-        assert!(!engine.ready);
-        assert!(engine.required);
-        // The user is told what is actually wrong with the binary, not sent to
-        // re-download a model they already have.
-        assert_eq!(
-            engine.detail.as_deref(),
-            Some(
-                "Whisper base.en cannot run: this build was compiled without support for this engine"
-            )
-        );
-    }
-
-    #[test]
-    fn a_whisper_only_build_that_can_transcribe_reports_no_engine_blocker() {
-        let report = settings_readiness_report(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            true,
-            &whisper_available(),
-        );
-        let engine = report
-            .items
-            .iter()
-            .find(|item| item.id == ReadinessItemId::TranscriptionEngine)
-            .unwrap();
-
-        assert!(report.dictation_available);
-        assert_eq!(
-            engine,
-            &ReadinessItem::ready(ReadinessItemId::TranscriptionEngine, true)
-        );
-    }
-
-    #[test]
-    fn a_machine_whose_engine_needs_no_whisper_model_is_ready_without_one() {
-        // slugtale-y4m: Parakeet decodes its own installed assets, so blocking
-        // dictation on a 148 MB Whisper download the user will never open is
-        // over-blocking, not safety.
-        assert!(dictation_ready(
-            &parakeet_settings(),
-            &FakePlatform::all_ready(),
-            false,
-            &parakeet_available(),
-        ));
-    }
-
-    #[test]
-    fn the_local_model_is_optional_and_says_why_when_another_engine_runs() {
-        let report = settings_readiness_report(
-            &parakeet_settings(),
-            &FakePlatform::all_ready(),
-            false,
-            &parakeet_available(),
-        );
-        let local_model = report
-            .items
-            .iter()
-            .find(|item| item.id == ReadinessItemId::LocalModel)
-            .unwrap();
-
-        assert!(report.dictation_available);
-        assert_eq!(
-            local_model,
-            &ReadinessItem::missing(ReadinessItemId::LocalModel, false).with_detail(Some(
-                "Not needed: Parakeet TDT v2 transcribes without the Whisper model.".to_string()
-            ))
-        );
-    }
-
-    #[test]
-    fn the_whisper_model_is_required_again_when_the_fallback_is_whisper() {
-        // The chosen engine lost its assets, so the router falls back to Whisper
-        // — which means the Whisper download is once more the thing standing
-        // between this machine and a transcription.
-        let engines = [
-            (
-                crate::TranscriptionEngine::Parakeet,
-                crate::EngineAvailability::Unavailable(crate::EngineUnavailable::AssetsMissing {
-                    detail: "Parakeet assets are not installed.".to_string(),
-                }),
-            ),
-            (
-                crate::TranscriptionEngine::Whisper,
-                crate::EngineAvailability::Available,
-            ),
-        ];
-        let report = settings_readiness_report(
-            &parakeet_settings(),
-            &FakePlatform::all_ready(),
-            false,
-            &engines,
-        );
-        let local_model = report
-            .items
-            .iter()
-            .find(|item| item.id == ReadinessItemId::LocalModel)
-            .unwrap();
-
-        assert!(!report.dictation_available);
-        assert_eq!(
-            local_model,
-            &ReadinessItem::missing(ReadinessItemId::LocalModel, true)
-        );
-    }
-
-    #[test]
-    fn the_whisper_model_stays_required_when_nothing_can_run_for_a_whisper_user() {
-        // Nothing runs, so there is no engine in play to defer to; the user
-        // chose Whisper, so the report keeps describing Whisper's requirements.
-        let report = settings_readiness_report(
-            &configured_settings(),
-            &FakePlatform::all_ready(),
-            false,
-            &whisper_runtime_not_built(),
-        );
-        let local_model = report
-            .items
-            .iter()
-            .find(|item| item.id == ReadinessItemId::LocalModel)
-            .unwrap();
-
-        assert!(!report.dictation_available);
-        assert!(local_model.required);
-    }
-
     fn parakeet_settings() -> Settings {
         Settings {
             hotkey: Some("cmd+shift+d".to_string()),
@@ -1186,192 +1124,27 @@ mod tests {
         }
     }
 
-    fn parakeet_available() -> Vec<(crate::TranscriptionEngine, crate::EngineAvailability)> {
+    fn parakeet_available() -> Vec<(TranscriptionEngine, EngineAvailability)> {
         vec![
             (
-                crate::TranscriptionEngine::Whisper,
-                crate::EngineAvailability::Unavailable(crate::EngineUnavailable::AssetsMissing {
+                TranscriptionEngine::Whisper,
+                EngineAvailability::Unavailable(crate::EngineUnavailable::AssetsMissing {
                     detail: "The Whisper model has not been downloaded yet.".to_string(),
                 }),
             ),
-            (
-                crate::TranscriptionEngine::Parakeet,
-                crate::EngineAvailability::Available,
-            ),
+            (TranscriptionEngine::Parakeet, EngineAvailability::Available),
         ]
     }
 
-    fn whisper_available() -> Vec<(crate::TranscriptionEngine, crate::EngineAvailability)> {
+    fn whisper_available() -> Vec<(TranscriptionEngine, EngineAvailability)> {
+        vec![(TranscriptionEngine::Whisper, EngineAvailability::Available)]
+    }
+
+    fn whisper_runtime_not_built() -> Vec<(TranscriptionEngine, EngineAvailability)> {
         vec![(
-            crate::TranscriptionEngine::Whisper,
-            crate::EngineAvailability::Available,
+            TranscriptionEngine::Whisper,
+            EngineAvailability::Unavailable(crate::EngineUnavailable::RuntimeNotBuilt),
         )]
-    }
-
-    fn whisper_runtime_not_built() -> Vec<(crate::TranscriptionEngine, crate::EngineAvailability)> {
-        vec![(
-            crate::TranscriptionEngine::Whisper,
-            crate::EngineAvailability::Unavailable(crate::EngineUnavailable::RuntimeNotBuilt),
-        )]
-    }
-
-    struct FakePlatform {
-        microphone: bool,
-        insertion: bool,
-    }
-
-    impl FakePlatform {
-        fn all_ready() -> Self {
-            Self {
-                microphone: true,
-                insertion: true,
-            }
-        }
-    }
-
-    impl PlatformReadiness for FakePlatform {
-        fn microphone_granted(&self) -> bool {
-            self.microphone
-        }
-        fn insertion_granted(&self) -> bool {
-            self.insertion
-        }
-    }
-
-    /// A platform fake that counts its external probes, so tests can prove
-    /// one activation queries each permission exactly once.
-    struct CountingPlatform {
-        inner: FakePlatform,
-        microphone_calls: std::cell::Cell<usize>,
-        insertion_calls: std::cell::Cell<usize>,
-    }
-
-    impl CountingPlatform {
-        fn all_ready() -> Self {
-            Self {
-                inner: FakePlatform::all_ready(),
-                microphone_calls: std::cell::Cell::new(0),
-                insertion_calls: std::cell::Cell::new(0),
-            }
-        }
-    }
-
-    impl PlatformReadiness for CountingPlatform {
-        fn microphone_granted(&self) -> bool {
-            self.microphone_calls.set(self.microphone_calls.get() + 1);
-            self.inner.microphone
-        }
-        fn insertion_granted(&self) -> bool {
-            self.insertion_calls.set(self.insertion_calls.get() + 1);
-            self.inner.insertion
-        }
-    }
-
-    #[test]
-    fn one_activation_probes_each_os_permission_exactly_once() {
-        let platform = CountingPlatform::all_ready();
-
-        let activation =
-            DictationActivation::build(configured_settings(), &platform, true, whisper_available());
-
-        assert!(activation.dictation_available());
-        assert_eq!(platform.microphone_calls.get(), 1);
-        assert_eq!(platform.insertion_calls.get(), 1);
-    }
-
-    #[test]
-    fn a_permission_denial_fails_the_activation_and_names_the_missing_item() {
-        // This is the fact the Settings-window fallback is driven from: the
-        // report must list the denied permission as a missing required item.
-        let platform = CountingPlatform {
-            inner: FakePlatform {
-                microphone: false,
-                insertion: true,
-            },
-            microphone_calls: std::cell::Cell::new(0),
-            insertion_calls: std::cell::Cell::new(0),
-        };
-
-        let activation =
-            DictationActivation::build(configured_settings(), &platform, true, whisper_available());
-
-        assert!(!activation.dictation_available());
-        assert_eq!(
-            activation.report.dictation_available,
-            activation.dictation_available()
-        );
-        assert!(activation
-            .report
-            .items
-            .iter()
-            .any(|item| item.id == ReadinessItemId::Microphone && item.required && !item.ready));
-        assert_eq!(platform.microphone_calls.get(), 1);
-    }
-
-    #[test]
-    fn every_consumer_sees_one_consistent_snapshot_even_if_settings_change_midway() {
-        let platform = CountingPlatform::all_ready();
-        let settings = configured_settings();
-        let engines = whisper_available();
-
-        let activation = DictationActivation::build(settings.clone(), &platform, true, engines);
-
-        // A later Settings save lands in storage; the in-flight activation was
-        // built from the value it captured and must not shift under it.
-        let mut changed = settings.clone();
-        changed.hotkey = None;
-
-        assert_eq!(activation.settings.hotkey, settings.hotkey);
-        assert_ne!(activation.settings.hotkey, changed.hotkey);
-        assert!(activation.dictation_available());
-    }
-
-    #[test]
-    fn voice_activation_is_an_input_when_no_hotkey_is_configured() {
-        let platform = CountingPlatform::all_ready();
-        let settings = Settings::default();
-
-        let activation = DictationActivation::build_for_input(
-            settings,
-            &platform,
-            true,
-            whisper_available(),
-            DictationInput::VoiceActivation,
-        );
-
-        assert!(activation.dictation_available());
-        let hotkey = activation
-            .report
-            .items
-            .iter()
-            .find(|item| item.id == ReadinessItemId::Hotkey)
-            .unwrap();
-        assert!(!hotkey.required);
-        assert!(hotkey.ready);
-    }
-
-    #[test]
-    fn the_engine_decision_is_resolved_once_from_the_shared_availability() {
-        let platform = CountingPlatform::all_ready();
-        let mut settings = configured_settings();
-        settings.primary_engine = crate::TranscriptionEngine::Parakeet;
-        // Parakeet cannot run in this build; the decision must fall back.
-
-        let activation =
-            DictationActivation::build(settings.clone(), &platform, true, whisper_available());
-
-        assert_eq!(
-            activation.engine_in_play,
-            Some(crate::TranscriptionEngine::Whisper)
-        );
-        // The report's engine item agrees with the snapshot's own decision.
-        let engine_item = activation
-            .report
-            .items
-            .iter()
-            .find(|item| item.id == ReadinessItemId::TranscriptionEngine)
-            .unwrap();
-        assert!(engine_item.ready);
     }
 
     fn configured_settings() -> Settings {

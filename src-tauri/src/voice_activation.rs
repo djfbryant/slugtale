@@ -210,7 +210,7 @@ impl slugtale_lib::WakeListener for AppWakeListener {
     }
 
     fn microphone_granted(&self) -> bool {
-        slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new())
+        CurrentPlatform::new().microphone_granted()
     }
 
     fn capture_is_open(&self) -> bool {
