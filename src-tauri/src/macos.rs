@@ -1,8 +1,8 @@
 use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
-    InsertionRescueError, InsertionRescueOutcome, InsertionRescueSystem, MicrophonePermissionSetup,
-    PlatformReadiness, TextInsertion, TextInsertionError, TextInsertionOutcome,
-    TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem, WeekStart,
+    InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, PlatformReadiness,
+    TextInsertion, TextInsertionError, TextInsertionPermissionSetup, TextInsertionPipeline,
+    TextInsertionSystem, WeekStart,
 };
 use block2::RcBlock;
 use objc2::runtime::Bool;
@@ -101,10 +101,7 @@ impl MacosTextInsertion {
 }
 
 impl TextInsertion for MacosTextInsertion {
-    fn insert(
-        &self,
-        transcription: &FinalTranscription,
-    ) -> Result<TextInsertionOutcome, TextInsertionError> {
+    fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError> {
         self.pipeline.insert(transcription)
     }
 }
@@ -203,10 +200,7 @@ impl MacosInsertionRescue {
 }
 
 impl InsertionRescue for MacosInsertionRescue {
-    fn rescue(
-        &self,
-        transcription: &FinalTranscription,
-    ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+    fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError> {
         self.rescue.rescue(transcription)
     }
 }

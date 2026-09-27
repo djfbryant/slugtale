@@ -173,7 +173,7 @@ pub fn clean_dictation_segment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{InsertionRescueOutcome, TextInsertionError, TextInsertionOutcome};
+    use crate::TextInsertionError;
 
     #[test]
     fn dictation_workflow_cleans_final_transcription_before_immediate_insertion() {
@@ -480,15 +480,12 @@ mod tests {
     }
 
     impl TextInsertion for FakeTextInsertion {
-        fn insert(
-            &self,
-            transcription: &FinalTranscription,
-        ) -> Result<TextInsertionOutcome, TextInsertionError> {
+        fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError> {
             self.inserted.borrow_mut().push(transcription.text.clone());
             if self.fails {
                 Err(TextInsertionError::new("fake insertion failure"))
             } else {
-                Ok(TextInsertionOutcome::ClipboardFree)
+                Ok(())
             }
         }
     }
@@ -499,12 +496,9 @@ mod tests {
     }
 
     impl InsertionRescue for FakeInsertionRescue {
-        fn rescue(
-            &self,
-            transcription: &FinalTranscription,
-        ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+        fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError> {
             self.rescued.borrow_mut().push(transcription.text.clone());
-            Ok(InsertionRescueOutcome::CopiedToClipboardAndNotified)
+            Ok(())
         }
     }
 }
