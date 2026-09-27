@@ -1365,9 +1365,9 @@ fn main() {
                 .map_err(std::io::Error::other)?;
             // The dictation lifecycle host owns its own state; it is managed
             // here, before the hotkey worker starts, so every activation input
-            // finds it in place. It is also the Dictation Runtime's host, so the
-            // runtime takes a second handle on it rather than an adapter of its
-            // own.
+            // finds it in place. The Dictation Segment worker reaches the same
+            // host from its own thread, so the runtime is handed a second handle
+            // on it rather than a copy of anything the host already answers.
             let host: Arc<DictationHost> = Arc::new(DictationHost::new(
                 Arc::new(TauriSurface {
                     app: app.handle().clone(),

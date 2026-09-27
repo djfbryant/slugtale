@@ -11,18 +11,19 @@
 //! and the Dictation Host implements the same interface for real.
 
 use crate::{
-    count_words, today_local, CapturedAudio, CountedSegment, DictationSegmentOutcome,
-    DictationSegmentPosition, LocalDate, SegmentPauseDetector, SEGMENT_PAUSE,
+    count_words, CapturedAudio, CountedSegment, DictationSegmentOutcome, DictationSegmentPosition,
+    SegmentPauseDetector, SEGMENT_PAUSE,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 /// Everything the Dictation Runtime asks of the app, and nothing else. One
-/// interface, four methods: the Dictation Host implements it in production, a
-/// fake implements it once in tests and answers every behaviour below. The
-/// runtime holds the host shared for the app's whole life and only ever reads
-/// through it, so a host keeps whatever locking its own state needs inside
-/// itself.
+/// interface, four methods: the Dictation Host implements it in production, and
+/// the tests answer it either from one fake that scripts every behaviour below
+/// or from a stub that reaches nothing when the test never gets as far as a
+/// Dictation Segment. The runtime holds the host shared for the app's whole
+/// life and only ever reads through it, so a host keeps whatever locking its
+/// own state needs inside itself.
 pub trait DictationRuntimeHost: Send + Sync {
     /// Take the pending Pause Flush audio from the capture ring, cutting at
     /// `cut` — the sample watermark the flush was queued with.
@@ -39,58 +40,12 @@ pub trait DictationRuntimeHost: Send + Sync {
     /// Take one Counted Segment toward Usage. The runtime has already decided
     /// it counts; where it goes, and never making the Dictation wait for that,
     /// is the host's half of ADR-0025.
-    fn record(&self, segment: CountedSegment);
+    fn record_counted_segment(&self, segment: CountedSegment);
 
     /// A dictation's final job has settled — inserted, skipped, failed, or even
     /// panicked. Whatever happens, nothing else will end the transcribing
     /// state: the host hides the Dictation Bar here.
     fn last_job_settled(&self);
-}
-
-/// Where counted segments go once the host has decided they count. The sink runs
-/// on the usage writer thread, where being slow costs nothing and failing costs
-/// only a count (ADR-0025): it re-checks the opt-in at the last possible moment
-/// and writes the Usage File.
-pub type UsageSink = dyn Fn(LocalDate, CountedSegment) + Send + Sync;
-
-/// The queue that carries Counted Segments to the Usage File.
-///
-/// Usage must never slow or fail Dictation (ADR-0025), so this only ever does a
-/// non-blocking channel send. The local date rides along at enqueue time rather
-/// than being resolved by the writer, because a Counted Segment belongs to the
-/// date it landed on — and by the time a backed-up queue is drained, midnight
-/// may have passed.
-pub struct UsageQueue {
-    jobs: Mutex<Option<mpsc::Sender<(LocalDate, CountedSegment)>>>,
-}
-
-impl UsageQueue {
-    /// Start the writer thread and hand back the queue that feeds it.
-    pub fn start(sink: Arc<UsageSink>) -> Result<Arc<Self>, String> {
-        let (sender, receiver) = mpsc::channel::<(LocalDate, CountedSegment)>();
-        std::thread::Builder::new()
-            .name("slugtale-usage".to_string())
-            .spawn(move || {
-                while let Ok((date, segment)) = receiver.recv() {
-                    sink(date, segment);
-                }
-            })
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(Self {
-            jobs: Mutex::new(Some(sender)),
-        }))
-    }
-
-    /// Hand a Counted Segment to the writer without waiting for it. A closed or
-    /// unstarted queue drops it on the floor: the insertion already happened,
-    /// which is the part that mattered.
-    pub fn record(&self, segment: CountedSegment) {
-        if let Ok(guard) = self.jobs.lock() {
-            if let Some(sender) = guard.as_ref() {
-                let _ = sender.send((today_local(), segment));
-            }
-        }
-    }
 }
 
 /// One unit of Dictation Segment work, in the order the runtime heard it.
@@ -154,7 +109,7 @@ impl DictationSegmentControl {
         self.current() == dictation && !self.is_cancelled(dictation)
     }
 
-    fn suspend_pause_flushes(&self) {
+    fn suspend_flushes_for_rescue(&self) {
         self.rescued.store(true, Ordering::SeqCst);
     }
 
@@ -174,15 +129,8 @@ impl DictationSegmentControl {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DictationSegmentJobResult {
-    Skipped {
-        last: bool,
-    },
-    Completed {
-        last: bool,
-        inserted: bool,
-        rescued: bool,
-        text_chars: usize,
-    },
+    Skipped { last: bool },
+    Completed { inserted: bool, text_chars: usize },
 }
 
 /// Ordered Dictation Segment execution behind one small interface: begin,
@@ -257,7 +205,7 @@ impl DictationSegmentWorker {
         };
         let outcome = host.complete(audio, position)?;
         if outcome.inserted {
-            host.record(CountedSegment {
+            host.record_counted_segment(CountedSegment {
                 words: count_words(&outcome.transcription.text),
                 speaking_seconds,
                 starts_dictation,
@@ -265,13 +213,11 @@ impl DictationSegmentWorker {
         }
         self.inserted_any |= outcome.inserted;
         if outcome.rescued {
-            control.suspend_pause_flushes();
+            control.suspend_flushes_for_rescue();
         }
 
         Ok(DictationSegmentJobResult::Completed {
-            last,
             inserted: outcome.inserted,
-            rescued: outcome.rescued,
             text_chars: outcome.transcription.text.chars().count(),
         })
     }
@@ -410,9 +356,11 @@ impl DictationRuntime {
         )
     }
 
+    /// The suspension set by a rescue, reached without a worker to set it, so a
+    /// test can ask the producer side what it does with a flag already raised.
     #[cfg(test)]
-    fn suspend_for_test(&self) {
-        self.control.suspend_pause_flushes();
+    fn suspend_flushes_for_test(&self) {
+        self.control.suspend_flushes_for_rescue();
     }
 }
 
@@ -575,7 +523,7 @@ mod tests {
             Ok(outcome)
         }
 
-        fn record(&self, segment: CountedSegment) {
+        fn record_counted_segment(&self, segment: CountedSegment) {
             self.calls.lock().unwrap().push(HostCall::Recorded(segment));
         }
 
@@ -602,17 +550,6 @@ mod tests {
         }
     }
 
-    /// A Usage queue whose writer never runs, so a test reads what was queued.
-    fn test_usage_queue() -> (Arc<UsageQueue>, mpsc::Receiver<(LocalDate, CountedSegment)>) {
-        let (sender, receiver) = mpsc::channel();
-        (
-            Arc::new(UsageQueue {
-                jobs: Mutex::new(Some(sender)),
-            }),
-            receiver,
-        )
-    }
-
     /// Drive queued jobs through the same settle path the worker thread uses, in
     /// one fresh dictation.
     fn drive(host: &FakeHost, jobs: Vec<DictationSegmentJob>) {
@@ -632,6 +569,22 @@ mod tests {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the worker stalled after {:?}",
+                host.calls()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// Wait for the dictation's last job to settle the Dictation Bar. Jobs are
+    /// ordered, so once the bar is hidden nothing is left to do, and a missing
+    /// call in the log means the rule stopped it rather than the worker running
+    /// late.
+    fn wait_for_the_bar(host: &FakeHost) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while host.bars_hidden() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never settled the bar after {:?}",
                 host.calls()
             );
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -742,6 +695,55 @@ mod tests {
     }
 
     #[test]
+    fn a_rescue_holds_back_the_pause_that_follows_it_and_the_last_still_lands() {
+        // ADR-0026 guarantee 3 from a rescue the workflow itself produced, over
+        // the real trigger and the real worker. The fake offers audio for the
+        // pause that follows the rescue, so the only thing that can stop it is
+        // the rule; and the dictation's own last segment is not held back with
+        // it, which is the other half of the same guarantee.
+        let host = FakeHost::answering(
+            vec![Some(audio(16_000, 16_000)), Some(audio(16_000, 16_000))],
+            vec![
+                outcome("rescued words", true, true),
+                outcome("final words", true, false),
+                outcome("words after the rescue", true, false),
+            ],
+        );
+        let runtime = DictationRuntime::start_with_pause(
+            Arc::new(host.clone()),
+            Arc::new(|| 16_000),
+            TEST_PAUSE,
+        )
+        .expect("the runtime starts");
+        runtime.begin();
+
+        runtime.on_voice_level(speaking());
+        std::thread::sleep(TEST_PAUSE * 3);
+        runtime.on_voice_level(0.0);
+        wait_for_calls(&host, 3);
+        // The rescued segment is in the log, so the rule is armed before the
+        // pause that has to meet it.
+        assert_eq!(host.recorded()[0].words, 2);
+
+        runtime.on_voice_level(speaking());
+        std::thread::sleep(TEST_PAUSE * 3);
+        runtime.on_voice_level(0.0);
+        runtime.send_last(audio(16_000, 16_000));
+        wait_for_the_bar(&host);
+
+        assert_eq!(
+            host.positions(),
+            [
+                DictationSegmentPosition::First,
+                DictationSegmentPosition::Continuation
+            ]
+        );
+        let recorded = host.recorded();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded[1].words, 2);
+    }
+
+    #[test]
     fn rescue_suspends_flushes_on_both_sides_of_the_segment_queue() {
         // ADR-0026 guarantee 3, "Rescue suspends flushes", is one rule asked in
         // two places. The producer side stops queueing new Pause Flushes, and the
@@ -759,7 +761,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("a flush queues while the dictation records");
 
-        runtime.suspend_for_test();
+        runtime.suspend_flushes_for_test();
 
         runtime.on_voice_level(speaking());
         std::thread::sleep(TEST_PAUSE * 3);
@@ -948,7 +950,7 @@ mod tests {
     fn cancellation_and_rescue_suppress_pause_flushes_but_not_the_last_segment() {
         let control = DictationSegmentControl::default();
         let dictation = control.begin();
-        control.suspend_pause_flushes();
+        control.suspend_flushes_for_rescue();
         let mut worker = DictationSegmentWorker::default();
         let host = FakeHost::answering(
             vec![Some(audio(1, 1))],
@@ -996,12 +998,16 @@ mod tests {
 
     #[test]
     fn a_rescued_segment_suspends_later_flushes_but_still_finishes_the_last() {
+        // The second flush is offered audio like any other, so the rule is the
+        // only thing that can hold it back: the microphone is never cut for a
+        // Dictation Segment the user cannot see, and the words the rescue
+        // preserved are not buried under the words after them (ADR-0026).
         let host = FakeHost::answering(
-            vec![Some(audio(1, 1)), None],
+            vec![Some(audio(1, 1)), Some(audio(1, 1))],
             vec![
                 outcome("rescued words", true, true),
-                outcome("never reached", true, false),
                 outcome("final words", true, false),
+                outcome("words after the rescue", true, false),
             ],
         );
 
@@ -1023,9 +1029,10 @@ mod tests {
             ],
         );
 
-        // The rescued flush inserted as First text; the suspended flush took
-        // nothing; the last segment still completed — as a Continuation,
-        // because the dictation already inserted words before the rescue.
+        // The rescued flush inserted as First text and the suspended one took
+        // nothing; the last segment still completed, as a Continuation because
+        // the dictation had already inserted words before the rescue.
+        assert_eq!(host.cuts(), [0]);
         assert_eq!(
             host.positions(),
             [
@@ -1037,6 +1044,58 @@ mod tests {
         assert_eq!(recorded.len(), 2);
         assert_eq!(recorded[0].words, 2);
         assert_eq!(recorded[1].words, 2);
+    }
+
+    #[test]
+    fn a_rescue_suspends_nothing_in_the_next_dictation() {
+        // A rescue holds flushes back until the user moves on, and opening the
+        // next dictation is how they move on. Without this the first Insertion
+        // Rescue of a session would wedge every dictation that follows it.
+        let control = DictationSegmentControl::default();
+        let rescued_dictation = control.begin();
+        let mut worker = DictationSegmentWorker::default();
+        let host = FakeHost::answering(
+            vec![Some(audio(1, 1)), Some(audio(1, 1))],
+            vec![
+                outcome("rescued words", true, true),
+                outcome("next words", true, false),
+            ],
+        );
+
+        worker
+            .process(
+                DictationSegmentJob::PauseFlush {
+                    dictation: rescued_dictation,
+                    cut: 0,
+                },
+                &control,
+                &host,
+            )
+            .unwrap();
+
+        let next_dictation = control.begin();
+        worker
+            .process(
+                DictationSegmentJob::PauseFlush {
+                    dictation: next_dictation,
+                    cut: 1_000,
+                },
+                &control,
+                &host,
+            )
+            .unwrap();
+
+        assert_eq!(host.cuts(), [0, 1_000]);
+        // A new dictation's first words are First again, whatever the last one
+        // did before it stopped.
+        assert_eq!(
+            host.positions(),
+            [
+                DictationSegmentPosition::First,
+                DictationSegmentPosition::First
+            ]
+        );
+        assert_eq!(host.recorded().len(), 2);
     }
 
     #[test]
@@ -1071,21 +1130,6 @@ mod tests {
         let recorded = host.recorded();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].words, 2);
-    }
-
-    #[test]
-    fn a_counted_segment_is_stamped_with_the_day_it_lands_on() {
-        let (queue, queued) = test_usage_queue();
-
-        queue.record(CountedSegment {
-            words: 3,
-            speaking_seconds: 1.0,
-            starts_dictation: true,
-        });
-
-        // A Counted Segment belongs to the date it landed on, stamped at
-        // enqueue time rather than whenever the writer drains.
-        assert_eq!(queued.recv().unwrap().0, today_local());
     }
 
     // ---- cancellation, and the Dictation Bar ----

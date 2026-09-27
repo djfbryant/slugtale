@@ -441,7 +441,7 @@ where
         self.run_dictation_segment(audio, position)
     }
 
-    fn record(&self, segment: crate::CountedSegment) {
+    fn record_counted_segment(&self, segment: crate::CountedSegment) {
         self.usage.record(segment);
     }
 
@@ -461,7 +461,7 @@ mod tests {
         PreparedInsertion, SettledTextInsertion, SharedDiagnosticLog, TextInsertion,
         TextInsertionError, TranscriptionProvider, SEGMENT_VOICE_LEVEL,
     };
-    use std::sync::{mpsc, Weak};
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     /// Every effect the lifecycle asked of its surface, in the order it asked.
@@ -485,9 +485,6 @@ mod tests {
         transcriptions: Arc<std::sync::Mutex<Vec<String>>>,
         inserted: Arc<std::sync::Mutex<Vec<String>>>,
         rescued: Arc<std::sync::Mutex<Vec<String>>>,
-        /// Spendable, so a test can fail one segment's insertion without failing
-        /// every later one too.
-        fail_insertion: Arc<std::sync::Mutex<bool>>,
     }
 
     impl FakeSurface {
@@ -516,14 +513,6 @@ mod tests {
 
         fn inserted(&self) -> Vec<String> {
             self.inserted.lock().unwrap().clone()
-        }
-
-        fn rescued(&self) -> Vec<String> {
-            self.rescued.lock().unwrap().clone()
-        }
-
-        fn fail_insertion(&self) {
-            *self.fail_insertion.lock().unwrap() = true;
         }
     }
 
@@ -596,7 +585,6 @@ mod tests {
                 insertion: SettledTextInsertion::new(
                     Box::new(RecordingInsertion {
                         inserted: self.inserted.clone(),
-                        fails: self.fail_insertion.clone(),
                     }),
                     None,
                 ),
@@ -652,7 +640,6 @@ mod tests {
 
     struct RecordingInsertion {
         inserted: Arc<std::sync::Mutex<Vec<String>>>,
-        fails: Arc<std::sync::Mutex<bool>>,
     }
 
     impl TextInsertion for RecordingInsertion {
@@ -661,11 +648,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(transcription.text.clone());
-            if std::mem::take(&mut *self.fails.lock().unwrap()) {
-                Err(TextInsertionError::new("fake insertion failure"))
-            } else {
-                Ok(())
-            }
+            Ok(())
         }
     }
 
@@ -807,46 +790,6 @@ mod tests {
         }
     }
 
-    /// The Dictation Runtime's host half, wired to the very host the level
-    /// callback talks to. This is the delegation `AppHost` performs in the app,
-    /// so a Pause Flush crosses the same two interfaces it crosses there.
-    struct PausingRuntimeHost {
-        host: Weak<DictationHost<FakeRecorder>>,
-        surface: Arc<FakeSurface>,
-    }
-
-    impl PausingRuntimeHost {
-        fn host(&self) -> Option<Arc<DictationHost<FakeRecorder>>> {
-            self.host.upgrade()
-        }
-    }
-
-    impl DictationRuntimeHost for PausingRuntimeHost {
-        fn take_pause_segment(&self, cut: u64) -> Option<CapturedAudio> {
-            self.host()?.take_dictation_segment(cut)
-        }
-
-        fn complete(
-            &self,
-            audio: CapturedAudio,
-            position: DictationSegmentPosition,
-        ) -> Result<DictationSegmentOutcome, String> {
-            self.host()
-                .ok_or_else(|| "the test host is gone".to_string())?
-                .run_dictation_segment(audio, position)
-        }
-
-        fn record(&self, segment: CountedSegment) {
-            if let Some(host) = self.host() {
-                host.record(segment);
-            }
-        }
-
-        fn last_job_settled(&self) {
-            self.surface.hide_dictation_bar();
-        }
-    }
-
     /// A Segment Pause short enough for a test to sit through. The rule under it
     /// is the one the five-second default drives.
     const TEST_PAUSE: Duration = Duration::from_millis(30);
@@ -868,7 +811,7 @@ mod tests {
             Err("test host never transcribes".to_string())
         }
 
-        fn record(&self, _segment: CountedSegment) {}
+        fn record_counted_segment(&self, _segment: CountedSegment) {}
 
         fn last_job_settled(&self) {}
     }
@@ -904,8 +847,6 @@ mod tests {
             let (cut_sender, cuts) = mpsc::channel();
             recorder.cuts = cut_sender;
             let (counted_tx, counted) = mpsc::channel();
-            // The Usage queue is the host's, so the counted segments come back
-            // through its own sink rather than through the runtime.
             let host = Arc::new(DictationHost::with_recorder(
                 surface.clone(),
                 recorder,
@@ -917,18 +858,11 @@ mod tests {
             // The watermark the runtime probes is the host's own read of the
             // microphone, so a queued flush carries the position the capture
             // session reported rather than a number the test made up.
-            let watermark = Arc::downgrade(&host);
+            let runtime_host: Arc<dyn DictationRuntimeHost> = host.clone();
+            let watermark_host = Arc::clone(&host);
             let runtime = DictationRuntime::start_with_test_pause(
-                Arc::new(PausingRuntimeHost {
-                    host: Arc::downgrade(&host),
-                    surface: surface.clone(),
-                }),
-                Arc::new(move || {
-                    watermark
-                        .upgrade()
-                        .map(|host| host.voice_watermark())
-                        .unwrap_or(0)
-                }),
+                runtime_host,
+                Arc::new(move || watermark_host.voice_watermark()),
                 TEST_PAUSE,
             )
             .expect("test runtime starts");
@@ -1203,30 +1137,6 @@ mod tests {
         // which is what a continuation carries.
         assert_eq!(surface.inserted(), ["First words", " last words"]);
         assert!(calls.contains(&Call::ShowBar("transcribing")));
-    }
-
-    #[test]
-    fn a_second_segment_pause_after_an_insertion_rescue_takes_nothing() {
-        // A rescue means the text did not reach the text target, so the next
-        // pause must not bury the rescued words under more of them.
-        let surface = Arc::new(FakeSurface::default());
-        let surface = surface.transcribing_as(&["rescued words", "after the rescue"]);
-        surface.fail_insertion();
-        let dictation = Dictating::recording(&surface, FakeRecorder::healthy());
-
-        let segment = dictation.pause_flush();
-        assert!(segment.starts_dictation);
-        assert_eq!(surface.rescued(), ["Rescued words"]);
-
-        dictation.microphone.speak_then_pause();
-        dictation.stop();
-
-        // One cut only: the flush after the rescue was not even queued, so the
-        // microphone was never asked for a segment. The dictation's own last
-        // segment is unaffected — that is what ADR-0026 promises.
-        assert_eq!(dictation.cuts(), [8_000]);
-        assert_eq!(surface.inserted(), ["Rescued words", " after the rescue"]);
-        assert_eq!(surface.rescued(), ["Rescued words"]);
     }
 
     #[test]
