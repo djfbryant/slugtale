@@ -222,12 +222,13 @@ test("a page with a fixed clock can still build a Date", () => {
   // `Date` is replaced wholesale when a test pins the clock, so a page that gains
   // `new Date()` would break with a misleading error.
   const { api } = runPage("date-constructor.html", {
-    markup: `${shell()}${page("function build() { return new Date(0).getUTCFullYear(); }")}`,
-    exports: ["build"],
+    markup: `${shell()}${page("function fromArgument() { return new Date(0).getUTCFullYear(); }\nfunction fromNoArgument() { return new Date().getTime(); }")}`,
+    exports: ["fromArgument", "fromNoArgument"],
     now: () => 1_000_000
   });
 
-  assert.equal(api.build(), 1970);
+  assert.equal(api.fromArgument(), 1970);
+  assert.equal(api.fromNoArgument(), 1_000_000);
 });
 
 test("hidden, disabled and checked in the page's own markup reach the property", () => {
@@ -327,13 +328,14 @@ test("a replaced element's own text is gone, as in a browser", () => {
 
 test("a pinned Date is still the realm's own Date", () => {
   const { api } = runPage("date-identity.html", {
-    markup: `${shell()}${page("function isOwn() { return new Date(0) instanceof Date; }\nfunction sharesPrototype() { return Object.getPrototypeOf(new Date(0)) === Date.prototype; }")}`,
-    exports: ["isOwn", "sharesPrototype"],
+    markup: `${shell()}${page("function isOwn() { return new Date(0) instanceof Date; }\nfunction sharesPrototype() { return Object.getPrototypeOf(new Date(0)) === Date.prototype; }\nfunction isPinned() { return new Date().getTime(); }")}`,
+    exports: ["isOwn", "sharesPrototype", "isPinned"],
     now: () => 1_000_000
   });
 
   assert.equal(api.isOwn(), true);
   assert.equal(api.sharesPrototype(), true);
+  assert.equal(api.isPinned(), 1_000_000);
 });
 
 test("a page's window-level listener can be reached, as a focus event is", () => {

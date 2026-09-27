@@ -134,6 +134,9 @@ function createNode(tagName, registry) {
     dataset: createDataset(),
     styles,
     value: "",
+    blur() {
+      if (registry.document.activeElement === node) registry.document.activeElement = null;
+    },
     addEventListener(type, handler) {
       if (!listeners.has(type)) listeners.set(type, []);
       listeners.get(type).push(handler);
@@ -360,6 +363,9 @@ function buildDocument(page) {
     createElement: (tagName) => createNode(tagName, registry),
     documentElement: html,
     head: head || null,
+    blur() {
+      if (registry.document.activeElement === node) registry.document.activeElement = null;
+    },
     addEventListener(type, handler) {
       if (!documentListeners.has(type)) documentListeners.set(type, []);
       documentListeners.get(type).push(handler);
@@ -452,6 +458,9 @@ export function runPage(file, options = {}) {
   const windowListeners = new Map();
   const window = {
     __TAURI__: { core: { invoke }, event: { listen() {} } },
+    blur() {
+      if (registry.document.activeElement === node) registry.document.activeElement = null;
+    },
     addEventListener(type, handler) {
       if (!windowListeners.has(type)) windowListeners.set(type, []);
       windowListeners.get(type).push(handler);

@@ -267,6 +267,30 @@ test("turning storing on does not ask, because it only starts a count", async ()
   assert.equal(commands[0][1].enabled, true);
 });
 
+test("a background refresh does not overwrite the estimate the user is typing", async () => {
+  // The pane refills the estimate from stored counts on every load, so a refresh
+  // landing mid-keystroke would wipe what the user has typed so far.
+  const { elements, loadUsage } = loadSettingsScript({
+    async invoke() {
+      return summary({ measured_wpm: null, typed_estimate: 45, completed_challenges: 0 });
+    }
+  });
+
+  await loadUsage();
+  const estimate = elements.get("usage-estimate-input");
+  estimate.focus();
+  estimate.value = "47";
+
+  await loadUsage();
+
+  assert.equal(estimate.value, "47");
+
+  // Once the field loses focus the stored value is authoritative again.
+  estimate.blur();
+  await loadUsage();
+  assert.equal(estimate.value, "45");
+});
+
 test("a refused estimate leaves the pane showing what is actually stored", async () => {
   const { elements, loadUsage, saveTypingEstimate } = loadSettingsScript({
     async invoke(command) {
