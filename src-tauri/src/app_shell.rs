@@ -2,8 +2,10 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    App, Manager,
+    App,
 };
+
+use crate::WindowLabel;
 
 pub const REAUTHORIZE_PERMISSIONS_ARGUMENT: &str = "--reauthorize-permissions";
 
@@ -34,20 +36,8 @@ pub fn tray_menu_action(id: &str) -> Option<TrayMenuAction> {
     }
 }
 
-/// Whether a window should hide (stay alive) on a close request rather than be
-/// destroyed. Slugtale is a tray resident app (ADR-0008): the settings window is
-/// reopened from the tray, so closing it must hide it — destroying it both kills
-/// the only reopen path and, as the last window, would quit the whole app.
-pub fn hides_on_close(window_label: &str) -> bool {
-    window_label == "settings"
-}
-
-pub fn dictation_bar_should_take_focus() -> bool {
-    false
-}
-
 pub fn show_settings(app: tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("settings") {
+    if let Some(window) = WindowLabel::Settings.window(&app) {
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -100,30 +90,6 @@ mod tests {
         assert!(!permission_reauthorization_requested([
             "/Applications/Slugtale.app/Contents/MacOS/slugtale",
         ]));
-    }
-
-    #[test]
-    fn settings_window_hides_instead_of_closing() {
-        assert!(hides_on_close("settings"));
-    }
-
-    #[test]
-    fn unknown_windows_are_allowed_to_close() {
-        assert!(!hides_on_close("dictation-bar"));
-    }
-
-    #[test]
-    fn the_typing_challenge_window_is_destroyed_rather_than_hidden() {
-        // It is created on demand and most users never open it, so keeping a
-        // live webview around for the life of the app would be a cost with no
-        // benefit. Closing it also has to actually end the run in progress, not
-        // park a half-typed passage behind a hidden window (ADR-0025).
-        assert!(!hides_on_close("typing-challenge"));
-    }
-
-    #[test]
-    fn dictation_bar_preserves_the_active_text_target_focus() {
-        assert!(!dictation_bar_should_take_focus());
     }
 
     #[test]

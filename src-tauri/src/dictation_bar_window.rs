@@ -3,9 +3,9 @@
 //! The geometry itself lives in `slugtale_lib::dictation_bar`; this module
 //! supplies the live monitor and window reads around it.
 
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
-use slugtale_lib::DictationPhase;
+use slugtale_lib::{DictationPhase, WindowLabel};
 
 /// The Dictation Bar's user-chosen appearance, pushed to the bar window so it can
 /// paint its accent and align its orb to the edge it was sent to.
@@ -29,7 +29,7 @@ pub(super) fn show_dictation_bar(
     phase: DictationPhase,
     settings: &slugtale_lib::Settings,
 ) {
-    if let Some(window) = app.get_webview_window("dictation-bar") {
+    if let Some(window) = WindowLabel::DictationBar.window(app) {
         let appearance = DictationBarAppearance::from_settings(settings);
         let bar_display = settings.bar_display.clone();
         push_dictation_bar_render_state(&window, phase, &appearance);
@@ -46,7 +46,7 @@ pub(super) fn show_dictation_bar(
             // only when the hit test says the pointer is genuinely over the paint.
             let _ = window.set_ignore_cursor_events(true);
             let _ = window.show();
-            if slugtale_lib::dictation_bar_should_take_focus() {
+            if WindowLabel::DictationBar.takes_focus() {
                 let _ = window.set_focus();
             }
         });
@@ -70,7 +70,7 @@ fn push_dictation_bar_render_state(
 }
 
 pub(super) fn hide_dictation_bar(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("dictation-bar") {
+    if let Some(window) = WindowLabel::DictationBar.window(app) {
         let _ = window.hide();
         let _ = window.emit("dictation-visibility", false);
     }
@@ -136,7 +136,7 @@ pub(super) fn apply_dictation_bar_appearance(
     app: &tauri::AppHandle,
     settings: &slugtale_lib::Settings,
 ) {
-    let Some(window) = app.get_webview_window("dictation-bar") else {
+    let Some(window) = WindowLabel::DictationBar.window(app) else {
         return;
     };
     let appearance = DictationBarAppearance::from_settings(settings);

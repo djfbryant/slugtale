@@ -194,3 +194,63 @@ test("a command name a frontend sends as data is still a real command", () => {
   const missing = [...asData].filter((command) => !declared.has(command));
   assert.deepEqual(missing, [], "a command sent as data has no matching backend command");
 });
+
+test("every configured window label is a label the WindowLabel type names", () => {
+  // A window label is a wire string on both sides: tauri.conf.json declares the
+  // windows that exist at startup, and the binary finds them through WindowLabel.
+  // A rename on either side that misses the other is a window that silently never
+  // appears, which is why both directions are resolved from the source rather than
+  // from one hand-copied list.
+  const source = readFileSync(
+    new URL("../src-tauri/src/window_label.rs", import.meta.url),
+    "utf8",
+  );
+  const constants = new Map(
+    [...source.matchAll(/pub const (\w+): &'static str = "([^"]+)";/g)].map((match) => [
+      match[1],
+      match[2],
+    ]),
+  );
+  assert.ok(constants.size > 0, "expected WindowLabel string constants");
+
+  const asStr = source.match(/pub fn as_str\([^)]*\) -> &'static str \{([\s\S]*?)\n    \}/);
+  assert.ok(asStr, "expected a WindowLabel::as_str match over every variant");
+  const named = [...asStr[1].matchAll(/(?:Self|WindowLabel)::(\w+) => (?:Self|WindowLabel)::(\w+),/g)].map(
+    (match) => [match[1], constants.get(match[2])],
+  );
+  assert.ok(
+    named.length === constants.size,
+    `as_str names ${named.length} of the ${constants.size} constants`,
+  );
+
+  const fromLabel = source.match(/pub fn from_label\([^)]*\) -> Option<WindowLabel> \{([\s\S]*?)\n    \}/);
+  assert.ok(fromLabel, "expected a WindowLabel::from_label match over every label");
+  const parsed = new Set(
+    [
+      ...fromLabel[1].matchAll(
+        /(?:Self|WindowLabel)::(\w+) => Some\((?:Self|WindowLabel)::(\w+)\)/g,
+      ),
+    ].map((match) => match[2]),
+  );
+  for (const [variant] of named) {
+    assert.ok(
+      parsed.has(variant),
+      `${variant} is named by as_str but not parsed by from_label`,
+    );
+  }
+
+  const labels = named.map(([, label]) => label);
+  assert.equal(new Set(labels).size, labels.length, `two windows share a label: ${labels}`);
+
+  const config = JSON.parse(
+    readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+  );
+  const configured = config.app.windows.map((window) => window.label);
+  assert.ok(configured.length > 0, "expected configured windows in tauri.conf.json");
+  for (const label of configured) {
+    assert.ok(
+      labels.includes(label),
+      `tauri.conf.json configures "${label}" and no WindowLabel names it`,
+    );
+  }
+});

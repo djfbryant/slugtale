@@ -21,14 +21,9 @@ use hotkey_registration::{
     request_escape_registration, setup_configured_hotkey, update_registered_hotkey,
     HotkeyRegistrationState,
 };
-use slugtale_lib::{DictationHost, DictationPhase, DictationSurface};
+use slugtale_lib::{DictationHost, DictationPhase, DictationSurface, WindowLabel};
 
 use slugtale_lib::AppFiles;
-
-/// The Typing Challenge window's label. It is created on demand rather than
-/// declared in tauri.conf.json: most users never open it, and a hidden window
-/// carrying a live webview for the life of the app is a cost with no benefit.
-const TYPING_CHALLENGE_WINDOW: &str = "typing-challenge";
 
 /// Whether the Typing Challenge window is on screen.
 ///
@@ -221,7 +216,7 @@ impl DictationSurface for TauriSurface {
     }
 
     fn emit_dictation_audio_level(&self, level: f32) {
-        if let Some(window) = self.app.get_webview_window("dictation-bar") {
+        if let Some(window) = WindowLabel::DictationBar.window(&self.app) {
             let _ = window.emit("dictation-audio-level", level.clamp(0.0, 1.0));
         }
     }
@@ -277,7 +272,7 @@ fn dictation_host(app: &tauri::AppHandle) -> Arc<DictationHost> {
 /// ignoring cursor events receives no mouse events to detect it with.
 #[tauri::command]
 fn dictation_bar_pointer_over(app: tauri::AppHandle, expanded: bool) -> Result<bool, String> {
-    let Some(window) = app.get_webview_window("dictation-bar") else {
+    let Some(window) = WindowLabel::DictationBar.window(&app) else {
         return Ok(false);
     };
 
@@ -1115,6 +1110,19 @@ fn redo_typing_challenges(app: tauri::AppHandle) -> Result<TypingChallengeState,
     Ok(typing_challenge_state(&settings.typing_baseline))
 }
 
+/// The Typing Challenge window has appeared, so the dictation Hotkey is inert
+/// until it goes (ADR-0025).
+fn mark_typing_challenge_open(manager: &impl tauri::Manager<tauri::Wry>) {
+    manager.state::<TypingChallengeOpen>().set(true);
+}
+
+/// The Typing Challenge window has gone — closed by its own command, by its title
+/// bar, or never having opened at all — so the dictation Hotkey works again. Every
+/// path out of the window comes through here.
+fn mark_typing_challenge_closed(manager: &impl tauri::Manager<tauri::Wry>) {
+    manager.state::<TypingChallengeOpen>().set(false);
+}
+
 /// Open the Typing Challenge window, creating it on first use.
 ///
 /// It is its own window and larger than Settings on purpose: thirty seconds of
@@ -1124,9 +1132,9 @@ fn redo_typing_challenges(app: tauri::AppHandle) -> Result<TypingChallengeState,
 fn open_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
     // Raised before the window exists, so the hotkey is already inert by the
     // time the webview can steal focus and the user can start typing.
-    app.state::<TypingChallengeOpen>().set(true);
+    mark_typing_challenge_open(&app);
 
-    if let Some(window) = app.get_webview_window(TYPING_CHALLENGE_WINDOW) {
+    if let Some(window) = WindowLabel::TypingChallenge.window(&app) {
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
@@ -1134,7 +1142,7 @@ fn open_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
 
     let built = tauri::WebviewWindowBuilder::new(
         &app,
-        TYPING_CHALLENGE_WINDOW,
+        WindowLabel::TypingChallenge.as_str(),
         tauri::WebviewUrl::App("typing-challenge.html".into()),
     )
     .title("Slugtale Typing Challenge")
@@ -1145,8 +1153,7 @@ fn open_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
     match built {
         Ok(_) => Ok(()),
         Err(error) => {
-            // The window never appeared, so the hotkey must work again.
-            app.state::<TypingChallengeOpen>().set(false);
+            mark_typing_challenge_closed(&app);
             Err(error.to_string())
         }
     }
@@ -1154,8 +1161,8 @@ fn open_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn close_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
-    app.state::<TypingChallengeOpen>().set(false);
-    if let Some(window) = app.get_webview_window(TYPING_CHALLENGE_WINDOW) {
+    mark_typing_challenge_closed(&app);
+    if let Some(window) = WindowLabel::TypingChallenge.window(&app) {
         window.close().map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -1164,7 +1171,7 @@ fn close_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
 /// Tell an open Usage pane that its numbers moved. Redoing the challenges shifts
 /// every Time Saved on screen, so the pane cannot be left showing the old ones.
 fn notify_usage_changed(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("settings") {
+    if let Some(window) = WindowLabel::Settings.window(app) {
         let _ = window.emit("usage-changed", ());
     }
 }
@@ -1288,7 +1295,7 @@ fn usage_writer(app: tauri::AppHandle) -> std::sync::Arc<slugtale_lib::UsageSink
         // The Usage pane is the only surface that shows any of this, so
         // it is the only thing told. Nothing reaches the Pill, the tray,
         // or a notification (ADR-0025).
-        if let Some(window) = app.get_webview_window("settings") {
+        if let Some(window) = WindowLabel::Settings.window(&app) {
             let _ = window.emit("usage-changed", ());
         }
     })
@@ -1427,22 +1434,23 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if slugtale_lib::hides_on_close(window.label()) {
+            let Some(label) = WindowLabel::from_label(window.label()) else {
+                return;
+            };
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } if label.hides_on_close() => {
                     api.prevent_close();
                     let _ = window.hide();
                 }
-            }
-            // The Typing Challenge window can also be closed from its title bar,
-            // which never reaches the close command. Either way, the hotkey has
-            // to start working again the moment the window goes.
-            if window.label() == TYPING_CHALLENGE_WINDOW
-                && matches!(
-                    event,
-                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
-                )
-            {
-                window.state::<TypingChallengeOpen>().set(false);
+                // The Typing Challenge window can also be closed from its title
+                // bar, which never reaches the close command. Either way, the
+                // hotkey has to start working again the moment the window goes.
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+                    if label == WindowLabel::TypingChallenge =>
+                {
+                    mark_typing_challenge_closed(window);
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
