@@ -11,12 +11,9 @@ import { runPage } from "./harness.mjs";
 function loadDictationBar({ invoke = async () => false, reduceMotion = false } = {}) {
   const invocations = [];
   const { api, document, elements, intervals, rootStyle } = runPage("dictation-bar.html", {
+    exports: ["setPhase", "setAppearance", "setAudioLevel", "setVisible", "pollPointer", "renderFrame", "isPolling"],
     exportSource:
       "setPhase, setAppearance, setAudioLevel, setVisible, pollPointer, renderFrame, isPolling: () => pointerPoll !== null",
-    bootstrap: [],
-    // The bar paints itself from a 100 ms pointer poll, so the test inspects the
-    // interval rather than letting it fire.
-    timers: "manual",
     invoke(command, args) {
       // Rebuilt in this realm: objects made inside the vm carry their own
       // prototypes, which deepEqual refuses to match.
@@ -33,7 +30,7 @@ function loadDictationBar({ invoke = async () => false, reduceMotion = false } =
     intervals,
     rootStyle,
     keydown: (key) => document.dispatch("keydown", { key, preventDefault() {} }),
-    leaveBar: () => elements.get(".bar").dispatch("mouseleave"),
+    leaveBar: () => document.querySelector(".bar").dispatch("mouseleave"),
     api
   };
 }

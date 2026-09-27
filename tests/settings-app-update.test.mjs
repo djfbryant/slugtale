@@ -19,7 +19,9 @@ function loadAppUpdate({ invoke, runInit = false }) {
   const { api, elements } = runPage("index.html", {
     // The phase lives in one private object, so the handle is a closure over it
     // rather than a name the page already exports.
-    exportSource: "checkForAppUpdate, getAppUpdateState: () => ({ ...appUpdateState }), openAppUpdateRelease, renderAppUpdate",
+    exports: ["checkForAppUpdate", "getAppUpdateState", "openAppUpdateRelease", "renderAppUpdate"],
+    exportSource:
+      "checkForAppUpdate, getAppUpdateState: () => ({ ...appUpdateState }), openAppUpdateRelease, renderAppUpdate",
     invoke(command, args) {
       invocations.push({ args, command });
       return invoke(command, args);

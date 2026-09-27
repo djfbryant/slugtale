@@ -4,27 +4,15 @@ import test from "node:test";
 import { runPage } from "./harness.mjs";
 
 function loadSettingsScript({ invoke }) {
-  const { api, elements, timeouts } = runPage("index.html", {
+  const { api, elements, flushNextTimeout } = runPage("index.html", {
     exports: ["loadReadiness", "openReadinessAction", "saveDictationBarSettings", "saveEngineSettings"],
     invoke,
-    // The readiness pane polls after asking the OS for a permission, so the test
-    // has to decide when the poll happens rather than let a real timer fire.
-    timers: "manual",
     userAgent: "Mozilla/5.0 (X11; Linux x86_64)"
   });
 
-  return {
-    elements,
-    ...api,
-    async flushNextTimer() {
-      for (let spin = 0; timeouts.length === 0 && spin < 10; spin += 1) {
-        await Promise.resolve();
-      }
-      const callback = timeouts.shift();
-      if (!callback) throw new Error("No pending timer to flush");
-      callback();
-    }
-  };
+  // The readiness pane polls after asking the OS for a permission, and the
+  // harness never fires a timer on its own, so each poll is stepped by hand.
+  return { elements, ...api, flushNextTimer: flushNextTimeout };
 }
 
 test("readiness permission action ignores repeated requests while polling", async () => {
@@ -177,7 +165,7 @@ test("a blocked transcription engine shows the reason the backend reported", asy
   const row = elements.get("readiness-list").children.at(-1);
   const guidanceText = row.children
     .flatMap((child) => child.children || [])
-    .find((child) => child.tagName === "small");
+    .find((child) => child.tagName === "SMALL");
 
   assert.equal(elements.get("overall-status").textContent, "Not ready");
   assert.equal(

@@ -23,8 +23,7 @@ function loadChallengeScript({ invoke, now = { value: 1_000_000 } }) {
     now: () => now.value,
     // The Typing Challenge starts itself on open, so its tests drive the page the
     // way a person does: through the listeners the page registered.
-    runBootstrap: true,
-    timers: "manual"
+    runBootstrap: true
   });
 
   return {

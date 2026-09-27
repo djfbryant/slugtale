@@ -3,39 +3,39 @@
 // Each page is a plain HTML file with an inline `<script>`, and each one was
 // loaded by a hand-rolled copy of this file: extract the first `<script>` with a
 // regex, rewrite the trailing `init();` into an export block, and stand up a DOM
-// invented to fit that one test file. Five copies meant the harness interface was
-// the shape of the page's source text rather than the shape of the page, so a
-// second `<script>` block would have been silently dropped while the tests stayed
-// green.
+// that invented an element for whatever `getElementById` was asked for. Five
+// copies meant the harness interface was the shape of the page's source text
+// rather than the shape of the page, and a fake that answers any id makes a test
+// pass against a page whose markup the script has since broken.
 //
-// `runPage` reads every inline script block, removes the named bootstrap calls
-// rather than assuming where they sit, and appends one export block. It throws
-// rather than degrading when a page stops matching: a script block with a `src`,
-// or an export the page does not define.
+// `runPage` reads the page's own markup and its own scripts. The document is
+// built from the ids and the elements the page really ships, so a test that reads
+// a node is reading the page's node. It fails loudly rather than degrading: a
+// script block with a `src`, a handle the page does not define, a selector the
+// fake cannot answer honestly, an id the page does not have.
 
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
-const INLINE_SCRIPT = /<script(?<attrs>[^>]*)>(?<body>[\s\S]*?)<\/script>/g;
-
-function readPage(file, markup) {
-  const html = markup ?? readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
-  const scripts = [];
-  for (const match of html.matchAll(INLINE_SCRIPT)) {
-    if (/\bsrc\s*=/.test(match.groups.attrs)) {
-      throw new Error(
-        `${file} loads a script by src, which this harness does not follow. ` +
-          `Add its body to the page, or teach runPage to read it.`,
-      );
-    }
-    scripts.push(match.groups.body);
-  }
-  if (scripts.length === 0) throw new Error(`${file} has no inline script to run`);
-  return { html, script: scripts.join("\n") };
-}
-
-const TAG = /<(\/)?([a-zA-Z][\w-]*)((?:\s+[^\s=>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*(\/)?>/g;
+const SCRIPT = /<script(?<attrs>[^>]*)>(?<body>[\s\S]*?)<\/script>/g;
+const TAG = /<(\/)?([a-zA-Z][\w:-]*)((?:\s+[^\s=>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*(\/)?>/g;
 const ATTRIBUTE = /([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+
+// HTML's void elements carry no closing tag, and the SVG shapes in the icon
+// markup are written the same way. Without this list each one would swallow the
+// rest of the fragment as children, and a query that finds them in a browser
+// would find nothing here.
+const VOID = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+  "source", "track", "wbr",
+  "circle", "ellipse", "line", "path", "polygon", "polyline", "rect", "stop", "use"
+]);
+
+const UNSUPPORTED_SELECTOR = /:(?!first-child\b|last-child\b|nth-child\()|\s|>|\+|~/;
+
+function camelCase(name) {
+  return name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+}
 
 function readAttributes(source) {
   const attributes = new Map();
@@ -45,73 +45,29 @@ function readAttributes(source) {
   return attributes;
 }
 
-// Pages assign `innerHTML` and then query into it — the Typing Challenge paints
-// its passage as one span per word and marks each by `data-index`. Parsing the
-// markup on assignment is what makes a real page work against this harness,
-// instead of each test hand-parsing the selectors its own page happens to use.
-function parseFragment(html, host) {
-  const stack = [host];
-  let cursor = 0;
+class FakeDomError extends Error {}
 
-  const textSince = (index) => html.slice(cursor, index);
-
-  for (const match of html.matchAll(TAG)) {
-    const top = stack[stack.length - 1];
-    const text = textSince(match.index);
-    if (text.trim()) top.textContent = (top.textContent || "") + text;
-
-    if (match[1]) {
-      if (stack.length > 1) stack.pop();
-      cursor = match.index + match[0].length;
-      continue;
-    }
-    cursor = match.index + match[0].length;
-
-    const child = createNode(match[2]);
-    for (const [name, value] of readAttributes(match[3])) {
-      if (name === "class") {
-        value.split(/\s+/).filter(Boolean).forEach((entry) => child.classes.add(entry));
-        child.className = value;
-      } else if (name.startsWith("data-")) {
-        child.dataset[camelCase(name.slice(5))] = value;
-      } else {
-        child.attributes.set(name, value);
-      }
-    }
-    top.children.push(child);
-    if (!match[4]) stack.push(child);
-  }
-
-  const tail = textSince(cursor);
-  const top = stack[stack.length - 1];
-  if (tail.trim()) top.textContent = (top.textContent || "") + tail;
-  return host.children;
+function textRun(value) {
+  const text = String(value);
+  return { children: [], text, textContent: text };
 }
 
-function camelCase(name) {
-  return name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-}
-
-// A node is deliberately generous: every page reaches for a different slice of
-// the DOM, and the point of sharing one implementation is that a page does not
-// have to be the reason the harness grows a new one.
-function createNode(tagName = "div", id = "") {
+function createNode(tagName, registry) {
   const attributes = new Map();
   const classes = new Set();
   const listeners = new Map();
+  let ownText = "";
+  let markup = "";
+
   const node = {
-    id,
-    tagName,
-    dataset: {},
+    tagName: tagName.toUpperCase(),
     children: [],
-    attributes,
-    listeners,
     classes,
+    dataset: {},
+    attributes,
     checked: false,
-    className: "",
     disabled: false,
     hidden: false,
-    textContent: "",
     value: "",
     style: {
       properties: new Map(),
@@ -126,9 +82,7 @@ function createNode(tagName = "div", id = "") {
       add(...names) {
         names.forEach((name) => classes.add(name));
       },
-      contains(name) {
-        return classes.has(name);
-      },
+      contains: (name) => classes.has(name),
       remove(...names) {
         names.forEach((name) => classes.delete(name));
       },
@@ -143,89 +97,202 @@ function createNode(tagName = "div", id = "") {
       if (!listeners.has(type)) listeners.set(type, []);
       listeners.get(type).push(handler);
     },
-    click(event = {}) {
-      node.dispatch("click", event);
-    },
     append(...nodes) {
-      node.children.push(...nodes);
+      nodes.forEach((child) => {
+        // A page may append a bare string, which a browser turns into a text run.
+        const entry = typeof child === "string" || typeof child === "number" ? textRun(child) : child;
+        node.children.push(entry);
+        if (entry.text === undefined) entry.parentNode = node;
+      });
     },
     dispatch(type, event = {}) {
-      const handlers = listeners.get(type) || [];
-      const payload = { preventDefault() {}, stopPropagation() {}, target: node, ...event };
-      handlers.forEach((handler) => handler(payload));
+      (listeners.get(type) || []).forEach((handler) =>
+        handler({ preventDefault() {}, stopPropagation() {}, target: node, ...event }),
+      );
     },
-    focus() {},
-    getAttribute(name) {
-      return attributes.has(name) ? attributes.get(name) : null;
+    focus() {
+      registry.document.activeElement = node;
     },
+    getAttribute: (name) => (attributes.has(name) ? attributes.get(name) : null),
     matches(selector) {
-      const byId = selector.match(/^#(.+)$/);
-      if (byId) return node.id === byId[1];
-      const byClass = selector.match(/^\.([\w-]+)$/);
-      if (byClass) return classes.has(byClass[1]);
-      const byData = selector.match(/^\[data-([\w-]+)="([^"]*)"\]$/);
-      if (byData) return String(node.dataset[byData[1]]) === byData[2];
-      return false;
+      return selectorMatches(node, selector);
     },
     querySelector(selector) {
-      return node.querySelectorAll(selector)[0] || null;
+      rejectUnsupported(selector);
+      return descendants(node).find((entry) => selectorMatches(entry, selector)) || null;
     },
     querySelectorAll(selector) {
-      const found = [];
-      const visit = (parent) => {
-        parent.children.forEach((child) => {
-          if (child && typeof child.matches === "function" && child.matches(selector)) found.push(child);
-          if (child && Array.isArray(child.children)) visit(child);
-        });
-      };
-      visit(node);
-      return found;
+      rejectUnsupported(selector);
+      return descendants(node).filter((entry) => selectorMatches(entry, selector));
+    },
+    removeAttribute: (name) => attributes.delete(name),
+    get listeners() {
+      return listeners;
+    },
+    get parent() {
+      return node.parentNode || null;
     },
     remove() {
-      node.children.length = 0;
+      const owner = node.parentNode;
+      if (!owner) return;
+      owner.children = owner.children.filter((child) => child !== node);
+      node.parentNode = null;
     },
     replaceChildren(...nodes) {
-      node.children = nodes;
+      node.children = [];
+      node.append(...nodes);
     },
     setAttribute(name, value) {
       attributes.set(name, value);
     }
   };
 
-  let markup = "";
+  node.parentNode = null;
+  node.click = (event = {}) => node.dispatch("click", event);
+
+  // `className` and the class set are one value, as in a browser. Keeping them as
+  // two stores is how a page that styles a node by class ends up matching nothing
+  // here and everything in the real window.
+  Object.defineProperty(node, "className", {
+    get: () => [...classes].join(" "),
+    set(value) {
+      classes.clear();
+      String(value || "").split(/\s+/).filter(Boolean).forEach((entry) => classes.add(entry));
+    }
+  });
+
+  // Reading `textContent` is how a test checks what a person would read, so it
+  // has to include the text of the children, not just the text set on this node.
+  Object.defineProperty(node, "textContent", {
+    get: () => ownText + node.children.map((child) => child.textContent || "").join(""),
+    set(value) {
+      node.children = [];
+      ownText = String(value ?? "");
+    }
+  });
+
   Object.defineProperty(node, "innerHTML", {
     get: () => markup,
     set(value) {
-      markup = String(value);
+      markup = String(value ?? "");
+      ownText = "";
       node.children = [];
-      parseFragment(markup, node);
+      appendFragment(node, markup, registry);
     }
   });
 
   return node;
 }
 
-function createDocument({ root } = {}) {
-  const nodes = new Map();
-  const documentListeners = new Map();
+// Parsing the markup on assignment is what lets a page query into what it
+// painted, instead of each test hand-parsing the selectors its own page uses.
+function appendFragment(host, html, registry) {
+  const stack = [host];
+  let cursor = 0;
+  const textBefore = (index) => html.slice(cursor, index);
 
-  function element(id) {
-    if (!nodes.has(id)) nodes.set(id, createNode("div", id));
-    return nodes.get(id);
+  for (const match of html.matchAll(TAG)) {
+    const top = stack[stack.length - 1];
+    const text = textBefore(match.index);
+    if (text) top.append(textRun(text));
+
+    cursor = match.index + match[0].length;
+    if (match[1]) {
+      if (stack.length > 1) stack.pop();
+      continue;
+    }
+
+    const child = createNode(match[2], registry);
+    for (const [name, value] of readAttributes(match[3])) {
+      if (name === "class") {
+        child.className = value;
+      } else if (name === "id") {
+        child.id = value;
+        registry.byId.set(value, child);
+      } else if (name.startsWith("data-")) {
+        child.dataset[camelCase(name.slice(5))] = value;
+      } else {
+        child.attributes.set(name, value);
+      }
+    }
+    top.append(child);
+    if (!match[4] && !VOID.has(match[2].toLowerCase())) stack.push(child);
   }
 
+  const tail = textBefore(cursor);
+  if (tail) stack[stack.length - 1].append(textRun(tail));
+}
+
+function rejectUnsupported(selector) {
+  if (UNSUPPORTED_SELECTOR.test(selector)) {
+    throw new FakeDomError(
+      `This fake DOM cannot answer the selector "${selector}". ` +
+        `Teach it the selector rather than let a query quietly match nothing.`,
+    );
+  }
+}
+
+function selectorMatches(node, selector) {
+  return selector.split(",").some((part) => compoundMatches(node, part.trim()));
+}
+
+function compoundMatches(node, selector) {
+  return selector
+    .split(/(?=[#.[])/)
+    .filter(Boolean)
+    .every((part) => {
+      if (part.startsWith("#")) return node.id === part.slice(1);
+      if (part.startsWith(".")) return node.classes.has(part.slice(1));
+      if (part.startsWith("[")) {
+        const match = part.match(/^\[([\w:-]+)(?:([~|^$*]?=)"([^"]*)")?\]$/);
+        if (!match) throw new FakeDomError(`Unsupported attribute selector "${part}"`);
+        const [, name, , value] = match;
+        const actual =
+          name.startsWith("data-") ? node.dataset[camelCase(name.slice(5))] : node.getAttribute(name);
+        if (value === undefined) return actual !== undefined && actual !== null;
+        return String(actual) === value;
+      }
+      return node.tagName === part.toUpperCase();
+    });
+}
+
+function descendants(node, found = []) {
+  node.children.forEach((child) => {
+    if (child.text !== undefined) return;
+    found.push(child);
+    descendants(child, found);
+  });
+  return found;
+}
+
+function readPage(file, markup) {
+  const html = markup ?? readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+
+  const scripts = [];
+  for (const match of html.matchAll(SCRIPT)) {
+    if (/\bsrc\s*=/.test(match.groups.attrs)) {
+      throw new Error(
+        `${file} loads a script by src, which this harness does not follow. ` +
+          `Inline the body, or teach runPage to read it.`,
+      );
+    }
+    scripts.push(match.groups.body);
+  }
+  if (scripts.length === 0) throw new Error(`${file} has no inline script to run`);
+
+  return { script: scripts.join("\n"), shell: html.replace(SCRIPT, "") };
+}
+
+function buildDocument(page) {
+  const byId = new Map();
+  const documentListeners = new Map();
+  const registry = { byId, document: null };
+  const root = createNode("html", registry);
   const document = {
     activeElement: null,
-    body: createNode("body"),
-    createElement: (tagName) => createNode(tagName),
-    documentElement: {
-      style: {
-        setProperty(name, value) {
-          root.style.setProperty(name, value);
-        }
-      }
-    },
-    getElementById: element,
+    body: createNode("body", registry),
+    documentElement: root,
+    createElement: (tagName) => createNode(tagName, registry),
     addEventListener(type, handler) {
       if (!documentListeners.has(type)) documentListeners.set(type, []);
       documentListeners.get(type).push(handler);
@@ -235,84 +302,54 @@ function createDocument({ root } = {}) {
         handler({ preventDefault() {}, ...event }),
       );
     },
-    // The Dictation Bar reaches the shell by class, the Typing Challenge by id.
-    querySelector: element,
-    querySelectorAll: (selector) => (root.matches(selector) ? [root] : []),
-    nodes
+    getElementById: (id) => byId.get(id) || null,
+    querySelector(selector) {
+      return document.querySelectorAll(selector)[0] || null;
+    },
+    querySelectorAll(selector) {
+      rejectUnsupported(selector);
+      return [...descendants(root), ...descendants(document.body)].filter((node) =>
+        selectorMatches(node, selector),
+      );
+    },
+    documentListeners
   };
-  return document;
+  registry.document = document;
+
+  // The page's own markup, so `getElementById` answers with the element the page
+  // ships and a misspelled id is a null the test will notice.
+  appendFragment(document.body, page.shell, registry);
+
+  return { byId, document, root };
 }
 
-// `manual` timers are for the pages whose behaviour is a countdown: the test
-// advances them rather than waiting out the real seconds.
-function createTimers(mode) {
-  const timeouts = [];
-  const intervals = [];
-  const frames = [];
-
-  if (mode === "manual") {
-    return {
-      clearInterval() {},
-      context: {
-        clearInterval() {},
-        requestAnimationFrame(callback) {
-          frames.push(callback);
-          return frames.length;
-        },
-        setInterval(callback, delay) {
-          intervals.push({ callback, delay });
-          return intervals.length;
-        },
-        setTimeout(callback) {
-          timeouts.push(callback);
-          return timeouts.length;
-        }
-      },
-      frames,
-      intervals,
-      timeouts
-    };
-  }
-
-  return {
-    clearInterval() {},
-    // Run immediately: a test that needs ordering should await, not race a clock.
-    context: {
-      clearInterval() {},
-      requestAnimationFrame(callback) {
-        frames.push(callback);
-        return frames.length;
-      },
-      setInterval(callback, delay) {
-        intervals.push({ callback });
-        return intervals.length;
-      },
-      setTimeout(callback) {
-        timeouts.push(callback);
-        return typeof callback === "function" ? (callback(), 0) : 0;
-      }
-    },
-    frames,
-    intervals,
-    timeouts
+function fixedDate(read) {
+  const Shim = function DateShim(...args) {
+    return args.length === 0 ? new Date(read()) : new Date(...args);
   };
+  Shim.now = read;
+  Shim.parse = Date.parse;
+  Shim.UTC = Date.UTC;
+  return Shim;
 }
 
 /**
- * Run a page's script against a fake DOM and hand back the named handles.
+ * Run a page against a fake DOM built from the page's own markup.
  *
- * @param {string} file        page name under `src/`, e.g. `index.html`
- * @param {object} options
- * @param {string} options.markup  page source to run instead of reading `src/`
- * @param {Function} options.invoke   stands in for the Tauri bridge
- * @param {string[]} options.exports  top-level names the page must define
- * @param {string} options.exportSource  raw export block, for a handle that is a closure over private state
- * @param {string[]} options.bootstrap top-level calls to strip, default `["init"]`
- * @param {boolean} options.runBootstrap keep the bootstrap call instead of stripping it
- * @param {string} options.userAgent
- * @param {number} options.now        fixed `Date.now()` for the countdown pages
- * @param {"immediate"|"manual"} options.timers
- * @param {string} options.exportName where the handles are published
+ * @param {string} file            page name under `src/`, e.g. `index.html`
+ * @param {object} [options]
+ * @param {string} [options.markup]  page source to run instead of reading `src/`
+ * @param {Function} [options.invoke]  stands in for the Tauri bridge
+ * @param {string[]} [options.exports]  handles the test will read, and that the page must define
+ * @param {string} [options.exportSource]  raw export block, for a handle that closes over private state
+ * @param {string[]} [options.bootstrap]  top-level calls to strip, default `["init"]`
+ * @param {boolean} [options.runBootstrap]  keep the bootstrap call instead of stripping it
+ * @param {string} [options.userAgent]
+ * @param {number|Function} [options.now]  what the page's `Date.now()` returns
+ * @param {boolean} [options.reduceMotion]  what `matchMedia` reports
+ * @param {string} [options.exportName]  where the handles are published
+ * @returns {{api: object, document: object, elements: Map, intervals: Array,
+ *   timeouts: Array, rootStyle: Map, flushNextTimeout: Function, keydown: Function}}
  */
 export function runPage(file, options = {}) {
   const {
@@ -322,15 +359,30 @@ export function runPage(file, options = {}) {
     invoke = async () => undefined,
     now,
     reduceMotion = false,
-    runBootstrap = false,
-    timers: timerMode = "immediate",
-    userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+    runBootstrap = false
   } = options;
 
   const page = readPage(file, options.markup);
-  const root = createNode("html", "root");
-  const document = createDocument({ root });
-  const timers = createTimers(timerMode);
+  const { byId, document, root } = buildDocument(page);
+
+  // Timers are always queued and never fired on their own. A test that needs one
+  // to happen asks for it, so a page cannot pass a test by waiting and fail for
+  // a real user, or the other way round.
+  const timeouts = [];
+  const intervals = [];
+  const timers = {
+    clearInterval(handle) {
+      if (handle >= 1 && handle <= intervals.length) intervals.splice(handle - 1, 1);
+    },
+    setInterval(callback, delay) {
+      intervals.push({ callback, delay });
+      return intervals.length;
+    },
+    setTimeout(callback, delay) {
+      timeouts.push({ callback, delay });
+      return timeouts.length;
+    }
+  };
 
   // Strip the bootstrap calls wherever they sit, so a page can start itself from
   // a second script block without the harness deciding it runs.
@@ -338,22 +390,17 @@ export function runPage(file, options = {}) {
   bootstrap.forEach((name) => {
     source = source.replace(new RegExp(`^\\s*${name}\\(\\);?\\s*$`, "gm"), "");
   });
-
   if (exportNames.length > 0) {
-    source += `\nwindow.${exportName} = { ${exportNames.join(", ")} };`;
-  } else if (options.exportSource) {
-    source += `\nwindow.${exportName} = { ${options.exportSource} };`;
+    const body = options.exportSource || exportNames.join(", ");
+    source += `\nwindow.${exportName} = { ${body} };`;
   }
 
   const window = {
-    __TAURI__: {
-      core: { invoke },
-      event: { listen() {} }
-    },
+    __TAURI__: { core: { invoke }, event: { listen() {} } },
     addEventListener() {},
     close() {},
     document,
-    matchMedia: () => ({ matches: reduceMotion, addEventListener() {} })
+    matchMedia: () => ({ addEventListener() {}, matches: reduceMotion })
   };
 
   // Only the globals a page cannot derive are injected. Re-passing `Promise`,
@@ -361,55 +408,54 @@ export function runPage(file, options = {}) {
   // a test that counts microtasks, and the counts are how these tests sequence
   // themselves.
   const context = {
-    clearInterval: timers.context.clearInterval,
+    clearInterval: timers.clearInterval,
     console,
     document,
-    navigator: { userAgent },
-    requestAnimationFrame: timers.context.requestAnimationFrame,
-    setInterval: timers.context.setInterval,
-    setTimeout: timers.context.setTimeout,
+    navigator: { userAgent: options.userAgent || "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" },
+    // A page's animation loop is driven by the test through the page's own
+    // render call, so a frame is never scheduled behind a test's back.
+    requestAnimationFrame: () => 0,
+    setInterval: timers.setInterval,
+    setTimeout: timers.setTimeout,
     window
   };
-  if (now !== undefined) {
-    const read = typeof now === "function" ? now : () => now;
-    context.Date = { now: read };
-  }
+  if (now !== undefined) context.Date = fixedDate(typeof now === "function" ? now : () => now);
   context.globalThis = context;
   window.globalThis = context;
-  window.document = document;
 
   vm.runInNewContext(source, context, { filename: file });
-
   if (runBootstrap && bootstrap.length > 0) {
-    vm.runInNewContext(bootstrap.map((name) => `${name}();`).join("\n"), context, { filename: file });
+    bootstrap.forEach((name) => context[name]());
   }
 
   const api = window[exportName] || {};
   const missing = exportNames.filter((name) => !(name in api));
   if (missing.length > 0) {
     throw new Error(
-      `${file} does not define ${missing.join(", ")}. The page's top-level names ` +
-        `changed, so this test is asserting against nothing.`,
+      `${file} exposes no ${missing.join(", ")}. The page's top-level names changed, ` +
+        `so this test would be asserting against nothing.`,
     );
   }
 
   return {
     api,
     document,
-    elements: document.nodes,
-    intervals: timers.intervals,
-    root,
+    elements: byId,
+    intervals,
     rootStyle: root.style.properties,
-    timeouts: timers.timeouts,
-    // The shapes the pages differ on, so callers do not reach into the harness.
-    keydown: (key, event = {}) =>
-      document.dispatch("keydown", { key, ...event }),
-    flushNextTimeout() {
-      const callback = timers.timeouts.shift();
-      if (!callback) throw new Error("No pending timer to flush");
-      callback();
+    timeouts,
+    // A page queues its next timer from inside a promise callback, so waiting for
+    // one to appear is part of flushing one.
+    async flushNextTimeout() {
+      for (let spin = 0; timeouts.length === 0 && spin < 10; spin += 1) {
+        await Promise.resolve();
+      }
+      const entry = timeouts.shift();
+      if (!entry) throw new Error("No pending timer to flush");
+      entry.callback();
+    },
+    keydown(key, event = {}) {
+      document.dispatch("keydown", { key, ...event });
     }
   };
 }
-
-export { createNode, readPage };
