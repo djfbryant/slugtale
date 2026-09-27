@@ -72,7 +72,7 @@ impl LocalDate {
     }
 
     /// Which day of the week this date falls on.
-    pub fn weekday(self) -> Weekday {
+    fn weekday(self) -> Weekday {
         // 1970-01-01 was a Thursday.
         let index = (self.days_from_epoch() + 4).rem_euclid(7);
         match index {
@@ -139,7 +139,7 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Weekday {
+enum Weekday {
     Sunday,
     Monday,
     Tuesday,

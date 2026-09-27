@@ -4,7 +4,7 @@ pub const DEFAULT_MODEL_ID: &str = "base.en";
 pub const DEFAULT_MODEL_FILENAME: &str = "ggml-base.en.bin";
 pub const DEFAULT_MODEL_DOWNLOAD_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
-pub const DEFAULT_MODEL_SHA256: &str =
+const DEFAULT_MODEL_SHA256: &str =
     "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,7 +20,7 @@ pub fn default_model_path(model_dir: &std::path::Path) -> std::path::PathBuf {
     model_dir.join(DEFAULT_MODEL_FILENAME)
 }
 
-pub fn local_model_status(model_dir: &std::path::Path) -> LocalModelStatus {
+fn local_model_status(model_dir: &std::path::Path) -> LocalModelStatus {
     let path = default_model_path(model_dir);
     let bytes = path.metadata().ok().map(|metadata| metadata.len());
 
@@ -114,7 +114,7 @@ impl LocalModelManager {
         Ok(status)
     }
 
-    pub fn reveal_location(&self) -> RevealLocation {
+    fn reveal_location(&self) -> RevealLocation {
         reveal_location(&self.model_dir)
     }
 
@@ -347,7 +347,7 @@ fn sha256_file(path: &std::path::Path) -> Result<String, ModelError> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-pub fn delete_default_model(model_dir: &std::path::Path) -> Result<LocalModelStatus, ModelError> {
+fn delete_default_model(model_dir: &std::path::Path) -> Result<LocalModelStatus, ModelError> {
     let path = default_model_path(model_dir);
     match std::fs::remove_file(path) {
         Ok(()) => {}
@@ -361,12 +361,12 @@ pub fn delete_default_model(model_dir: &std::path::Path) -> Result<LocalModelSta
 /// Where the "show in file manager" action should point: reveal-and-select the
 /// downloaded model when it exists, otherwise open the containing models folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RevealLocation {
+enum RevealLocation {
     SelectFile(std::path::PathBuf),
     OpenDir(std::path::PathBuf),
 }
 
-pub fn reveal_location(model_dir: &std::path::Path) -> RevealLocation {
+fn reveal_location(model_dir: &std::path::Path) -> RevealLocation {
     let file = default_model_path(model_dir);
     if file.exists() {
         RevealLocation::SelectFile(file)
@@ -379,7 +379,7 @@ pub fn reveal_location(model_dir: &std::path::Path) -> RevealLocation {
 /// spawned helper returns immediately, so this never blocks the caller. This
 /// module owns the reveal-or-open decision; the OS spawn lives behind the
 /// Platform Adapter (ADR-0021).
-pub fn open_in_file_manager(location: &RevealLocation) -> std::io::Result<()> {
+fn open_in_file_manager(location: &RevealLocation) -> std::io::Result<()> {
     match location {
         RevealLocation::SelectFile(file) => reveal_in_file_manager(file, true),
         RevealLocation::OpenDir(dir) => {
@@ -765,11 +765,6 @@ mod tests {
                 total: Some(bytes.len() as u64),
                 urls: std::cell::RefCell::new(Vec::new()),
             }
-        }
-
-        fn with_total(mut self, total: u64) -> Self {
-            self.total = Some(total);
-            self
         }
     }
 

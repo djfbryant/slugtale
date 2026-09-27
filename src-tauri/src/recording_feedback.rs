@@ -95,7 +95,7 @@ impl RecordingFeedback {
 }
 
 /// Play the audible cue for a dictation edge (ADR-0014) through the OS sound
-/// service. Like [`crate::open_in_file_manager`], the spawned helper returns
+/// service. Like the Local Model Manager's reveal, the spawned helper returns
 /// immediately so the recording lifecycle is never blocked waiting on audio.
 pub fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
     play_sound(sound)

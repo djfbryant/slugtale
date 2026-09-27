@@ -42,10 +42,15 @@
 
 mod assets;
 
+// Only what the Settings surface and the Local Model Manager actually reach
+// crosses the seam; the rest stays inside `assets` and its own tests.
 pub use assets::{
-    delete_parakeet_assets, install_parakeet_assets, install_parakeet_manifest, parakeet_asset_dir,
-    parakeet_asset_status, parakeet_total_bytes, ParakeetAsset, ParakeetAssetStatus,
-    PARAKEET_ASSETS, PARAKEET_ASSET_DIR_NAME, PARAKEET_REVISION, PARAKEET_SOURCE_URL,
+    delete_parakeet_assets, install_parakeet_assets, parakeet_asset_dir, ParakeetAssetStatus,
+    PARAKEET_ASSET_DIR_NAME,
+};
+use assets::{
+    parakeet_asset_status, parakeet_total_bytes, PARAKEET_ASSETS, PARAKEET_REVISION,
+    PARAKEET_SOURCE_URL,
 };
 
 use crate::{
@@ -58,29 +63,29 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 /// The engine this module provides.
-pub const PARAKEET_ENGINE: TranscriptionEngine = TranscriptionEngine::Parakeet;
+const PARAKEET_ENGINE: TranscriptionEngine = TranscriptionEngine::Parakeet;
 
 /// The upstream model, as NVIDIA publishes it. Slugtale installs an ONNX export
 /// of these weights rather than the original NeMo checkpoint, but the identity
 /// Settings shows the user is NVIDIA's, because that is whose model it is and
 /// whose licence applies.
-pub const PARAKEET_MODEL_ID: &str = "nvidia/parakeet-tdt-0.6b-v2";
+const PARAKEET_MODEL_ID: &str = "nvidia/parakeet-tdt-0.6b-v2";
 
 /// NVIDIA released Parakeet TDT 0.6B v2 under CC BY 4.0, which is an
 /// attribution licence: Slugtale may use it commercially and offline, but must
 /// credit NVIDIA, link the licence, and state what was changed. Those three
 /// obligations are the reason [`EngineMetadata`] has `attribution` and
 /// `modifications` fields at all.
-pub const PARAKEET_LICENSE: &str = "CC BY 4.0";
-pub const PARAKEET_LICENSE_URL: &str = "https://creativecommons.org/licenses/by/4.0/";
+const PARAKEET_LICENSE: &str = "CC BY 4.0";
+const PARAKEET_LICENSE_URL: &str = "https://creativecommons.org/licenses/by/4.0/";
 
-pub const PARAKEET_ATTRIBUTION: &str =
+const PARAKEET_ATTRIBUTION: &str =
     "Speech recognition by NVIDIA Parakeet TDT 0.6B v2 (© NVIDIA Corporation), used under CC BY 4.0.";
 
 /// The CC BY 4.0 "indicate if changes were made" clause. Slugtale does not train
 /// or fine-tune the weights; the changes are the ONNX export and the int8
 /// quantisation carried out upstream, which Slugtale installs as-is.
-pub const PARAKEET_MODIFICATIONS: &str = concat!(
+const PARAKEET_MODIFICATIONS: &str = concat!(
     "Not the original NeMo checkpoint: exported to ONNX and quantised to int8 upstream ",
     "(istupakov/parakeet-tdt-0.6b-v2-onnx). Slugtale installs those artefacts unmodified ",
     "and does not train, fine-tune, or otherwise alter the weights."
