@@ -7,7 +7,6 @@ use std::sync::Mutex;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-use super::app_paths::load_current_settings;
 use super::{begin_dictation, dictation_host, typing_challenge_is_open};
 
 const DICTATION_ESCAPE_KEY: &str = "Escape";
@@ -31,7 +30,7 @@ pub(super) enum GlobalKeyCommand {
 pub(super) fn setup_configured_hotkey(
     app: &mut tauri::App,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let settings = load_current_settings(app.handle());
+    let settings = super::app_files(app.handle()).settings();
 
     let mut builder =
         tauri_plugin_global_shortcut::Builder::new().with_handler(move |app, shortcut, event| {

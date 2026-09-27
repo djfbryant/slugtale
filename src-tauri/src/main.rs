@@ -4,15 +4,10 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
-mod app_paths;
 mod dictation_bar_window;
 mod hotkey_registration;
 mod voice_activation;
 
-use app_paths::{
-    current_diagnostic_log, load_current_settings, load_current_usage, model_dir, model_manager,
-    record_diagnostic_event, save_current_settings, usage_path,
-};
 use dictation_bar_window::{
     apply_dictation_bar_appearance, hide_dictation_bar, show_dictation_bar,
 };
@@ -23,6 +18,33 @@ use hotkey_registration::{
 use slugtale_lib::{DictationHost, DictationPhase, DictationSurface, WindowLabel};
 
 use slugtale_lib::AppFiles;
+
+/// The app's one file store. Every command, the Dictation Surface, and the
+/// readiness probes reach the Settings File, the Usage File, the Local
+/// Diagnostic Log and the model directory through it, so there is one answer to
+/// where a file is and one place that writes one.
+fn app_files(app: &tauri::AppHandle) -> AppFiles {
+    app.state::<AppFiles>().inner().clone()
+}
+
+fn load_current_settings(app: &tauri::AppHandle) -> slugtale_lib::Settings {
+    app_files(app).settings()
+}
+
+fn save_current_settings(
+    app: &tauri::AppHandle,
+    settings: &slugtale_lib::Settings,
+) -> Result<(), String> {
+    app_files(app).save_settings(settings)
+}
+
+fn model_manager(app: &tauri::AppHandle) -> Result<slugtale_lib::LocalModelManager, String> {
+    app_files(app).model_manager()
+}
+
+fn record_diagnostic_event(app: &tauri::AppHandle, event: slugtale_lib::DiagnosticEvent) {
+    app_files(app).record_diagnostic_event(event);
+}
 
 /// Whether the Typing Challenge window is on screen.
 ///
@@ -233,7 +255,7 @@ impl DictationSurface for TauriSurface {
         &self,
         settings: &slugtale_lib::Settings,
     ) -> slugtale_lib::SharedDiagnosticLog<slugtale_lib::FileDiagnosticSink> {
-        current_diagnostic_log(&self.app, settings)
+        app_files(&self.app).diagnostic_log(settings.diagnostic_logging)
     }
 
     fn dictation_stack(
@@ -964,7 +986,7 @@ fn get_usage_summary(app: tauri::AppHandle) -> UsageSummary {
     // With storing off there is no Usage File, so every span is zero — but the
     // Typing Baseline still reads, because the challenges work either way.
     let usage = if settings.store_usage {
-        load_current_usage(&app)
+        app_files(&app).usage()
     } else {
         slugtale_lib::UsageFile::default()
     };
@@ -1001,9 +1023,7 @@ fn set_usage_storing(app: tauri::AppHandle, enabled: bool) -> Result<UsageSummar
     save_current_settings(&app, &settings)?;
 
     if !enabled {
-        if let Some(path) = usage_path(&app) {
-            slugtale_lib::delete_usage(&path).map_err(|error| error.to_string())?;
-        }
+        app_files(&app).delete_usage_file()?;
     }
 
     Ok(get_usage_summary(app))
@@ -1259,36 +1279,14 @@ fn locale_week_start(_app: &tauri::AppHandle) -> slugtale_lib::WeekStart {
     }
 }
 
-/// Start the Dictation Runtime's Usage writer body (ADR-0025): the opt-in is
-/// checked here, at the last possible moment, so a segment that was in flight
-/// when the user turned storing off does not land in a file they just asked to
-/// be deleted. Every failure below is a skip, not an error.
+/// Start the Dictation Runtime's Usage writer body (ADR-0025). The file half
+/// lives in the store, which owns the opt-in check and the skip-on-failure
+/// policy; all that is left here is telling the one surface that shows Usage
+/// that it moved. Nothing reaches the Pill, the tray, or a notification.
 fn usage_writer(app: tauri::AppHandle) -> std::sync::Arc<slugtale_lib::UsageSink> {
     std::sync::Arc::new(move |date, segment| {
-        if !load_current_settings(&app).store_usage {
-            return;
-        }
-        let Some(path) = usage_path(&app) else {
-            return;
-        };
-        if let Some(parent) = path.parent() {
-            if std::fs::create_dir_all(parent).is_err() {
-                return;
-            }
-        }
-
-        let mut usage = slugtale_lib::load_usage(&path);
-        slugtale_lib::record_counted_segment(&mut usage, date, segment);
-        if let Err(error) = slugtale_lib::save_usage(&path, &usage) {
-            eprintln!("could not write the usage file: {error}");
-            return;
-        }
-
-        // The Usage pane is the only surface that shows any of this, so
-        // it is the only thing told. Nothing reaches the Pill, the tray,
-        // or a notification (ADR-0025).
-        if let Some(window) = WindowLabel::Settings.window(&app) {
-            let _ = window.emit("usage-changed", ());
+        if app_files(&app).record_counted_segment(date, segment) {
+            notify_usage_changed(&app);
         }
     })
 }
@@ -1397,7 +1395,7 @@ fn main() {
             // rebuilt app (dev binaries change path) does not drift out of sync.
             let settings = load_current_settings(app.handle());
             let _ = set_launch_at_login_state(app.handle(), settings.launch_at_login);
-            if let Ok(model_dir) = model_dir(app.handle()) {
+            if let Ok(model_dir) = app_files(app.handle()).model_dir() {
                 app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
                     .set_model_dir(model_dir);
             }
