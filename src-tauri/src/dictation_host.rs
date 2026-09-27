@@ -666,6 +666,13 @@ mod tests {
             EngineAvailability::Available
         }
 
+        fn assets(&self) -> crate::EngineAssets {
+            crate::EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
+        }
+
         fn transcribe(
             &self,
             _audio: &CapturedAudio,

@@ -6,7 +6,7 @@
 
 use crate::{
     engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticEvent, DiagnosticSink,
-    EngineAvailability, LocalModelRef, LocalWhisperRuntime, ParakeetProvider,
+    EngineAvailability, LocalModelManager, LocalModelRef, LocalWhisperRuntime, ParakeetProvider,
     SecondOpinionCoordinator, SecondOpinionMode, SecondOpinionRouter, Settings,
     SharedDiagnosticLog, TranscriptionEngine, TranscriptionProvider, WhisperRuntimeCache,
     WhisperTranscriptionProvider,
@@ -16,6 +16,11 @@ use std::sync::{Arc, Mutex};
 
 pub struct TranscriptionEngineCatalogue {
     model_dir: Mutex<Option<PathBuf>>,
+    /// The Local Model Manager the Whisper engine installs and removes its
+    /// assets through. Handed over at startup, and `None` before that — which is
+    /// also how a catalogue built for a test with only a model directory
+    /// answers: no manager, no install path.
+    model_manager: Mutex<Option<LocalModelManager>>,
     whisper: WhisperRuntimeCache,
     parakeet: Mutex<Option<Arc<ParakeetProvider>>>,
     apple: Arc<AppleSpeechProvider>,
@@ -34,9 +39,14 @@ pub struct TranscriptionEngineCatalogue {
 }
 
 impl TranscriptionEngineCatalogue {
+    /// A catalogue for a models directory, with no Local Model Manager behind
+    /// it. Production builds through [`Self::default`] and
+    /// [`Self::set_model_manager`]; this is the fixture for asking questions that
+    /// never install anything.
     pub fn new(model_dir: Option<PathBuf>) -> Self {
         let catalogue = Self {
             model_dir: Mutex::new(None),
+            model_manager: Mutex::new(None),
             whisper: WhisperRuntimeCache::default(),
             parakeet: Mutex::new(None),
             apple: Arc::new(AppleSpeechProvider::new()),
@@ -50,7 +60,7 @@ impl TranscriptionEngineCatalogue {
         catalogue
     }
 
-    pub fn set_model_dir(&self, model_dir: PathBuf) {
+    fn set_model_dir(&self, model_dir: PathBuf) {
         *self
             .model_dir
             .lock()
@@ -64,6 +74,24 @@ impl TranscriptionEngineCatalogue {
                 &model_dir,
             ))));
         }
+    }
+
+    /// Take over the Local Model Manager, and with it the model directory: one
+    /// handover so the engines cannot be given a directory whose manager points
+    /// somewhere else.
+    pub fn set_model_manager(&self, manager: LocalModelManager) {
+        *self
+            .model_manager
+            .lock()
+            .expect("engine catalogue model manager mutex poisoned") = Some(manager.clone());
+        self.set_model_dir(manager.model_dir().to_path_buf());
+    }
+
+    fn model_manager(&self) -> Option<LocalModelManager> {
+        self.model_manager
+            .lock()
+            .ok()
+            .and_then(|manager| manager.clone())
     }
 
     /// The Local Model file this dictation would open: the Settings File's own
@@ -85,13 +113,15 @@ impl TranscriptionEngineCatalogue {
     }
 
     /// The Whisper provider for one caller, carrying the Transcription Speed
-    /// Profile that caller's Settings asked for. The concrete type is what the
-    /// tests read the pinned profile from; production takes it as a
+    /// Profile that caller's Settings asked for and the Local Model Manager its
+    /// assets are installed through. The concrete type is what the tests read
+    /// the pinned profile from; production takes it as a
     /// [`TranscriptionProvider`] through [`Self::whisper_provider`].
     fn whisper_transcription(&self, settings: &Settings) -> Option<WhisperTranscriptionProvider> {
         Some(WhisperTranscriptionProvider::new(
             self.whisper_runtime(settings)?,
             settings.speed_profile,
+            self.model_manager(),
         ))
     }
 
@@ -99,7 +129,7 @@ impl TranscriptionEngineCatalogue {
     /// fallback rule as the Second Opinion router and Dictation Readiness
     /// ([`engine_that_can_run`]). Warm-up asks through here so it loads exactly
     /// what dictation will use, never a hard-coded engine.
-    pub fn effective_primary_engine(&self, settings: &Settings) -> Option<TranscriptionEngine> {
+    fn effective_primary_engine(&self, settings: &Settings) -> Option<TranscriptionEngine> {
         engine_that_can_run(settings.primary_engine, &self.availability(settings))
     }
 
@@ -152,17 +182,21 @@ impl TranscriptionEngineCatalogue {
             .map(|provider| Arc::new(provider) as Arc<dyn TranscriptionProvider>)
     }
 
-    pub fn parakeet_provider(&self) -> Option<Arc<ParakeetProvider>> {
+    fn parakeet_provider(&self) -> Option<Arc<ParakeetProvider>> {
         self.parakeet
             .lock()
             .ok()
             .and_then(|provider| provider.clone())
     }
 
-    pub fn apple_provider(&self) -> Arc<AppleSpeechProvider> {
+    fn apple_provider(&self) -> Arc<AppleSpeechProvider> {
         self.apple.clone()
     }
 
+    /// The provider for one engine, whatever its concrete type. Every question
+    /// the app asks an engine goes through here, so Settings, Dictation
+    /// Readiness, and the Second Opinion router can never answer about different
+    /// instances of the same engine.
     pub fn provider(
         &self,
         settings: &Settings,
@@ -192,7 +226,11 @@ impl TranscriptionEngineCatalogue {
             .collect()
     }
 
-    pub fn router(&self, settings: &Settings) -> Result<SecondOpinionRouter, AsrError> {
+    /// The Second Opinion router for one dictation: the engine the Settings name
+    /// if it can run, plus a second one only when Second Opinion is on. `None`
+    /// for the primary means no engine can run, which is an error rather than a
+    /// silent single-engine fallback.
+    fn router(&self, settings: &Settings) -> Result<SecondOpinionRouter, AsrError> {
         let availability = self.availability(settings);
         let primary = selected_primary(
             settings,
@@ -357,7 +395,8 @@ impl Default for TranscriptionEngineCatalogue {
 mod tests {
     use super::*;
     use crate::{
-        AsrRuntime, EngineConfidence, EngineMetadata, EngineTranscription, FinalTranscription,
+        AsrRuntime, EngineAssets, EngineConfidence, EngineMetadata, EngineTranscription,
+        FinalTranscription,
     };
     use std::time::Duration;
 
@@ -388,6 +427,13 @@ mod tests {
             EngineAvailability::Available
         }
 
+        fn assets(&self) -> EngineAssets {
+            EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
+        }
+
         fn transcribe(
             &self,
             _audio: &crate::CapturedAudio,
@@ -403,6 +449,180 @@ mod tests {
                 latency: Duration::ZERO,
             })
         }
+    }
+
+    /// The Settings row for one engine, from the same catalogue the Dictation
+    /// Runtime routes through, with no running app involved.
+    fn engine_row(
+        catalogue: &TranscriptionEngineCatalogue,
+        settings: &Settings,
+        engine: TranscriptionEngine,
+    ) -> crate::EngineView {
+        let provider = catalogue
+            .provider(settings, engine)
+            .expect("the catalogue resolves a provider for every known engine");
+        crate::EngineView::of(provider.as_ref(), settings.primary_engine == engine)
+    }
+
+    #[test]
+    fn every_engine_agrees_with_itself_about_its_own_assets() {
+        // Two shapes of a models directory — the Local Model on disk and absent —
+        // so every engine answers both "present" and "missing" for the same
+        // Settings. The row and the availability answer the same question twice,
+        // and this is where the two would be caught telling different stories.
+        for model_present in [true, false] {
+            let root = temp_root(&format!("row-agreement-{model_present}"));
+            let files =
+                crate::AppFiles::from_dirs_for_test(Some(root.join("config")), Some(root.clone()));
+            let catalogue = TranscriptionEngineCatalogue::default();
+            catalogue.set_model_manager(files.model_manager().unwrap());
+            let settings = Settings::default();
+            let model_path = catalogue
+                .local_model(&settings)
+                .expect("a handed-over manager brings its model directory with it")
+                .path()
+                .to_path_buf();
+            if model_present {
+                std::fs::create_dir_all(&model_path.parent().unwrap()).unwrap();
+                std::fs::write(&model_path, b"ggml").unwrap();
+            }
+
+            for engine in TranscriptionEngine::ALL {
+                let row = engine_row(&catalogue, &settings, engine);
+                if engine == TranscriptionEngine::Whisper {
+                    // The Local Model is on disk or it is not, on every build and
+                    // every feature set, so this is the half of the agreement that
+                    // can be checked anywhere.
+                    assert_eq!(row.assets.present, Some(model_present));
+                    assert_eq!(row.assets.installed_bytes, model_present.then_some(4));
+                }
+                match row.assets.present {
+                    // Assets on disk and an engine that says it cannot run for
+                    // want of assets is the contradiction Settings must never show.
+                    Some(true) => assert!(
+                        !matches!(
+                            row.availability,
+                            EngineAvailability::Unavailable(
+                                crate::EngineUnavailable::AssetsMissing { .. }
+                            )
+                        ),
+                        "{engine} has its assets on disk but reports them missing"
+                    ),
+                    // Assets Slugtale measures, none of them there, and an engine
+                    // that claims it can run: the same contradiction the other way.
+                    Some(false) => {
+                        assert!(
+                            !row.metadata.system_managed,
+                            "{engine} measures assets it says the operating system owns"
+                        );
+                        assert!(
+                            !row.availability.is_available(),
+                            "{engine} can run with none of its assets on disk"
+                        );
+                    }
+                    // The operating system's own bytes: the engine's availability is
+                    // the only honest answer, and this test must not overrule it.
+                    None => assert!(row.metadata.system_managed),
+                }
+
+                // An install button is never a claim about bytes Slugtale has.
+                assert!(
+                    !row.installable
+                        || matches!(
+                            row.availability,
+                            EngineAvailability::Unavailable(
+                                crate::EngineUnavailable::AssetsMissing { .. }
+                            )
+                        ),
+                    "{engine} offered an install button without a missing-assets reason"
+                );
+            }
+
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    /// A throwaway directory the app store could be pointed at, so these tests
+    /// ask the real questions against real files instead of faking a manager.
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "slugtale-catalogue-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn temp_model_dir(name: &str) -> PathBuf {
+        let model_dir = temp_root(name).join("models");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        model_dir
+    }
+
+    #[test]
+    fn an_engine_catalogue_without_a_model_manager_offers_no_install_path() {
+        // Startup hands the catalogue a Local Model Manager alongside the model
+        // directory. Without one, Whisper can neither measure nor install the
+        // Local Model, and must say so instead of guessing.
+        let model_dir = temp_model_dir("no-manager");
+        let catalogue = TranscriptionEngineCatalogue::new(Some(model_dir.clone()));
+        let settings = Settings::default();
+
+        let whisper = engine_row(&catalogue, &settings, TranscriptionEngine::Whisper);
+        assert_eq!(whisper.assets, crate::EngineAssets::unmeasured());
+        assert!(!whisper.installable);
+
+        // The other two engines are unaffected: they own their assets outright.
+        assert!(
+            engine_row(&catalogue, &settings, TranscriptionEngine::Parakeet)
+                .assets
+                .present
+                .is_some()
+        );
+        assert!(
+            engine_row(&catalogue, &settings, TranscriptionEngine::AppleSpeech)
+                .metadata
+                .system_managed
+        );
+
+        std::fs::remove_dir_all(model_dir.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_handed_over_model_manager_makes_the_local_model_the_whisper_row_reads() {
+        // One handover gives the catalogue both the directory it resolves models
+        // against and the manager that installs them, so the two cannot disagree.
+        let root = temp_root("with-manager");
+        let files =
+            crate::AppFiles::from_dirs_for_test(Some(root.join("config")), Some(root.clone()));
+        let manager = files.model_manager().unwrap();
+        std::fs::create_dir_all(manager.model_dir()).unwrap();
+        std::fs::write(crate::default_model_path(manager.model_dir()), b"ggml").unwrap();
+        let catalogue = TranscriptionEngineCatalogue::default();
+        catalogue.set_model_manager(manager);
+
+        let row = engine_row(
+            &catalogue,
+            &Settings::default(),
+            TranscriptionEngine::Whisper,
+        );
+
+        assert_eq!(
+            row.assets,
+            crate::EngineAssets {
+                installed_bytes: Some(4),
+                present: Some(true),
+            }
+        );
+        assert!(
+            !row.installable,
+            "a Local Model already on disk is not an install action"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -474,6 +694,13 @@ mod tests {
 
         fn availability(&self) -> EngineAvailability {
             EngineAvailability::Available
+        }
+
+        fn assets(&self) -> EngineAssets {
+            EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
         }
 
         fn transcribe(

@@ -42,21 +42,20 @@
 
 mod assets;
 
-// Only what the Settings surface and the Local Model Manager actually reach
-// crosses the seam; the rest stays inside `assets` and its own tests.
-pub use assets::{
-    delete_parakeet_assets, install_parakeet_assets, parakeet_asset_dir, ParakeetAssetStatus,
-    PARAKEET_ASSET_DIR_NAME,
-};
+// Only what the engine catalogue needs to place these assets crosses the seam.
+// Installing, deleting, and the asset status are this module's own business now
+// that the provider carries them.
+pub use assets::parakeet_asset_dir;
 use assets::{
-    parakeet_asset_status, parakeet_total_bytes, PARAKEET_ASSETS, PARAKEET_REVISION,
-    PARAKEET_SOURCE_URL,
+    delete_parakeet_assets, install_parakeet_assets, parakeet_asset_status, parakeet_total_bytes,
+    PARAKEET_ASSETS, PARAKEET_REVISION, PARAKEET_SOURCE_URL,
 };
 
 use crate::{
-    AsrError, CapturedAudio, EngineAvailability, EngineMetadata, EngineTranscription,
+    AsrError, CapturedAudio, EngineAssets, EngineAvailability, EngineMetadata, EngineTranscription,
     EngineUnavailable, TranscriptionEngine, TranscriptionProvider,
 };
+use crate::{AssetInstall, DownloadProgress};
 #[cfg(feature = "local-parakeet-runtime")]
 use crate::{EngineConfidence, FinalTranscription};
 use std::path::{Path, PathBuf};
@@ -146,17 +145,9 @@ impl ParakeetProvider {
         }
     }
 
-    pub fn asset_dir(&self) -> &Path {
-        &self.asset_dir
-    }
-
-    pub fn status(&self) -> ParakeetAssetStatus {
-        parakeet_asset_status(&self.asset_dir)
-    }
-
-    /// Re-probe the filesystem and republish the cached answer. Settings calls
-    /// this after an install or a delete; nothing on the dictation path does.
-    pub fn refresh_availability(&self) -> EngineAvailability {
+    /// Re-probe the filesystem and republish the cached answer. Both asset
+    /// operations below run it, so nothing on the dictation path does.
+    fn refresh_availability(&self) -> EngineAvailability {
         let refreshed = probe_availability(&self.asset_dir);
         *lock(&self.availability) = refreshed.clone();
         refreshed
@@ -248,6 +239,40 @@ impl TranscriptionProvider for ParakeetProvider {
 
     fn availability(&self) -> EngineAvailability {
         lock(&self.availability).clone()
+    }
+
+    fn assets(&self) -> EngineAssets {
+        let status = parakeet_asset_status(&self.asset_dir);
+        EngineAssets {
+            installed_bytes: Some(status.installed_bytes),
+            present: Some(status.present),
+        }
+    }
+
+    fn can_install_assets(&self) -> bool {
+        true
+    }
+
+    fn install_assets(
+        &self,
+        on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<AssetInstall, String> {
+        install_parakeet_assets(&self.asset_dir, &crate::HttpModelDownloader, on_progress)
+            .map_err(|error| error.to_string())?;
+        self.refresh_availability();
+
+        Ok(AssetInstall {
+            // Unlike the Local Model, nothing else falls back to these weights,
+            // so the Dictation Runtime opens them on its first use instead of
+            // behind an Install button.
+            warm_up: false,
+        })
+    }
+
+    fn remove_assets(&self) -> Result<(), String> {
+        delete_parakeet_assets(&self.asset_dir).map_err(|error| error.to_string())?;
+        self.refresh_availability();
+        Ok(())
     }
 
     fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
@@ -463,6 +488,7 @@ impl ParakeetProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EngineView;
 
     #[test]
     fn metadata_carries_every_cc_by_obligation_settings_has_to_render() {
@@ -594,6 +620,100 @@ mod tests {
             }
             EngineAvailability::Available => panic!("no assets are installed"),
         }
+    }
+
+    #[test]
+    fn a_partly_installed_model_accounts_for_exactly_the_bytes_still_missing() {
+        // One of the three pinned files, at its pinned size: the state a Settings
+        // row has to render honestly, because "631 MiB of a 652 MiB encoder" has
+        // to read as still-to-fetch rather than installed.
+        let asset_dir = unique_test_dir("row-missing-bytes");
+        std::fs::create_dir_all(&asset_dir).unwrap();
+        let installed = &PARAKEET_ASSETS[0];
+        std::fs::write(
+            asset_dir.join(installed.filename),
+            vec![0u8; installed.bytes as usize],
+        )
+        .unwrap();
+        let row = EngineView::of(&ParakeetProvider::new(asset_dir.clone()), true);
+
+        assert_eq!(row.assets.present, Some(false));
+        assert_eq!(row.assets.installed_bytes, Some(installed.bytes));
+        assert_eq!(
+            row.metadata.approximate_bytes.unwrap() - row.assets.installed_bytes.unwrap(),
+            parakeet_total_bytes() - installed.bytes,
+            "the row has to let the user work out how much is left to fetch"
+        );
+        #[cfg(feature = "local-parakeet-runtime")]
+        assert_eq!(
+            row.unavailable_reason.as_deref(),
+            Some("The Parakeet TDT v2 model has not been installed yet (2 of 3 files missing).")
+        );
+
+        std::fs::remove_dir_all(&asset_dir).ok();
+    }
+
+    #[test]
+    fn a_row_says_whether_this_build_can_do_anything_with_an_install_button() {
+        // The pinned files are absent, so only the build decides whether the
+        // button is worth offering.
+        let asset_dir = unique_test_dir("row-installable");
+        let row = EngineView::of(&ParakeetProvider::new(asset_dir.clone()), false);
+
+        #[cfg(feature = "local-parakeet-runtime")]
+        {
+            assert!(row.installable);
+            assert_eq!(
+                row.unavailable_reason.as_deref(),
+                Some(
+                    "The Parakeet TDT v2 model has not been installed yet (3 of 3 files missing)."
+                )
+            );
+        }
+        #[cfg(not(feature = "local-parakeet-runtime"))]
+        {
+            assert!(
+                !row.installable,
+                "a build that cannot decode the model cannot install it"
+            );
+            assert_eq!(
+                row.unavailable_reason.as_deref(),
+                Some("this build was compiled without support for this engine")
+            );
+        }
+
+        std::fs::remove_dir_all(&asset_dir).ok();
+    }
+
+    #[test]
+    fn removing_the_assets_takes_the_engine_back_to_unavailable() {
+        // A delete has to republish the cached answer, or the Dictation Runtime
+        // would keep routing to an engine whose files are gone until the next
+        // launch. The pinned files are created at their pinned sizes rather than
+        // downloaded, so the engine starts out genuinely installed.
+        let asset_dir = unique_test_dir("row-remove");
+        std::fs::create_dir_all(&asset_dir).unwrap();
+        for asset in &PARAKEET_ASSETS {
+            std::fs::File::create(asset_dir.join(asset.filename))
+                .unwrap()
+                .set_len(asset.bytes)
+                .unwrap();
+        }
+        let provider = ParakeetProvider::new(asset_dir.clone());
+        assert_eq!(
+            provider.assets().installed_bytes,
+            Some(parakeet_total_bytes())
+        );
+        assert_eq!(provider.assets().present, Some(true));
+
+        provider.remove_assets().unwrap();
+
+        assert_eq!(provider.assets().present, Some(false));
+        assert_eq!(provider.assets().installed_bytes, Some(0));
+        assert_eq!(provider.availability(), probe_availability(&asset_dir));
+        #[cfg(feature = "local-parakeet-runtime")]
+        assert!(!provider.availability().is_available());
+        std::fs::remove_dir_all(&asset_dir).ok();
     }
 
     #[test]

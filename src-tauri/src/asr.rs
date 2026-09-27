@@ -467,16 +467,29 @@ fn local_whisper_runtime_disabled_error() -> AsrError {
 /// Settings name the same path, and a profile stored there is whichever caller
 /// spoke last: a wake check on the always-listening microphone decoding greedily
 /// would silently re-decode the next dictation too.
+///
+/// The Local Model Manager comes along for the same reason the profile does:
+/// Whisper's assets *are* the Local Model, so installing and removing them is
+/// this engine's business rather than something Settings has to know. `None`
+/// before startup hands one over, which leaves the engine with no install path
+/// and no bytes to report — an honest answer, and the reason
+/// [`crate::TranscriptionProvider::can_install_assets`] asks.
 pub struct WhisperTranscriptionProvider {
     runtime: Arc<LocalWhisperRuntime>,
     speed_profile: SpeedProfile,
+    model_manager: Option<crate::LocalModelManager>,
 }
 
 impl WhisperTranscriptionProvider {
-    pub fn new(runtime: Arc<LocalWhisperRuntime>, speed_profile: SpeedProfile) -> Self {
+    pub fn new(
+        runtime: Arc<LocalWhisperRuntime>,
+        speed_profile: SpeedProfile,
+        model_manager: Option<crate::LocalModelManager>,
+    ) -> Self {
         Self {
             runtime,
             speed_profile,
+            model_manager,
         }
     }
 
@@ -525,6 +538,61 @@ impl crate::TranscriptionProvider for WhisperTranscriptionProvider {
         crate::EngineAvailability::Available
     }
 
+    fn assets(&self) -> crate::EngineAssets {
+        match &self.model_manager {
+            Some(manager) => {
+                let status = manager.status();
+                crate::EngineAssets {
+                    installed_bytes: status.bytes,
+                    present: Some(status.present),
+                }
+            }
+            // Without a manager Slugtale cannot see the model directory, so it
+            // reports neither a size nor a presence it never looked up.
+            None => crate::EngineAssets::unmeasured(),
+        }
+    }
+
+    fn can_install_assets(&self) -> bool {
+        self.model_manager.is_some()
+    }
+
+    fn install_assets(
+        &self,
+        on_progress: &mut dyn FnMut(crate::DownloadProgress),
+    ) -> Result<crate::AssetInstall, String> {
+        let installed = self
+            .model_manager
+            .as_ref()
+            .ok_or_else(|| {
+                crate::transcription_engine::assets_cannot_be_installed(
+                    crate::TranscriptionEngine::Whisper,
+                )
+            })?
+            .download_default(&crate::HttpModelDownloader, on_progress)
+            .map_err(|error| error.to_string())?;
+
+        Ok(crate::AssetInstall {
+            // The Local Model is the model every engine falls back to, and the
+            // Dictation Runtime pre-loads it, so a finished download is the one
+            // install worth warming for.
+            warm_up: installed.present,
+        })
+    }
+
+    fn remove_assets(&self) -> Result<(), String> {
+        self.model_manager
+            .as_ref()
+            .ok_or_else(|| {
+                crate::transcription_engine::assets_cannot_be_removed(
+                    crate::TranscriptionEngine::Whisper,
+                )
+            })?
+            .delete_default()
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
     fn warm_up(&self) -> Result<(), AsrError> {
         self.runtime.warm_up()
     }
@@ -546,7 +614,7 @@ impl crate::TranscriptionProvider for WhisperTranscriptionProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DEFAULT_MODEL_FILENAME;
+    use crate::{TranscriptionProvider, DEFAULT_MODEL_FILENAME};
 
     #[test]
     fn transcribe_captured_audio_returns_final_transcription_from_asr_runtime() {
@@ -661,12 +729,108 @@ mod tests {
             unique_test_dir("shared-model-profiles").join(DEFAULT_MODEL_FILENAME),
         )));
 
-        let fast = WhisperTranscriptionProvider::new(Arc::clone(&runtime), SpeedProfile::Fast);
+        let fast =
+            WhisperTranscriptionProvider::new(Arc::clone(&runtime), SpeedProfile::Fast, None);
         let accurate =
-            WhisperTranscriptionProvider::new(Arc::clone(&runtime), SpeedProfile::Accurate);
+            WhisperTranscriptionProvider::new(Arc::clone(&runtime), SpeedProfile::Accurate, None);
 
         assert_eq!(fast.speed_profile(), SpeedProfile::Fast);
         assert_eq!(accurate.speed_profile(), SpeedProfile::Accurate);
+    }
+
+    #[test]
+    fn a_whisper_row_reports_the_local_model_it_would_open() {
+        // Whisper's assets are the Local Model, so the row has to read the file
+        // the engine would actually open rather than a number the engine keeps.
+        let root = unique_test_dir("whisper-assets");
+        let manager =
+            crate::AppFiles::from_dirs_for_test(Some(root.join("config")), Some(root.clone()))
+                .model_manager()
+                .expect("a data directory resolves a model directory");
+        let model_path = crate::default_model_path(manager.model_dir());
+        std::fs::create_dir_all(manager.model_dir()).unwrap();
+        std::fs::write(&model_path, b"ggml").unwrap();
+
+        let provider = WhisperTranscriptionProvider::new(
+            Arc::new(LocalWhisperRuntime::new(LocalModelRef::at(model_path))),
+            SpeedProfile::Balanced,
+            Some(manager),
+        );
+        let row = crate::EngineView::of(&provider, true);
+
+        assert_eq!(
+            row.assets,
+            crate::EngineAssets {
+                installed_bytes: Some(4),
+                present: Some(true),
+            }
+        );
+        assert!(provider.can_install_assets());
+        assert!(
+            !row.installable,
+            "installed assets are not an install action"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn installing_a_local_model_that_is_already_there_asks_for_a_warm_up() {
+        // The Local Model Manager short-circuits an install whose bytes are
+        // already on disk, so this is the whole install path without a download.
+        // The answer the app acts on is "load the model a dictation is about to
+        // need", which is true exactly when the file landed.
+        let root = unique_test_dir("whisper-install-warm-up");
+        let manager =
+            crate::AppFiles::from_dirs_for_test(Some(root.join("config")), Some(root.clone()))
+                .model_manager()
+                .unwrap();
+        std::fs::create_dir_all(manager.model_dir()).unwrap();
+        let model_path = crate::default_model_path(manager.model_dir());
+        std::fs::write(&model_path, b"ggml").unwrap();
+        let provider = WhisperTranscriptionProvider::new(
+            Arc::new(LocalWhisperRuntime::new(LocalModelRef::at(model_path))),
+            SpeedProfile::Balanced,
+            Some(manager),
+        );
+
+        let mut updates = Vec::new();
+        let install = provider
+            .install_assets(&mut |progress| updates.push(progress))
+            .unwrap();
+
+        assert_eq!(install, crate::AssetInstall { warm_up: true });
+        assert!(
+            updates.is_empty(),
+            "nothing was downloaded, so nothing to report"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_whisper_provider_with_no_model_manager_has_no_install_path() {
+        // Before the catalogue is handed a manager, the engine can see no model
+        // directory. It must say so rather than report bytes it never looked up
+        // or accept an install it cannot carry out.
+        let provider = WhisperTranscriptionProvider::new(
+            Arc::new(LocalWhisperRuntime::new(LocalModelRef::at(
+                unique_test_dir("whisper-no-manager").join(DEFAULT_MODEL_FILENAME),
+            ))),
+            SpeedProfile::Balanced,
+            None,
+        );
+
+        assert_eq!(provider.assets(), crate::EngineAssets::unmeasured());
+        assert!(!provider.can_install_assets());
+        assert_eq!(
+            provider.install_assets(&mut |_| {}).unwrap_err(),
+            "Whisper base.en has no installation path in Slugtale."
+        );
+        assert_eq!(
+            provider.remove_assets().unwrap_err(),
+            "Whisper base.en has no assets for Slugtale to remove."
+        );
     }
 
     #[test]

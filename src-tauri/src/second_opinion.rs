@@ -588,7 +588,8 @@ fn has_repeated_phrase(text: &str, minimum_run: usize) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        EngineAvailability, EngineConfidence, EngineMetadata, EngineUnavailable, FinalTranscription,
+        EngineAssets, EngineAvailability, EngineConfidence, EngineMetadata, EngineUnavailable,
+        FinalTranscription,
     };
 
     #[test]
@@ -921,6 +922,13 @@ mod tests {
             EngineAvailability::Available
         }
 
+        fn assets(&self) -> EngineAssets {
+            EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
+        }
+
         fn transcribe(&self, _audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             panic!("fake engine panic");
@@ -1124,6 +1132,13 @@ mod tests {
 
         fn availability(&self) -> EngineAvailability {
             self.availability.clone()
+        }
+
+        fn assets(&self) -> EngineAssets {
+            EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
         }
 
         fn transcribe(&self, _audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
