@@ -122,17 +122,28 @@ pub fn audio_level_from_samples(samples: &[f32]) -> f32 {
 
 pub const DIGITAL_SILENCE_EPSILON: f32 = 0.000_01;
 
-fn require_captured_microphone_signal(audio: &CapturedAudio) -> Result<(), AudioCaptureError> {
-    // A denied macOS microphone does not fail the CoreAudio stream. It supplies
-    // a correctly timed buffer of digital silence instead, which Whisper
-    // canonically transcribes as "You" (slugtale-d3k). Real microphones have a
-    // noise floor above this -100 dBFS threshold even in a quiet room.
-    let rms = audio_level_from_samples(&audio.samples);
-    let peak = audio
-        .samples
+/// Whether a captured buffer is digital silence rather than a quiet room.
+///
+/// A denied macOS microphone does not fail the CoreAudio stream: it supplies a
+/// correctly timed buffer of zeros, which Whisper canonically transcribes as
+/// "You" (slugtale-d3k). Real microphones have a noise floor above this -100 dBFS
+/// threshold even in a quiet room, so the rule needs both terms: a buffer is
+/// silence only when it is silent by RMS *and* by peak.
+///
+/// This is the one copy of that rule. The Dictation Session refuses a silent
+/// recording with it; the Voice Activation window tells digital silence apart
+/// from a quiet room with it. Written twice, the two copies were free to differ
+/// on `&&` against `||`, and did.
+pub fn is_digital_silence(samples: &[f32]) -> bool {
+    let rms = audio_level_from_samples(samples);
+    let peak = samples
         .iter()
         .fold(0.0f32, |highest, sample| highest.max(sample.abs()));
-    if rms <= DIGITAL_SILENCE_EPSILON && peak <= DIGITAL_SILENCE_EPSILON {
+    rms <= DIGITAL_SILENCE_EPSILON && peak <= DIGITAL_SILENCE_EPSILON
+}
+
+fn require_captured_microphone_signal(audio: &CapturedAudio) -> Result<(), AudioCaptureError> {
+    if is_digital_silence(&audio.samples) {
         return Err(AudioCaptureError::new(
             "no microphone signal was captured; check Slugtale under System Settings > Privacy & Security > Microphone",
         ));
@@ -153,6 +164,28 @@ pub fn voice_level_from_rms(rms: f32) -> f32 {
 
     let normalized = ((rms - NOISE_FLOOR) / (SPEECH_CEILING - NOISE_FLOOR)).clamp(0.0, 1.0);
     normalized.sqrt()
+}
+
+/// The perceptual voice level above which the user counts as speaking.
+///
+/// This is the Dictation Bar's own `VOICE_LEVEL` (src/dictation-bar.html), and
+/// the two must stay the same number: the bar visibly flexes its waveform on
+/// exactly the input that keeps a Segment Pause from firing, so a user watching
+/// the bar can see why a flush did or did not happen. `tests/frontend-seam.test.mjs`
+/// reads both literals and fails if they drift.
+///
+/// Known and deliberately unchanged: the bar holds "voice" for
+/// `VOICE_HOLD_MS = 700` after the level drops, while this answer and the
+/// capture ring's watermark are instantaneous. For 700 ms the bar reads voice
+/// after both Rust consumers have moved on. Closing the gap means changing what
+/// the bar does, which is a product decision, not a refactor (slugtale-hdef.12).
+pub const VOICE_LEVEL: f32 = 0.08;
+
+/// Whether a voice level counts as speech. Strictly above, so a level sitting
+/// exactly on the threshold is room noise to the bar and here alike; treating it
+/// as voice would let a steady hum silently disable flushing.
+pub fn is_voice_level(level: f32) -> bool {
+    level > VOICE_LEVEL
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -639,7 +672,7 @@ impl CpalAudioRecorder {
                         // belongs to: the watermark a Pause Flush cuts at.
                         // One extra atomic store on voiced buffers only — the
                         // callback stays lock-free and allocation-free.
-                        if level > crate::SEGMENT_VOICE_LEVEL {
+                        if is_voice_level(level) {
                             callback_buffer.mark_voice();
                         }
                         level_bits.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -1166,6 +1199,51 @@ mod tests {
 
         // The mapping is monotonic: louder input never renders as a smaller bar.
         assert!(voice_level_from_rms(0.03) < voice_level_from_rms(0.06));
+    }
+
+    /// The one rule both a denied microphone and the Voice Activation window
+    /// ask, classified from both sides. A quiet room must not read as silence:
+    /// if it did, a room with a fan in it would be told its microphone was
+    /// denied.
+    #[test]
+    fn digital_silence_is_a_denied_microphone_and_a_quiet_room_is_not() {
+        let denied = CapturedAudio::mono_16khz(vec![0.0; 16_000]);
+
+        assert!(
+            is_digital_silence(&denied.samples),
+            "a denied macOS microphone hands over a correctly timed buffer of zeros"
+        );
+        assert_eq!(
+            require_captured_microphone_signal(&denied).unwrap_err(),
+            AudioCaptureError::new(
+                "no microphone signal was captured; check Slugtale under System Settings > Privacy & Security > Microphone"
+            )
+        );
+
+        // A quiet room is well under speech but far above the -100 dBFS
+        // threshold, on both the RMS term and the peak term.
+        let room_floor = CapturedAudio::mono_16khz(vec![0.0002; 16_000]);
+
+        assert!(!is_digital_silence(&room_floor.samples));
+        assert!(require_captured_microphone_signal(&room_floor).is_ok());
+    }
+
+    /// The rule needs both terms, and the two can genuinely disagree: a buffer
+    /// can be silent by RMS and loud by peak. Ten samples of 0.001 in ten
+    /// seconds of silence give an RMS of about 7.9e-6, under the 1e-5
+    /// threshold, against a peak of 0.001, far over it. That is one desk click
+    /// in a recording with no speech, and it is not a denied microphone. Swap
+    /// the `&&` for a `||` and this is silence.
+    #[test]
+    fn a_quiet_buffer_with_one_loud_sample_is_not_digital_silence() {
+        let mut click = vec![0.0; 160_000];
+        for sample in click.iter_mut().step_by(16_000) {
+            *sample = 0.001;
+        }
+
+        assert!(audio_level_from_samples(&click) <= DIGITAL_SILENCE_EPSILON);
+        assert!(!is_digital_silence(&click));
+        assert!(require_captured_microphone_signal(&CapturedAudio::mono_16khz(click)).is_ok());
     }
 
     #[test]

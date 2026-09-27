@@ -489,7 +489,7 @@ mod tests {
         EngineAvailability, EngineConfidence, EngineMetadata, EngineTranscription,
         FileDiagnosticSink, FinalTranscription, InsertionRescue, InsertionRescueError,
         PreparedInsertion, SettledTextInsertion, SharedDiagnosticLog, TextInsertion,
-        TextInsertionError, TranscriptionProvider, SEGMENT_VOICE_LEVEL,
+        TextInsertionError, TranscriptionProvider, VOICE_LEVEL,
     };
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -727,7 +727,7 @@ mod tests {
         /// A level the Dictation Bar treats as speech, which both flexes the
         /// waveform and holds a Segment Pause open.
         fn speaking() -> f32 {
-            SEGMENT_VOICE_LEVEL + 0.2
+            VOICE_LEVEL + 0.2
         }
 
         /// Speak, then stay quiet long enough for the Segment Pause to elapse.
@@ -740,7 +740,7 @@ mod tests {
         }
 
         fn voice(&self, level: f32) {
-            if level > SEGMENT_VOICE_LEVEL {
+            if crate::is_voice_level(level) {
                 self.watermark
                     .fetch_add(8_000, std::sync::atomic::Ordering::Relaxed);
             }
