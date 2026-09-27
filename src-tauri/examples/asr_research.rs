@@ -1,7 +1,7 @@
 //! Development-only local ASR corpus recorder and evaluation rig.
 
 use slugtale_lib::{
-    AsrRuntime, CapturedAudio, CpalAudioRecorder, DictationRecorder, LocalWhisperRuntime,
+    CapturedAudio, CpalAudioRecorder, DictationRecorder, LocalWhisperRuntime, SpeedProfile,
 };
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, Write};
@@ -1174,7 +1174,11 @@ fn whisper_adapter(options: &CliOptions) -> Result<(), String> {
         let response = match read_validated_f32_wav(&request.wav_path) {
             Ok(samples) => {
                 let audio_ms = samples.len() as f64 / 16.0;
-                match runtime.transcribe(CapturedAudio::mono_16khz(samples)) {
+                // Balanced, the app's default. The rig measures transcription,
+                // not decode strategies, and its manifest records no profile.
+                match runtime
+                    .transcribe(CapturedAudio::mono_16khz(samples), SpeedProfile::default())
+                {
                     Ok(transcription) => AdapterResult {
                         schema_version: ADAPTER_SCHEMA_VERSION,
                         clip_id: request.clip_id,
