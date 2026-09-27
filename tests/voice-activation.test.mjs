@@ -24,7 +24,7 @@ test("settings marks voice activation as coming soon and keeps it off", () => {
 });
 
 test("voice activation reports a blocked or silent microphone", () => {
-  assert.match(workerSource, /PlatformReadiness::microphone_granted/);
+  assert.match(workerSource, /CurrentPlatform::new\(\)\.microphone_granted\(\)/);
   assert.match(listenLoopSource, /NewAudioState::DigitalSilence/);
   assert.match(workerSource, /report_voice_activation_microphone_problem/);
 });

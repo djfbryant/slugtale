@@ -1,6 +1,6 @@
 //! Linux implementation of the Platform Adapter seams (ADR-0021, ADR-0023, PRD
 //! slugtale-8ul). This module mirrors `macos.rs` and `windows.rs`: it fills the
-//! same `PlatformReadiness`, `TextInsertion`, `InsertionRescue`,
+//! same permission reads, `TextInsertion`, `InsertionRescue`,
 //! permission-setup, and focus-targeting seams so the core Dictation Workflow
 //! runs unchanged on Linux.
 //!
@@ -30,9 +30,9 @@
 
 use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
-    InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, PlatformReadiness,
-    TextInsertion, TextInsertionError, TextInsertionPermissionSetup, TextInsertionPipeline,
-    TextInsertionSystem, WeekStart,
+    InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, TextInsertion,
+    TextInsertionError, TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem,
+    WeekStart,
 };
 use cpal::traits::HostTrait;
 
@@ -117,15 +117,15 @@ impl Default for LinuxPlatform {
     }
 }
 
-impl PlatformReadiness for LinuxPlatform {
-    fn microphone_granted(&self) -> bool {
+impl LinuxPlatform {
+    pub fn microphone_granted(&self) -> bool {
         // Non-sandboxed Linux apps have no per-process microphone consent gate,
         // so "granted" means an input device is actually present. A real capture
         // failure still surfaces through the audio-capture path, not here.
         input_device_present()
     }
 
-    fn insertion_granted(&self) -> bool {
+    pub fn insertion_granted(&self) -> bool {
         // X11 permits synthesized input with no trust gate. On Wayland,
         // synthesized input needs a portal grant Slugtale does not yet request
         // (Phase 2), so insertion is reported as not available there.

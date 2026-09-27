@@ -306,11 +306,11 @@ impl slugtale_lib::ReadinessProbes for AppReadinessProbes<'_> {
     }
 
     fn microphone_granted(&self) -> bool {
-        slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new())
+        CurrentPlatform::new().microphone_granted()
     }
 
     fn insertion_granted(&self) -> bool {
-        slugtale_lib::PlatformReadiness::insertion_granted(&CurrentPlatform::new())
+        CurrentPlatform::new().insertion_granted()
     }
 
     fn local_model(
@@ -1293,7 +1293,7 @@ fn usage_writer(app: tauri::AppHandle) -> std::sync::Arc<slugtale_lib::UsageSink
     })
 }
 
-impl slugtale_lib::PlatformReadiness for CurrentPlatform {
+impl CurrentPlatform {
     fn microphone_granted(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
@@ -1407,7 +1407,7 @@ fn main() {
             // when the microphone permission is already granted: preparation
             // must never prompt, and a denied microphone stays on the normal
             // permission path.
-            if slugtale_lib::PlatformReadiness::microphone_granted(&CurrentPlatform::new()) {
+            if CurrentPlatform::new().microphone_granted() {
                 dictation_host(app.handle()).prepare_capture();
             }
             // Voice Activation is opt-in: the always-on listener only starts
