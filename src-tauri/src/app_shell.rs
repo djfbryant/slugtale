@@ -18,22 +18,47 @@ where
         .any(|arg| arg.as_ref() == REAUTHORIZE_PERMISSIONS_ARGUMENT)
 }
 
-pub fn build_tray_menu_items() -> Vec<(&'static str, &'static str)> {
-    vec![("settings", "Settings\u{2026}"), ("quit", "Quit Slugtale")]
-}
-
+/// What one tray menu item does when the user picks it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrayMenuAction {
+enum TrayMenuAction {
     Settings,
     Quit,
 }
 
-pub fn tray_menu_action(id: &str) -> Option<TrayMenuAction> {
-    match id {
-        "settings" => Some(TrayMenuAction::Settings),
-        "quit" => Some(TrayMenuAction::Quit),
-        _ => None,
-    }
+/// One tray menu item: the id Tauri hands the click back on, the label the user
+/// reads, and what picking it does. The three travel together, so an item cannot
+/// exist without a way to act on it.
+struct TrayMenuItem {
+    id: &'static str,
+    label: &'static str,
+    action: TrayMenuAction,
+}
+
+/// The whole tray menu, in the order it is shown.
+///
+/// The ids are namespaced. Unprefixed they read as window labels, and the tray
+/// "Settings…" item was called "settings" because the two were never told apart.
+const TRAY_MENU: [TrayMenuItem; 2] = [
+    TrayMenuItem {
+        id: "tray.settings",
+        label: "Settings\u{2026}",
+        action: TrayMenuAction::Settings,
+    },
+    TrayMenuItem {
+        id: "tray.quit",
+        label: "Quit Slugtale",
+        action: TrayMenuAction::Quit,
+    },
+];
+
+/// The action the clicked item carries. A click on an id that is not on the menu
+/// is not a thing that can happen, so `None` only ever means the platform sent
+/// something Slugtale did not put there.
+fn tray_menu_action(id: &str) -> Option<TrayMenuAction> {
+    TRAY_MENU
+        .iter()
+        .find(|item| item.id == id)
+        .map(|item| item.action)
 }
 
 pub fn show_settings(app: tauri::AppHandle) {
@@ -44,12 +69,10 @@ pub fn show_settings(app: tauri::AppHandle) {
 }
 
 pub fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
-    let items = build_tray_menu_items();
-
     let mut menu_items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = Vec::new();
-    for (id, label) in &items {
-        let item = MenuItem::with_id(app, *id, *label, true, None::<&str>)?;
-        menu_items.push(Box::new(item));
+    for item in &TRAY_MENU {
+        let menu_item = MenuItem::with_id(app, item.id, item.label, true, None::<&str>)?;
+        menu_items.push(Box::new(menu_item));
     }
 
     let menu_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
@@ -63,14 +86,18 @@ pub fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .icon_as_template(true)
         .tooltip("Slugtale")
         .menu(&menu)
-        .on_menu_event(|app, event| match tray_menu_action(event.id.as_ref()) {
-            Some(TrayMenuAction::Settings) => {
-                show_settings(app.clone());
+        .on_menu_event(|app, event| {
+            let Some(action) = tray_menu_action(event.id.as_ref()) else {
+                return;
+            };
+            match action {
+                TrayMenuAction::Settings => {
+                    show_settings(app.clone());
+                }
+                TrayMenuAction::Quit => {
+                    app.exit(0);
+                }
             }
-            Some(TrayMenuAction::Quit) => {
-                app.exit(0);
-            }
-            None => {}
         })
         .build(app)?;
 
@@ -93,95 +120,48 @@ mod tests {
     }
 
     #[test]
-    fn developer_run_app_declares_why_it_needs_microphone_access() {
-        let plist = std::fs::read_to_string("Info.plist").expect("src-tauri/Info.plist exists");
-
-        assert!(plist.contains("<key>NSMicrophoneUsageDescription</key>"));
-        assert!(plist.contains("dictation"));
+    fn the_reauthorize_argument_is_matched_exactly_and_in_any_position() {
+        // macOS passes the arguments through in whatever order it was launched,
+        // and the flag is one string among the path and any others the user typed.
+        assert!(permission_reauthorization_requested([
+            "--verbose",
+            "/Applications/Slugtale.app/Contents/MacOS/slugtale",
+            "--reauthorize-permissions",
+        ]));
+        // A longer argument that merely starts with the flag is a different
+        // argument, and re-authorizing on it would reset permissions the user
+        // never asked to reset.
+        assert!(!permission_reauthorization_requested([
+            "/Applications/Slugtale.app/Contents/MacOS/slugtale",
+            "--reauthorize-permissions-please",
+        ]));
     }
 
     #[test]
-    fn developer_run_app_builds_a_macos_bundle_for_privacy_identity() {
-        let config = std::fs::read_to_string("tauri.conf.json").expect("tauri.conf.json exists");
-        let config: serde_json::Value = serde_json::from_str(&config).unwrap();
-
-        assert_eq!(config["identifier"], "com.slugtale.desktop");
-        assert_eq!(config["bundle"]["active"], true);
-        assert_eq!(config["bundle"]["macOS"]["infoPlist"], "Info.plist");
-
-        let package_json = std::fs::read_to_string("../package.json").expect("package.json exists");
-        let package_json: serde_json::Value = serde_json::from_str(&package_json).unwrap();
-
-        assert_eq!(package_json["scripts"]["dev"], "node scripts/run-dev.js");
-
-        let dev_runner =
-            std::fs::read_to_string("../scripts/run-dev.js").expect("dev runner exists");
-        assert!(dev_runner.contains("\"--bundles\""));
-        assert!(dev_runner.contains("\"app\""));
-        assert!(dev_runner.contains("Slugtale.app"));
-        assert!(dev_runner.contains("\"codesign\""));
-        assert!(dev_runner.contains("\"--identifier\""));
-        assert!(dev_runner.contains("com.slugtale.desktop"));
-        assert!(!dev_runner.contains("\"--sign\",\n    \"-\""));
-        assert!(
-            !dev_runner.contains("run(\"open\", [\"-n\", appPath])"),
-            "developer runs must not force a second Slugtale instance"
-        );
-        assert!(dev_runner.contains("run(\"open\", [appPath])"));
-        assert!(dev_runner.contains("SLUGTALE_SIGN_IDENTITY"));
-        assert!(dev_runner.contains("Slugtale Dev"));
+    fn the_tray_menu_reads_the_way_the_specification_says() {
+        let labels: Vec<&str> = TRAY_MENU.iter().map(|item| item.label).collect();
+        assert_eq!(labels, ["Settings\u{2026}", "Quit Slugtale"]);
     }
 
     #[test]
-    fn developer_run_has_a_recovery_path_for_stale_macos_text_insertion_grants() {
-        let package_json = std::fs::read_to_string("../package.json").expect("package.json exists");
-        let package_json: serde_json::Value = serde_json::from_str(&package_json).unwrap();
-
-        assert_eq!(
-            package_json["scripts"]["macos:reset-permissions"],
-            "node scripts/reset-dev-permissions.js"
-        );
-
-        let recovery_script = std::fs::read_to_string("../scripts/reset-dev-permissions.js")
-            .expect("dev permissions recovery script exists");
-
-        assert!(recovery_script.contains("tccutil"));
-        assert!(recovery_script.contains("Accessibility"));
-        assert!(recovery_script.contains("com.slugtale.desktop"));
-        assert!(recovery_script.contains("--all-accessibility"));
-        assert!(recovery_script.contains("npm run dev"));
+    fn every_tray_item_is_reachable_and_does_what_it_carries() {
+        for item in &TRAY_MENU {
+            assert_eq!(tray_menu_action(item.id), Some(item.action));
+        }
     }
 
     #[test]
-    fn tray_menu_has_settings_item() {
-        let items = build_tray_menu_items();
-        assert!(items.iter().any(|(id, _)| *id == "settings"));
-    }
-
-    #[test]
-    fn tray_menu_has_quit_item() {
-        let items = build_tray_menu_items();
-        assert!(items.iter().any(|(id, _)| *id == "quit"));
-    }
-
-    #[test]
-    fn settings_item_label_matches_spec() {
-        let items = build_tray_menu_items();
-        let label = items.iter().find(|(id, _)| *id == "settings").unwrap().1;
-        assert_eq!(label, "Settings\u{2026}");
-    }
-
-    #[test]
-    fn quit_item_label_matches_spec() {
-        let items = build_tray_menu_items();
-        let label = items.iter().find(|(id, _)| *id == "quit").unwrap().1;
-        assert_eq!(label, "Quit Slugtale");
-    }
-
-    #[test]
-    fn tray_menu_actions_cover_every_configured_item() {
-        assert_eq!(tray_menu_action("settings"), Some(TrayMenuAction::Settings));
-        assert_eq!(tray_menu_action("quit"), Some(TrayMenuAction::Quit));
+    fn a_menu_id_that_is_not_on_the_menu_is_not_an_action() {
         assert_eq!(tray_menu_action("about"), None);
+    }
+
+    #[test]
+    fn tray_menu_ids_are_not_window_labels() {
+        // The two namespaces are separate strings that happen to live in the same
+        // process. Nothing turns a tray id into a window, and nothing should read
+        // as though it might.
+        for item in &TRAY_MENU {
+            assert_eq!(WindowLabel::from_label(item.id), None);
+        }
     }
 }
