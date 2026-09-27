@@ -8,11 +8,9 @@
 // rather than the shape of the page, and a fake that answers any id makes a test
 // pass against a page whose markup the script has since broken.
 //
-// `runPage` reads the page's own markup and its own scripts. The document is
-// built from the ids and the elements the page really ships, so a test that reads
-// a node is reading the page's node. It fails loudly rather than degrading: a
-// script block with a `src`, a handle the page does not define, a selector the
-// fake cannot answer honestly, an id the page does not have.
+// `runPage` runs the page's own scripts against the page's own markup. It fails
+// loudly rather than degrading: a script block with a `src`, a handle the page
+// does not expose, a selector the fake cannot answer honestly.
 
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
@@ -21,20 +19,28 @@ const SCRIPT = /<script(?<attrs>[^>]*)>(?<body>[\s\S]*?)<\/script>/g;
 const TAG = /<(\/)?([a-zA-Z][\w:-]*)((?:\s+[^\s=>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*(\/)?>/g;
 const ATTRIBUTE = /([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
 
-// HTML's void elements carry no closing tag, and the SVG shapes in the icon
-// markup are written the same way. Without this list each one would swallow the
-// rest of the fragment as children, and a query that finds them in a browser
-// would find nothing here.
+// HTML's void elements carry no closing tag. Without this list each one opens a
+// container, so the elements after it become its children and a query on the host
+// no longer finds them where a browser would.
 const VOID = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
-  "source", "track", "wbr",
-  "circle", "ellipse", "line", "path", "polygon", "polyline", "rect", "stop", "use"
+  "source", "track", "wbr"
 ]);
 
-const UNSUPPORTED_SELECTOR = /:(?!first-child\b|last-child\b|nth-child\()|\s|>|\+|~/;
+// Only what this matcher can answer honestly. Anything else is an error rather
+// than a query that quietly finds nothing.
+const SUPPORTED_SELECTOR = /^(\*|[a-zA-Z][\w-]*)?((?:[#.][\w-]+|\[[\w:-]+(?:[~|^$*]?="[^"]*")?\])*)$/;
+const BOOL_PROPERTIES = ["checked", "disabled", "hidden", "selected", "readOnly"];
+const STYLE_PROPERTY = /^--[\w-]+$|^[a-zA-Z][\w]*$/;
+
+class FakeDomError extends Error {}
 
 function camelCase(name) {
   return name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function dashCase(name) {
+  return name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
 }
 
 function readAttributes(source) {
@@ -45,64 +51,98 @@ function readAttributes(source) {
   return attributes;
 }
 
-class FakeDomError extends Error {}
-
+// A text run is a child, not a node: it answers `textContent` and nothing else.
 function textRun(value) {
   const text = String(value);
   return { children: [], text, textContent: text };
 }
 
+// `dataset` is one value per node, and a browser stores a string in every one, so
+// `el.dataset.state = 5` reads back `"5"`.
+function createDataset() {
+  return new Proxy(
+    {},
+    {
+      get: (store, key) => (typeof key === "string" ? store[camelCase(key)] : store[key]),
+      set: (store, key, value) => {
+        store[camelCase(key)] = String(value);
+        return true;
+      },
+      deleteProperty: (store, key) => {
+        delete store[camelCase(key)];
+        return true;
+      },
+      has: (store, key) => camelCase(key) in store,
+      ownKeys: (store) => Object.keys(store),
+      getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true, value: "" })
+    },
+  );
+}
+
+// One attribute map, and the properties a browser reflects out of it. Two stores
+// is how a node ends up styled one way and queried another, and a page that sets
+// `bar.style.width` then calls `removeProperty("width")` has to see both.
+function createStyle(properties) {
+  const target = {
+    getPropertyValue: (name) => (properties.has(name) ? properties.get(name) : ""),
+    removeProperty(name) {
+      const previous = properties.has(name) ? properties.get(name) : "";
+      properties.delete(name);
+      return previous;
+    },
+    setProperty(name, value) {
+      properties.set(name, String(value));
+    }
+  };
+  return new Proxy(target, {
+    get: (base, name) => {
+      if (name in base) return base[name];
+      return typeof name === "string" ? properties.get(name) || "" : undefined;
+    },
+    set: (base, name, value) => {
+      if (name in base) {
+        base[name] = value;
+        return true;
+      }
+      if (STYLE_PROPERTY.test(String(name))) {
+        properties.set(String(name), String(value));
+        return true;
+      }
+      return Reflect.set(base, name, value);
+    },
+    deleteProperty: (base, name) => {
+      properties.delete(String(name));
+      return Reflect.deleteProperty(base, name);
+    },
+    has: (base, name) => name in base || properties.has(String(name)),
+    ownKeys: () => [...new Set([...Reflect.ownKeys(target), ...properties.keys()])],
+    getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true, value: "" })
+  });
+}
+
 function createNode(tagName, registry) {
   const attributes = new Map();
-  const classes = new Set();
   const listeners = new Map();
+  const styles = new Map();
   let ownText = "";
   let markup = "";
 
   const node = {
     tagName: tagName.toUpperCase(),
-    children: [],
-    classes,
-    dataset: {},
     attributes,
-    checked: false,
-    disabled: false,
-    hidden: false,
+    children: [],
+    dataset: createDataset(),
+    styles,
     value: "",
-    style: {
-      properties: new Map(),
-      removeProperty(name) {
-        this.properties.delete(name);
-      },
-      setProperty(name, value) {
-        this.properties.set(name, value);
-      }
-    },
-    classList: {
-      add(...names) {
-        names.forEach((name) => classes.add(name));
-      },
-      contains: (name) => classes.has(name),
-      remove(...names) {
-        names.forEach((name) => classes.delete(name));
-      },
-      toggle(name, force) {
-        const on = force === undefined ? !classes.has(name) : Boolean(force);
-        if (on) classes.add(name);
-        else classes.delete(name);
-        return on;
-      }
-    },
     addEventListener(type, handler) {
       if (!listeners.has(type)) listeners.set(type, []);
       listeners.get(type).push(handler);
     },
-    append(...nodes) {
-      nodes.forEach((child) => {
+    append(...children) {
+      children.forEach((child) => {
         // A page may append a bare string, which a browser turns into a text run.
         const entry = typeof child === "string" || typeof child === "number" ? textRun(child) : child;
         node.children.push(entry);
-        if (entry.text === undefined) entry.parentNode = node;
       });
     },
     dispatch(type, event = {}) {
@@ -114,72 +154,94 @@ function createNode(tagName, registry) {
       registry.document.activeElement = node;
     },
     getAttribute: (name) => (attributes.has(name) ? attributes.get(name) : null),
-    matches(selector) {
-      return selectorMatches(node, selector);
-    },
+    hasAttribute: (name) => attributes.has(name),
     querySelector(selector) {
-      rejectUnsupported(selector);
-      return descendants(node).find((entry) => selectorMatches(entry, selector)) || null;
+      return node.querySelectorAll(selector)[0] || null;
     },
     querySelectorAll(selector) {
       rejectUnsupported(selector);
       return descendants(node).filter((entry) => selectorMatches(entry, selector));
     },
-    removeAttribute: (name) => attributes.delete(name),
-    get listeners() {
-      return listeners;
-    },
-    get parent() {
-      return node.parentNode || null;
-    },
-    remove() {
-      const owner = node.parentNode;
-      if (!owner) return;
-      owner.children = owner.children.filter((child) => child !== node);
-      node.parentNode = null;
-    },
-    replaceChildren(...nodes) {
+    replaceChildren(...children) {
+      ownText = "";
       node.children = [];
-      node.append(...nodes);
+      node.append(...children);
     },
     setAttribute(name, value) {
-      attributes.set(name, value);
+      attributes.set(name, String(value));
     }
   };
 
-  node.parentNode = null;
+  node.id = "";
   node.click = (event = {}) => node.dispatch("click", event);
 
-  // `className` and the class set are one value, as in a browser. Keeping them as
-  // two stores is how a page that styles a node by class ends up matching nothing
-  // here and everything in the real window.
+  // `hidden`, `disabled` and `checked` are attributes the IDL reflects, so the
+  // page's own markup and the property a test reads cannot disagree.
+  BOOL_PROPERTIES.forEach((property) => {
+    Object.defineProperty(node, property, {
+      configurable: true,
+      get: () => attributes.has(property === "readOnly" ? "readonly" : dashCase(property)),
+      set: (value) => {
+        const name = property === "readOnly" ? "readonly" : dashCase(property);
+        if (value) attributes.set(name, "");
+        else attributes.delete(name);
+      }
+    });
+  });
+
+  const classes = () =>
+    (attributes.get("class") || "").split(/\s+/).filter(Boolean);
+
   Object.defineProperty(node, "className", {
-    get: () => [...classes].join(" "),
-    set(value) {
-      classes.clear();
-      String(value || "").split(/\s+/).filter(Boolean).forEach((entry) => classes.add(entry));
+    configurable: true,
+    get: () => attributes.get("class") || "",
+    set: (value) => {
+      const text = String(value ?? "").trim();
+      if (text) attributes.set("class", text);
+      else attributes.delete("class");
     }
   });
+
+  node.classList = {
+    add(...names) {
+      node.className = [...new Set([...classes(), ...names.flatMap((n) => String(n).split(/\s+/))])].join(" ");
+    },
+    contains: (name) => classes().includes(name),
+    remove(...names) {
+      const drop = new Set(names.flatMap((n) => String(n).split(/\s+/)));
+      node.className = classes().filter((name) => !drop.has(name)).join(" ");
+    },
+    toggle(name, force) {
+      const on = force === undefined ? !classes().includes(name) : Boolean(force);
+      if (on) node.classList.add(name);
+      else node.classList.remove(name);
+      return on;
+    }
+  };
 
   // Reading `textContent` is how a test checks what a person would read, so it
   // has to include the text of the children, not just the text set on this node.
   Object.defineProperty(node, "textContent", {
+    configurable: true,
     get: () => ownText + node.children.map((child) => child.textContent || "").join(""),
-    set(value) {
+    set: (value) => {
       node.children = [];
       ownText = String(value ?? "");
     }
   });
 
   Object.defineProperty(node, "innerHTML", {
-    get: () => markup,
+    configurable: true,
     set(value) {
       markup = String(value ?? "");
       ownText = "";
       node.children = [];
       appendFragment(node, markup, registry);
-    }
+    },
+    get: () => markup + node.children.map((child) => child.markup || "").join("")
   });
+
+  node.style = createStyle(styles);
 
   return node;
 }
@@ -189,11 +251,10 @@ function createNode(tagName, registry) {
 function appendFragment(host, html, registry) {
   const stack = [host];
   let cursor = 0;
-  const textBefore = (index) => html.slice(cursor, index);
 
   for (const match of html.matchAll(TAG)) {
     const top = stack[stack.length - 1];
-    const text = textBefore(match.index);
+    const text = html.slice(cursor, match.index);
     if (text) top.append(textRun(text));
 
     cursor = match.index + match[0].length;
@@ -204,27 +265,25 @@ function appendFragment(host, html, registry) {
 
     const child = createNode(match[2], registry);
     for (const [name, value] of readAttributes(match[3])) {
-      if (name === "class") {
-        child.className = value;
-      } else if (name === "id") {
+      child.setAttribute(name, value);
+      if (name === "id") {
         child.id = value;
         registry.byId.set(value, child);
       } else if (name.startsWith("data-")) {
         child.dataset[camelCase(name.slice(5))] = value;
-      } else {
-        child.attributes.set(name, value);
       }
     }
+    child.markup = match[0];
     top.append(child);
     if (!match[4] && !VOID.has(match[2].toLowerCase())) stack.push(child);
   }
 
-  const tail = textBefore(cursor);
+  const tail = html.slice(cursor);
   if (tail) stack[stack.length - 1].append(textRun(tail));
 }
 
 function rejectUnsupported(selector) {
-  if (UNSUPPORTED_SELECTOR.test(selector)) {
+  if (!SUPPORTED_SELECTOR.test(selector)) {
     throw new FakeDomError(
       `This fake DOM cannot answer the selector "${selector}". ` +
         `Teach it the selector rather than let a query quietly match nothing.`,
@@ -237,23 +296,21 @@ function selectorMatches(node, selector) {
 }
 
 function compoundMatches(node, selector) {
-  return selector
-    .split(/(?=[#.[])/)
-    .filter(Boolean)
-    .every((part) => {
-      if (part.startsWith("#")) return node.id === part.slice(1);
-      if (part.startsWith(".")) return node.classes.has(part.slice(1));
-      if (part.startsWith("[")) {
-        const match = part.match(/^\[([\w:-]+)(?:([~|^$*]?=)"([^"]*)")?\]$/);
-        if (!match) throw new FakeDomError(`Unsupported attribute selector "${part}"`);
-        const [, name, , value] = match;
-        const actual =
-          name.startsWith("data-") ? node.dataset[camelCase(name.slice(5))] : node.getAttribute(name);
-        if (value === undefined) return actual !== undefined && actual !== null;
-        return String(actual) === value;
-      }
-      return node.tagName === part.toUpperCase();
-    });
+  const match = selector.match(SUPPORTED_SELECTOR);
+  if (!match) {
+    throw new FakeDomError(`This fake DOM cannot answer the selector "${selector}".`);
+  }
+  const [, tag, rest = ""] = match;
+  if (tag && tag !== "*" && node.tagName !== tag.toUpperCase()) return false;
+
+  const parts = rest.match(/[#.][\w-]+|\[[^\]]+\]/g) || [];
+  return parts.every((part) => {
+    if (part.startsWith("#")) return node.id === part.slice(1);
+    if (part.startsWith(".")) return node.classList.contains(part.slice(1));
+    const [, name, , value] = part.match(/^\[([\w:-]+)(?:([~|^$*]?)=)?([^\]]*)\]$/);
+    if (value === undefined) return node.hasAttribute(name);
+    return node.getAttribute(name) === value.replace(/^"|"$/g, "");
+  });
 }
 
 function descendants(node, found = []) {
@@ -287,12 +344,22 @@ function buildDocument(page) {
   const byId = new Map();
   const documentListeners = new Map();
   const registry = { byId, document: null };
-  const root = createNode("html", registry);
+
+  // Parse the page's own shell, so `document.body` and `document.head` are the
+  // ones the page ships — `dictation-bar.html` puts its bar position on its body.
+  const parsed = createNode("html", registry);
+  appendFragment(parsed, page.shell, registry);
+
+  const html = descendants(parsed).find((node) => node.tagName === "HTML") || parsed;
+  const head = descendants(parsed).find((node) => node.tagName === "HEAD");
+  const body = descendants(parsed).find((node) => node.tagName === "BODY") || createNode("body", registry);
+
   const document = {
     activeElement: null,
-    body: createNode("body", registry),
-    documentElement: root,
+    body,
     createElement: (tagName) => createNode(tagName, registry),
+    documentElement: html,
+    head: head || null,
     addEventListener(type, handler) {
       if (!documentListeners.has(type)) documentListeners.set(type, []);
       documentListeners.get(type).push(handler);
@@ -308,29 +375,12 @@ function buildDocument(page) {
     },
     querySelectorAll(selector) {
       rejectUnsupported(selector);
-      return [...descendants(root), ...descendants(document.body)].filter((node) =>
-        selectorMatches(node, selector),
-      );
-    },
-    documentListeners
+      return descendants(html).filter((node) => selectorMatches(node, selector));
+    }
   };
   registry.document = document;
 
-  // The page's own markup, so `getElementById` answers with the element the page
-  // ships and a misspelled id is a null the test will notice.
-  appendFragment(document.body, page.shell, registry);
-
-  return { byId, document, root };
-}
-
-function fixedDate(read) {
-  const Shim = function DateShim(...args) {
-    return args.length === 0 ? new Date(read()) : new Date(...args);
-  };
-  Shim.now = read;
-  Shim.parse = Date.parse;
-  Shim.UTC = Date.UTC;
-  return Shim;
+  return { byId, document, rootStyle: html.styles };
 }
 
 /**
@@ -340,7 +390,7 @@ function fixedDate(read) {
  * @param {object} [options]
  * @param {string} [options.markup]  page source to run instead of reading `src/`
  * @param {Function} [options.invoke]  stands in for the Tauri bridge
- * @param {string[]} [options.exports]  handles the test will read, and that the page must define
+ * @param {string[]} [options.exports]  handles the test will read, and that the page must expose
  * @param {string} [options.exportSource]  raw export block, for a handle that closes over private state
  * @param {string[]} [options.bootstrap]  top-level calls to strip, default `["init"]`
  * @param {boolean} [options.runBootstrap]  keep the bootstrap call instead of stripping it
@@ -349,7 +399,8 @@ function fixedDate(read) {
  * @param {boolean} [options.reduceMotion]  what `matchMedia` reports
  * @param {string} [options.exportName]  where the handles are published
  * @returns {{api: object, document: object, elements: Map, intervals: Array,
- *   timeouts: Array, rootStyle: Map, flushNextTimeout: Function, keydown: Function}}
+ *   timeouts: Array, rootStyle: Map, flushNextTimeout: Function, tickIntervals: Function,
+ *   keydown: Function, windowEvent: Function}}
  */
 export function runPage(file, options = {}) {
   const {
@@ -363,20 +414,24 @@ export function runPage(file, options = {}) {
   } = options;
 
   const page = readPage(file, options.markup);
-  const { byId, document, root } = buildDocument(page);
+  const { byId, document, rootStyle } = buildDocument(page);
 
-  // Timers are always queued and never fired on their own. A test that needs one
+  // Timers are always queued and never fire on their own. A test that needs one
   // to happen asks for it, so a page cannot pass a test by waiting and fail for
   // a real user, or the other way round.
   const timeouts = [];
   const intervals = [];
+  const cleared = new Set();
   const timers = {
     clearInterval(handle) {
-      if (handle >= 1 && handle <= intervals.length) intervals.splice(handle - 1, 1);
+      cleared.add(handle);
+      const index = intervals.findIndex((entry) => entry.handle === handle);
+      if (index >= 0) intervals.splice(index, 1);
     },
     setInterval(callback, delay) {
-      intervals.push({ callback, delay });
-      return intervals.length;
+      const handle = intervals.length + 1 + cleared.size;
+      intervals.push({ callback, delay, handle });
+      return handle;
     },
     setTimeout(callback, delay) {
       timeouts.push({ callback, delay });
@@ -384,20 +439,23 @@ export function runPage(file, options = {}) {
     }
   };
 
-  // Strip the bootstrap calls wherever they sit, so a page can start itself from
-  // a second script block without the harness deciding it runs.
+  // Strip the bootstrap calls wherever they sit on a line of their own, so a page
+  // can start itself from a second script block.
   let source = page.script;
   bootstrap.forEach((name) => {
     source = source.replace(new RegExp(`^\\s*${name}\\(\\);?\\s*$`, "gm"), "");
   });
   if (exportNames.length > 0) {
-    const body = options.exportSource || exportNames.join(", ");
-    source += `\nwindow.${exportName} = { ${body} };`;
+    source += `\nwindow.${exportName} = { ${options.exportSource || exportNames.join(", ")} };`;
   }
 
+  const windowListeners = new Map();
   const window = {
     __TAURI__: { core: { invoke }, event: { listen() {} } },
-    addEventListener() {},
+    addEventListener(type, handler) {
+      if (!windowListeners.has(type)) windowListeners.set(type, []);
+      windowListeners.get(type).push(handler);
+    },
     close() {},
     document,
     matchMedia: () => ({ addEventListener() {}, matches: reduceMotion })
@@ -419,7 +477,23 @@ export function runPage(file, options = {}) {
     setTimeout: timers.setTimeout,
     window
   };
-  if (now !== undefined) context.Date = fixedDate(typeof now === "function" ? now : () => now);
+  if (now !== undefined) {
+    // Subclass the realm's own Date rather than handing the page a host object, so
+    // `new Date(x) instanceof Date` and the prototype chain still hold. The reader
+    // is looked up on each call, so a test can move the clock between reads.
+    context.readPinnedNow = typeof now === "function" ? now : () => now;
+    vm.runInNewContext(
+      `const read = globalThis.readPinnedNow;
+       const RealDate = Date;
+       globalThis.Date = class extends RealDate {
+         constructor(...args) { super(...(args.length ? args : [read()])); }
+         static now() { return read(); }
+       };
+       delete globalThis.readPinnedNow;`,
+      context,
+      { filename: file },
+    );
+  }
   context.globalThis = context;
   window.globalThis = context;
 
@@ -442,20 +516,26 @@ export function runPage(file, options = {}) {
     document,
     elements: byId,
     intervals,
-    rootStyle: root.style.properties,
+    rootStyle,
     timeouts,
     // A page queues its next timer from inside a promise callback, so waiting for
     // one to appear is part of flushing one.
     async flushNextTimeout() {
-      for (let spin = 0; timeouts.length === 0 && spin < 10; spin += 1) {
+      for (let spin = 0; timeouts.length === 0; spin += 1) {
+        if (spin >= 20) throw new Error(`No pending timer after ${spin} turns of the event loop`);
         await Promise.resolve();
       }
-      const entry = timeouts.shift();
-      if (!entry) throw new Error("No pending timer to flush");
-      entry.callback();
+      timeouts.shift().callback();
+    },
+    // Fire every interval the page still has running, the way a real clock would.
+    tickIntervals(...args) {
+      intervals.forEach(({ callback }) => callback(...args));
     },
     keydown(key, event = {}) {
       document.dispatch("keydown", { key, ...event });
+    },
+    windowEvent(type, event = {}) {
+      (windowListeners.get(type) || []).forEach((handler) => handler(event));
     }
   };
 }

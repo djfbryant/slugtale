@@ -12,32 +12,29 @@ function flush() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// The window is its own page with its own script, so the harness stands up a
-// small DOM and a fake clock: the whole point of the challenge is that thirty
-// seconds elapse, and no test should actually wait for them.
+// The whole point of the challenge is that thirty seconds elapse, and no test
+// should actually wait for them, so the clock and the tick are the test's.
 function loadChallengeScript({ invoke, now = { value: 1_000_000 } }) {
-  const { elements, intervals } = runPage("typing-challenge.html", {
+  const { api, document, elements, tickIntervals } = runPage("typing-challenge.html", {
+    exports: [],
     invoke,
-    // The passage is painted from a fake clock and a fake tick, so the test owns
-    // both rather than spending real seconds on a real countdown.
     now: () => now.value,
-    // The Typing Challenge starts itself on open, so its tests drive the page the
-    // way a person does: through the listeners the page registered.
+    // The Typing Challenge starts itself on open, so its tests drive the page
+    // through the listeners it registered rather than around them.
     runBootstrap: true
   });
 
   return {
+    api,
+    document,
     elements,
-    intervals,
     // Type into the box the way a person would: set the value, then fire input.
     type(text) {
       const box = elements.get("typing");
       box.value = text;
       box.dispatch("input", { target: box });
     },
-    tick() {
-      intervals.forEach(({ callback }) => callback());
-    },
+    tick: tickIntervals,
     click(id) {
       elements.get(id).dispatch("click");
     }

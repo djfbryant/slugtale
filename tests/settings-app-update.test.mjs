@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { runPage } from "./harness.mjs";
-
-const settingsHtml = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 
 function deferred() {
   let resolve;

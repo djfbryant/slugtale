@@ -6,9 +6,8 @@ import { runPage } from "./harness.mjs";
 
 const settingsHtml = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 
-// The Usage pane is driven entirely by one command's answer, so the harness only
-// has to stand up enough DOM for the script to run and then read back what the
-// pane put on screen.
+// The Usage pane is driven entirely by one command's answer, so a test reads back
+// what the pane put on screen rather than reaching into the page.
 function loadSettingsScript({ invoke }) {
   const { api, elements } = runPage("index.html", {
     exports: [
