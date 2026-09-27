@@ -195,6 +195,92 @@ test("a command name a frontend sends as data is still a real command", () => {
   assert.deepEqual(missing, [], "a command sent as data has no matching backend command");
 });
 
+test("the settings window knows every readiness item the backend can report", () => {
+  // A readiness id is a wire string with no compiler link across the seam. The
+  // backend names items with one enum; the settings window used to name them in
+  // four separate tables plus its own fallback report. A rename compiled in both
+  // languages and silently stripped an item of its guidance, its Set up button,
+  // its pane badge, its banner routing, and the model warm-up the backend starts
+  // off the same id. So the id set is read out of both sides and diffed.
+  const source = readFileSync(new URL("../src-tauri/src/readiness.rs", import.meta.url), "utf8");
+  const enumBlock = source.match(/pub enum ReadinessItemId \{([\s\S]*?)\n\}/);
+  assert.ok(enumBlock, "expected a ReadinessItemId enum in readiness.rs");
+  const backend = new Set(
+    [...enumBlock[1].matchAll(/^\s{4}(\w+),$/gm)].map((match) => match[1]),
+  );
+  assert.ok(backend.size >= 6, `expected the readiness ids, found ${backend.size}`);
+
+  // The backend serialises these names with `rename_all = "snake_case"`, so the
+  // wire form of each variant is its name lowercased with underscores.
+  const wireNames = new Set([...backend].map((name) => snakeCase(name)));
+  assert.deepEqual(
+    [...backend].map(snakeCase).sort(),
+    [...wireNames].sort(),
+    "two variants collapse onto one wire name",
+  );
+
+  const copyBlock = frontendSources.match(/const READINESS_COPY = \{([\s\S]*?)\n    \};/);
+  assert.ok(copyBlock, "expected one READINESS_COPY record per readiness item");
+  const inCopy = new Set(
+    [...copyBlock[1].matchAll(/^ {6}(\w+): \{$/gm)].map((match) => match[1]),
+  );
+
+  const fallbackBlock = frontendSources.match(/const fallbackReport = \{([\s\S]*?)\n    \};/);
+  assert.ok(fallbackBlock, "expected a fallbackReport for the browser");
+  const inFallback = new Set(
+    [...fallbackBlock[1].matchAll(/\{ id: "([a-z_]+)"/g)].map((match) => match[1]),
+  );
+
+  for (const [name, found] of [
+    ["READINESS_COPY", inCopy],
+    ["fallbackReport", inFallback],
+  ]) {
+    assert.deepEqual(
+      [...wireNames].filter((id) => !found.has(id)),
+      [],
+      `${name} is missing a readiness item the backend can report`,
+    );
+    assert.deepEqual(
+      [...found].filter((id) => !wireNames.has(id)),
+      [],
+      `${name} describes a readiness item the backend never reports`,
+    );
+  }
+});
+
+test("the settings window calls every readiness item the same name the backend does", () => {
+  const source = readFileSync(new URL("../src-tauri/src/readiness.rs", import.meta.url), "utf8");
+  const labelBlock = source.match(/pub fn label\(self\) -> &'static str \{([\s\S]*?)\n    \}/);
+  assert.ok(labelBlock, "expected ReadinessItemId::label to state every name");
+  const backend = new Map(
+    [...labelBlock[1].matchAll(/ReadinessItemId::(\w+) => "([^"]+)"/g)].map((match) => [
+      snakeCase(match[1]),
+      match[2],
+    ]),
+  );
+  assert.ok(backend.size >= 6, `expected the readiness labels, found ${backend.size}`);
+
+  // The report already carries the label, so the fallback copy is only used when
+  // there is no backend at all. It has to say the same thing, or the settings
+  // window renames a row the moment the app is running.
+  const fallbackBlock = frontendSources.match(/const fallbackReport = \{([\s\S]*?)\n    \};/);
+  assert.ok(fallbackBlock, "expected a fallbackReport for the browser");
+  const inFallback = new Map(
+    [...fallbackBlock[1].matchAll(/\{ id: "([a-z_]+)", label: "([^"]+)"/g)].map((match) => [
+      match[1],
+      match[2],
+    ]),
+  );
+
+  for (const [id, label] of backend) {
+    assert.equal(inFallback.get(id), label, `the fallback report renames ${id}`);
+  }
+});
+
+function snakeCase(name) {
+  return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
 test("every configured window label is a label the WindowLabel type names", () => {
   // A window label is a wire string on both sides: tauri.conf.json declares the
   // windows that exist at startup, and the binary finds them through WindowLabel.

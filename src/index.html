@@ -1040,12 +1040,12 @@
     const fallbackReport = {
       dictation_available: false,
       items: [
-        { id: "microphone", label: "Microphone permission", ready: false, required: true },
-        { id: "text_insertion", label: "Text insertion permission", ready: false, required: true },
-        { id: "hotkey", label: "Hotkey", ready: false, required: true },
-        { id: "local_model", label: "Local model", ready: false, required: true },
-        { id: "transcription_engine", label: "Transcription engine", ready: false, required: true },
-        { id: "launch_at_login", label: "Launch at login", ready: true, required: false }
+        { id: "microphone", label: "Microphone permission", ready: false, required: true, pane: null },
+        { id: "text_insertion", label: "Text insertion permission", ready: false, required: true, pane: null },
+        { id: "hotkey", label: "Hotkey", ready: false, required: true, pane: "dictation" },
+        { id: "local_model", label: "Local model", ready: false, required: true, pane: "model" },
+        { id: "transcription_engine", label: "Transcription engine", ready: false, required: true, pane: "dictation" },
+        { id: "launch_at_login", label: "Launch at login", ready: true, required: false, pane: "general" }
       ]
     };
 
@@ -1115,57 +1115,64 @@
       return "macos";
     })();
 
-    const GUIDANCE_BY_PLATFORM = {
-      macos: {
-        microphone: "Open macOS Privacy & Security and allow Slugtale to capture audio.",
-        text_insertion: "Open macOS Accessibility and allow Slugtale to write into the current text target."
+    // Everything the settings window knows about each Dictation Readiness item
+    // that is not a fact about this machine: what to tell the user, how to send
+    // them to the right system-settings panel on their platform, and nothing
+    // else. One record per item, so an id cannot appear without its copy.
+    //
+    // The pane is not here: the report carries it, because which pane settles an
+    // item is a fact about Slugtale's own settings window rather than about the
+    // platform.
+    const READINESS_COPY = {
+      microphone: {
+        guidance: {
+          macos: "Open macOS Privacy & Security and allow Slugtale to capture audio.",
+          windows: "Open Windows microphone privacy settings and let desktop apps access your microphone.",
+          linux: "Connect a microphone. Linux has no per-app permission — Slugtale just needs an input device."
+        },
+        actions: {
+          macos: { command: "open_microphone_settings", label: "Open Privacy" },
+          windows: { command: "open_microphone_settings", label: "Open Settings" },
+          linux: { command: "open_microphone_settings", label: "Open Sound Settings" }
+        }
       },
-      windows: {
-        microphone: "Open Windows microphone privacy settings and let desktop apps access your microphone.",
-        text_insertion: "No setup needed — Windows lets Slugtale type into the focused app."
+      text_insertion: {
+        guidance: {
+          macos: "Open macOS Accessibility and allow Slugtale to write into the current text target.",
+          windows: "No setup needed — Windows lets Slugtale type into the focused app.",
+          linux: "Use an X11 session. Slugtale types into other apps on X11; Wayland support is coming."
+        },
+        actions: {
+          macos: { command: "open_text_insertion_settings", label: "Open Accessibility" }
+        }
       },
-      linux: {
-        microphone: "Connect a microphone. Linux has no per-app permission — Slugtale just needs an input device.",
-        text_insertion: "Use an X11 session. Slugtale types into other apps on X11; Wayland support is coming."
-      }
-    };
-
-    const READINESS_ACTIONS_BY_PLATFORM = {
-      macos: {
-        microphone: { command: "open_microphone_settings", label: "Open Privacy" },
-        text_insertion: { command: "open_text_insertion_settings", label: "Open Accessibility" }
+      hotkey: {
+        guidance: "Choose the hotkey that starts dictation while another app has focus."
       },
-      windows: {
-        microphone: { command: "open_microphone_settings", label: "Open Settings" }
+      local_model: {
+        guidance: "Download the local model before transcription can run."
       },
-      linux: {
-        microphone: { command: "open_microphone_settings", label: "Open Sound Settings" }
-      }
-    };
-
-    const guidance = {
-      ...GUIDANCE_BY_PLATFORM[PLATFORM],
-      hotkey: "Choose the hotkey that starts dictation while another app has focus.",
-      local_model: "Download the local model before transcription can run.",
       // Fallback only: the backend sends the engine's own reason as `detail`,
       // because "this build has no Whisper" and "the model is not installed"
       // need different actions from the user.
-      transcription_engine: "No transcription engine can run in this build.",
-      launch_at_login: "Optional. Start Slugtale automatically when you sign in."
+      transcription_engine: {
+        guidance: "No transcription engine can run in this build."
+      },
+      launch_at_login: {
+        guidance: "Optional. Start Slugtale automatically when you sign in."
+      }
     };
 
-    const readinessActions = READINESS_ACTIONS_BY_PLATFORM[PLATFORM] || {};
+    function readinessGuidance(id) {
+      const copy = READINESS_COPY[id];
+      if (!copy) return "";
+      if (typeof copy.guidance === "string") return copy.guidance;
+      return copy.guidance[PLATFORM] || "";
+    }
 
-    // Readiness items without a system-settings action are fixed on one of the
-    // panes instead, so the banner and the checklist can send the user there.
-    const PANE_FOR_ITEM = {
-      hotkey: "dictation",
-      // Engine choice lives on the Dictation pane, next to the engine list that
-      // states why each one is unavailable.
-      transcription_engine: "dictation",
-      local_model: "model",
-      launch_at_login: "general"
-    };
+    function readinessAction(id) {
+      return READINESS_COPY[id]?.actions?.[PLATFORM] || null;
+    }
 
     // Status and Dictation report readiness in the subtitle; the other panes
     // describe themselves, because readiness is not what you came to them for.
@@ -1287,25 +1294,28 @@
         return;
       }
 
-      const action = readinessActions[blocker.id];
+      const action = readinessAction(blocker.id);
       const button = document.getElementById("blocker-action");
       banner.hidden = false;
       document.getElementById("blocker-title").textContent = blocker.label;
       document.getElementById("blocker-detail").textContent =
-        blocker.detail || guidance[blocker.id] || "";
+        blocker.detail || readinessGuidance(blocker.id);
       button.dataset.item = blocker.id;
+      button.dataset.pane = blocker.pane || "";
       button.textContent = action ? action.label : "Set up";
     }
 
     function renderBadges(report) {
       const outstanding = blockersOf(report);
-      const has = (id) => outstanding.some((item) => item.id === id);
+      const panesWithWork = new Set(
+        outstanding.map((item) => item.pane).filter(Boolean)
+      );
 
+      // The rail buttons that can badge: every pane an item can send the user to.
       document.getElementById("badge-status").hidden = outstanding.length === 0;
-      document.getElementById("badge-dictation").hidden =
-        !has("hotkey") && !has("transcription_engine");
-      document.getElementById("badge-model").hidden = !has("local_model");
-      document.getElementById("badge-general").hidden = true;
+      for (const paneId of ["dictation", "model", "general"]) {
+        document.getElementById(`badge-${paneId}`).hidden = !panesWithWork.has(paneId);
+      }
     }
 
     function render(report) {
@@ -1349,7 +1359,7 @@
           // The report may carry a reason only the backend knows — which engine
           // this build compiled in, which assets are installed. Prefer it over
           // the static copy, which cannot know any of that.
-          const detail = item.detail || guidance[item.id];
+          const detail = item.detail || readinessGuidance(item.id);
           if (detail) {
             const small = document.createElement("small");
             small.textContent = detail;
@@ -1357,8 +1367,7 @@
           }
         }
 
-        const action = readinessActions[item.id];
-        const pane = PANE_FOR_ITEM[item.id];
+        const action = readinessAction(item.id);
 
         if (!item.ready && action) {
           const button = document.createElement("button");
@@ -1366,11 +1375,11 @@
           button.innerHTML = `${iconSvg("external", 14)}<span>${action.label}</span>`;
           button.addEventListener("click", () => openReadinessAction(item.id));
           row.append(icon, copy, button);
-        } else if (!item.ready && pane) {
+        } else if (!item.ready && item.pane) {
           const button = document.createElement("button");
           button.type = "button";
           button.textContent = "Set up";
-          button.addEventListener("click", () => selectPane(pane));
+          button.addEventListener("click", () => selectPane(item.pane));
           row.append(icon, copy, button);
         } else {
           row.append(icon, copy);
@@ -2340,7 +2349,7 @@
 
     async function openReadinessAction(itemId) {
       const invoke = tauriInvoke();
-      const action = readinessActions[itemId];
+      const action = readinessAction(itemId);
       if (!invoke || !action || openingReadinessAction) return;
 
       openingReadinessAction = true;
@@ -2689,11 +2698,12 @@
       document.getElementById("blocker-action").addEventListener("click", (event) => {
         const itemId = event.currentTarget.dataset.item;
         if (!itemId) return;
-        if (readinessActions[itemId]) {
+        if (readinessAction(itemId)) {
           openReadinessAction(itemId);
           return;
         }
-        if (PANE_FOR_ITEM[itemId]) selectPane(PANE_FOR_ITEM[itemId]);
+        const pane = event.currentTarget.dataset.pane;
+        if (pane) selectPane(pane);
       });
 
       window.addEventListener("focus", () => {
