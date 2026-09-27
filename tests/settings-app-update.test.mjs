@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+
+import { runPage } from "./harness.mjs";
 
 const settingsHtml = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 
@@ -14,77 +15,19 @@ function deferred() {
 }
 
 function loadAppUpdate({ invoke, runInit = false }) {
-  const [, script] = settingsHtml.match(/<script>\s*([\s\S]*?)\s*<\/script>/);
-  const elements = new Map();
   const invocations = [];
-
-  function element(id) {
-    if (!elements.has(id)) {
-      const classes = new Set();
-      elements.set(id, {
-        addEventListener() {},
-        classList: {
-          add(name) {
-            classes.add(name);
-          },
-          contains(name) {
-            return classes.has(name);
-          },
-          remove(name) {
-            classes.delete(name);
-          },
-          toggle(name, enabled) {
-            if (enabled) classes.add(name);
-            else classes.delete(name);
-          },
-        },
-        disabled: false,
-        dataset: {},
-        hidden: false,
-        innerHTML: "",
-        style: {},
-        textContent: "",
-      });
-    }
-    return elements.get(id);
-  }
-
-  const context = {
-    console,
-    document: {
-      addEventListener() {},
-      getElementById: element,
+  const { api, elements } = runPage("index.html", {
+    // The phase lives in one private object, so the handle is a closure over it
+    // rather than a name the page already exports.
+    exportSource: "checkForAppUpdate, getAppUpdateState: () => ({ ...appUpdateState }), openAppUpdateRelease, renderAppUpdate",
+    invoke(command, args) {
+      invocations.push({ args, command });
+      return invoke(command, args);
     },
-    navigator: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" },
-    window: {
-      addEventListener() {},
-      __TAURI__: {
-        core: {
-          invoke(command, args) {
-            invocations.push({ args, command });
-            return invoke(command, args);
-          },
-        },
-      },
-    },
-  };
-  context.globalThis = context;
+    runBootstrap: runInit
+  });
 
-  const testHooks = `
-window.__slugtaleTest = {
-  checkForAppUpdate,
-  getAppUpdateState: () => ({ ...appUpdateState }),
-  openAppUpdateRelease,
-  renderAppUpdate
-};
-`;
-  const testableScript = script.replace(
-    /\s*init\(\);\s*$/,
-    runInit ? `${testHooks}\ninit();` : testHooks,
-  );
-  vm.runInNewContext(testableScript, context);
-
-  return { elements, invocations, ...context.window.__slugtaleTest };
+  return { elements, invocations, ...api };
 }
 
 test("app updates start idle without a release request", () => {

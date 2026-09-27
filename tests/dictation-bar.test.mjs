@@ -1,125 +1,40 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+
+import { runPage } from "./harness.mjs";
 
 // The Dictation Bar runs as a plain script inside a transparent Tauri window.
-// These tests load that script against a hand-rolled DOM so the bar's behaviour —
-// what it expands for, what it hands back to the app underneath, what it paints —
-// is checked without a running app.
+// These tests load that script against a fake DOM so the bar's behaviour — what
+// it expands for, what it hands back to the app underneath, what it paints — is
+// checked without a running app.
 function loadDictationBar({ invoke = async () => false, reduceMotion = false } = {}) {
-  const html = readFileSync(new URL("../src/dictation-bar.html", import.meta.url), "utf8");
-  const [, script] = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/);
-
-  const elements = new Map();
-  const documentListeners = new Map();
   const invocations = [];
-  const frames = [];
-  const intervals = [];
-  const rootStyle = new Map();
-
-  function createElement(id = "") {
-    const listeners = new Map();
-    const attributes = new Map();
-    return {
-      id,
-      dataset: {},
-      disabled: false,
-      hidden: false,
-      textContent: "",
-      style: {},
-      listeners,
-      attributes,
-      setAttribute(name, value) {
-        attributes.set(name, value);
-      },
-      getAttribute(name) {
-        return attributes.has(name) ? attributes.get(name) : null;
-      },
-      addEventListener(type, handler) {
-        listeners.set(type, handler);
-      },
-      click() {
-        const handler = listeners.get("click");
-        if (handler) handler({ preventDefault() {} });
-      }
-    };
-  }
-
-  function element(id) {
-    if (!elements.has(id)) elements.set(id, createElement(id));
-    return elements.get(id);
-  }
-
-  const body = createElement("body");
-
-  const context = {
-    console,
-    Date,
-    Math,
-    Number,
-    String,
-    Promise,
-    document: {
-      body,
-      documentElement: {
-        style: {
-          setProperty(name, value) {
-            rootStyle.set(name, value);
-          }
-        }
-      },
-      getElementById: element,
-      querySelector: element,
-      addEventListener(type, handler) {
-        documentListeners.set(type, handler);
-      }
+  const { api, document, elements, intervals, rootStyle } = runPage("dictation-bar.html", {
+    exportSource:
+      "setPhase, setAppearance, setAudioLevel, setVisible, pollPointer, renderFrame, isPolling: () => pointerPoll !== null",
+    bootstrap: [],
+    // The bar paints itself from a 100 ms pointer poll, so the test inspects the
+    // interval rather than letting it fire.
+    timers: "manual",
+    invoke(command, args) {
+      // Rebuilt in this realm: objects made inside the vm carry their own
+      // prototypes, which deepEqual refuses to match.
+      invocations.push({ command, args: { ...args } });
+      return invoke(command, args);
     },
-    requestAnimationFrame(callback) {
-      frames.push(callback);
-      return frames.length;
-    },
-    setInterval(callback, delay) {
-      intervals.push({ callback, delay });
-      return intervals.length;
-    },
-    clearInterval() {},
-    window: {
-      matchMedia: () => ({ matches: reduceMotion, addEventListener() {} }),
-      __TAURI__: {
-        core: {
-          async invoke(command, args) {
-            // Rebuilt in this realm: objects made inside the vm carry their own
-            // prototypes, which deepEqual refuses to match.
-            invocations.push({ command, args: { ...args } });
-            return invoke(command, args);
-          }
-        },
-        event: { listen() {} }
-      }
-    }
-  };
-  context.globalThis = context;
-  context.window.document = context.document;
-
-  // The bar ships no test seam of its own, so the handles are appended here —
-  // the same trick tests/settings-readiness.test.mjs uses on the settings window.
-  const testableScript = `${script}
-window.__slugtaleBar = {
-  setPhase, setAppearance, setAudioLevel, setVisible, pollPointer, renderFrame,
-  isPolling: () => pointerPoll !== null
-};`;
-  vm.runInNewContext(testableScript, context);
+    reduceMotion
+  });
 
   return {
-    body,
+    body: document.body,
     elements,
     invocations,
     intervals,
     rootStyle,
-    keydown: (key) => documentListeners.get("keydown")({ key, preventDefault() {} }),
-    leaveBar: () => elements.get(".bar").listeners.get("mouseleave")(),
-    api: context.window.__slugtaleBar
+    keydown: (key) => document.dispatch("keydown", { key, preventDefault() {} }),
+    leaveBar: () => elements.get(".bar").dispatch("mouseleave"),
+    api
   };
 }
 
@@ -195,8 +110,10 @@ test("the accent arrives as a custom property, never as markup", () => {
 
   assert.equal(bar.rootStyle.get("--accent"), "#a78bfa");
   assert.equal(bar.body.dataset.position, "bottom-right");
-  // Nothing the backend sent is written into the document as text.
-  assert.equal(bar.elements.get("label").innerHTML, undefined);
+  // Nothing the backend sent is written into the document as text: the label
+  // still shows the phase, and the accent name never reaches it.
+  assert.equal(bar.elements.get("label").textContent, "Recording");
+  assert.doesNotMatch(bar.elements.get("label").textContent, /violet/);
 });
 
 test("an unknown accent or position falls back rather than painting nothing", () => {

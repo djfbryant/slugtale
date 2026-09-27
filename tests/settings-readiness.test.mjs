@@ -1,95 +1,29 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+
+import { runPage } from "./harness.mjs";
 
 function loadSettingsScript({ invoke }) {
-  const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
-  const [, script] = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/);
-  const elements = new Map();
-  const timers = [];
-
-  function createElement(tagName, id = "") {
-    return {
-      id,
-      tagName,
-      children: [],
-      className: "",
-      classList: {
-        add() {},
-        remove() {},
-        toggle() {}
-      },
-      dataset: {},
-      disabled: false,
-      hidden: false,
-      innerHTML: "",
-      style: {
-        removeProperty() {}
-      },
-      textContent: "",
-      value: "",
-      addEventListener() {},
-      // The settings window drives segmented controls through aria-pressed and
-      // focuses the hotkey field when capture starts; both are no-ops here.
-      setAttribute() {},
-      focus() {},
-      append(...children) {
-        this.children.push(...children);
-      },
-      querySelector() {
-        return createElement("div");
-      },
-      replaceChildren(...children) {
-        this.children = children;
-      }
-    };
-  }
-
-  function element(id) {
-    if (!elements.has(id)) elements.set(id, createElement("div", id));
-    return elements.get(id);
-  }
-
-  const context = {
-    console,
-    navigator: { userAgent: "Mozilla/5.0 (X11; Linux x86_64)" },
-    document: {
-      createElement,
-      getElementById: element
-    },
-    setTimeout(callback) {
-      timers.push(callback);
-      return timers.length;
-    },
-    window: {
-      __TAURI__: {
-        core: { invoke }
-      }
-    }
-  };
-  context.globalThis = context;
-
-  const testableScript = script.replace(
-    /\s*init\(\);\s*$/,
-    "\nwindow.__slugtaleTest = { loadReadiness, openReadinessAction, saveDictationBarSettings, saveEngineSettings };\n"
-  );
-  vm.runInNewContext(testableScript, context);
+  const { api, elements, timeouts } = runPage("index.html", {
+    exports: ["loadReadiness", "openReadinessAction", "saveDictationBarSettings", "saveEngineSettings"],
+    invoke,
+    // The readiness pane polls after asking the OS for a permission, so the test
+    // has to decide when the poll happens rather than let a real timer fire.
+    timers: "manual",
+    userAgent: "Mozilla/5.0 (X11; Linux x86_64)"
+  });
 
   return {
     elements,
-    saveDictationBarSettings: context.window.__slugtaleTest.saveDictationBarSettings,
-    saveEngineSettings: context.window.__slugtaleTest.saveEngineSettings,
+    ...api,
     async flushNextTimer() {
-      for (let spin = 0; timers.length === 0 && spin < 10; spin += 1) {
+      for (let spin = 0; timeouts.length === 0 && spin < 10; spin += 1) {
         await Promise.resolve();
       }
-      const callback = timers.shift();
+      const callback = timeouts.shift();
       if (!callback) throw new Error("No pending timer to flush");
       callback();
-    },
-    loadReadiness: context.window.__slugtaleTest.loadReadiness,
-    openReadinessAction: context.window.__slugtaleTest.openReadinessAction
+    }
   };
 }
 
