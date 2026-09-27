@@ -30,9 +30,9 @@
 
 use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
-    InsertionRescueError, InsertionRescueOutcome, InsertionRescueSystem, MicrophonePermissionSetup,
-    PlatformReadiness, TextInsertion, TextInsertionError, TextInsertionOutcome,
-    TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem, WeekStart,
+    InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, PlatformReadiness,
+    TextInsertion, TextInsertionError, TextInsertionPermissionSetup, TextInsertionPipeline,
+    TextInsertionSystem, WeekStart,
 };
 use cpal::traits::HostTrait;
 
@@ -166,10 +166,7 @@ impl LinuxTextInsertion {
 }
 
 impl TextInsertion for LinuxTextInsertion {
-    fn insert(
-        &self,
-        transcription: &FinalTranscription,
-    ) -> Result<TextInsertionOutcome, TextInsertionError> {
+    fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError> {
         self.pipeline.insert(transcription)
     }
 }
@@ -273,10 +270,7 @@ impl LinuxInsertionRescue {
 }
 
 impl InsertionRescue for LinuxInsertionRescue {
-    fn rescue(
-        &self,
-        transcription: &FinalTranscription,
-    ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+    fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError> {
         self.rescue.rescue(transcription)
     }
 }

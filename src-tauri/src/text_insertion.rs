@@ -30,17 +30,12 @@ impl std::fmt::Display for TextInsertionError {
 
 impl std::error::Error for TextInsertionError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TextInsertionOutcome {
-    ClipboardFree,
-    ClipboardFallback,
-}
-
 pub trait TextInsertion {
-    fn insert(
-        &self,
-        transcription: &FinalTranscription,
-    ) -> Result<TextInsertionOutcome, TextInsertionError>;
+    /// Insert the transcription, preferring Clipboard-Free Insertion and falling
+    /// back to the clipboard. The result says only whether the text landed; which
+    /// path it took is a question for the Local Diagnostic Log, because a user can
+    /// otherwise only tell by looking at their clipboard.
+    fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError>;
 }
 
 pub trait TextInsertionSystem {
@@ -69,20 +64,16 @@ impl<S> TextInsertion for TextInsertionPipeline<S>
 where
     S: TextInsertionSystem,
 {
-    fn insert(
-        &self,
-        transcription: &FinalTranscription,
-    ) -> Result<TextInsertionOutcome, TextInsertionError> {
+    fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError> {
         if self
             .system
             .insert_clipboard_free(&transcription.text)
             .is_ok()
         {
-            return Ok(TextInsertionOutcome::ClipboardFree);
+            return Ok(());
         }
 
-        self.system.insert_from_clipboard(&transcription.text)?;
-        Ok(TextInsertionOutcome::ClipboardFallback)
+        self.system.insert_from_clipboard(&transcription.text)
     }
 }
 
@@ -107,16 +98,10 @@ impl std::fmt::Display for InsertionRescueError {
 
 impl std::error::Error for InsertionRescueError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InsertionRescueOutcome {
-    CopiedToClipboardAndNotified,
-}
-
 pub trait InsertionRescue {
-    fn rescue(
-        &self,
-        transcription: &FinalTranscription,
-    ) -> Result<InsertionRescueOutcome, InsertionRescueError>;
+    /// Preserve the transcription after Text Insertion failed: copy it to the
+    /// clipboard and tell the user it is there.
+    fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError>;
 }
 
 pub trait InsertionRescueSystem {
@@ -145,16 +130,12 @@ impl<S> InsertionRescue for ClipboardInsertionRescue<S>
 where
     S: InsertionRescueSystem,
 {
-    fn rescue(
-        &self,
-        transcription: &FinalTranscription,
-    ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+    fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError> {
         self.system.copy_to_clipboard(&transcription.text)?;
         self.system.notify_user(
             "Text insertion failed",
             "Your transcription was copied to the clipboard.",
-        )?;
-        Ok(InsertionRescueOutcome::CopiedToClipboardAndNotified)
+        )
     }
 }
 
@@ -168,13 +149,12 @@ mod tests {
         let system = FakeTextInsertionSystem::default();
         let insertion = TextInsertionPipeline::new(system);
 
-        let outcome = insertion
+        insertion
             .insert(&FinalTranscription::plain(
                 "Inserted without clipboard".to_string(),
             ))
             .unwrap();
 
-        assert_eq!(outcome, TextInsertionOutcome::ClipboardFree);
         assert_eq!(
             insertion.system().events.borrow().as_slice(),
             &["clipboard_free:Inserted without clipboard"]
@@ -189,13 +169,12 @@ mod tests {
         };
         let insertion = TextInsertionPipeline::new(system);
 
-        let outcome = insertion
+        insertion
             .insert(&FinalTranscription::plain(
                 "Inserted through fallback".to_string(),
             ))
             .unwrap();
 
-        assert_eq!(outcome, TextInsertionOutcome::ClipboardFallback);
         assert_eq!(
             insertion.system().events.borrow().as_slice(),
             &[
@@ -210,16 +189,12 @@ mod tests {
         let system = FakeInsertionRescueSystem::default();
         let rescue = ClipboardInsertionRescue::new(system);
 
-        let outcome = rescue
+        rescue
             .rescue(&FinalTranscription::plain(
                 "Preserve this transcription".to_string(),
             ))
             .unwrap();
 
-        assert_eq!(
-            outcome,
-            InsertionRescueOutcome::CopiedToClipboardAndNotified
-        );
         assert_eq!(
             rescue.system().events.borrow().as_slice(),
             &[

@@ -8,8 +8,8 @@
 
 use crate::{
     AsrError, AsrRuntime, AudioCaptureError, CapturedAudio, DictationEvent, FinalTranscription,
-    InsertionRescue, InsertionRescueError, InsertionRescueOutcome, ReadinessItem,
-    RoutingDiagnostics, TextInsertion, TextInsertionError, TextInsertionOutcome,
+    InsertionRescue, InsertionRescueError, ReadinessItem, RoutingDiagnostics, TextInsertion,
+    TextInsertionError,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -321,10 +321,7 @@ impl<S> TextInsertion for DiagnosticTextInsertion<'_, S>
 where
     S: DiagnosticSink,
 {
-    fn insert(
-        &self,
-        transcription: &FinalTranscription,
-    ) -> Result<TextInsertionOutcome, TextInsertionError> {
+    fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError> {
         let result = self.insertion.insert(transcription);
         if let Err(error) = &result {
             self.log.record(DiagnosticEvent::insertion_failed(error));
@@ -350,10 +347,7 @@ impl<S> InsertionRescue for DiagnosticInsertionRescue<'_, S>
 where
     S: DiagnosticSink,
 {
-    fn rescue(
-        &self,
-        transcription: &FinalTranscription,
-    ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
+    fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError> {
         let result = self.rescue.rescue(transcription);
         if result.is_ok() {
             self.log.record(DiagnosticEvent::insertion_rescued());
@@ -684,10 +678,7 @@ mod tests {
     struct FailingTextInsertion;
 
     impl TextInsertion for FailingTextInsertion {
-        fn insert(
-            &self,
-            _transcription: &FinalTranscription,
-        ) -> Result<TextInsertionOutcome, TextInsertionError> {
+        fn insert(&self, _transcription: &FinalTranscription) -> Result<(), TextInsertionError> {
             Err(TextInsertionError::new("test insertion failure"))
         }
     }
@@ -695,11 +686,8 @@ mod tests {
     struct SuccessfulInsertionRescue;
 
     impl InsertionRescue for SuccessfulInsertionRescue {
-        fn rescue(
-            &self,
-            _transcription: &FinalTranscription,
-        ) -> Result<InsertionRescueOutcome, InsertionRescueError> {
-            Ok(InsertionRescueOutcome::CopiedToClipboardAndNotified)
+        fn rescue(&self, _transcription: &FinalTranscription) -> Result<(), InsertionRescueError> {
+            Ok(())
         }
     }
 }

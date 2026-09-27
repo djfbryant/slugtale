@@ -69,7 +69,7 @@ impl TextInsertion for SettledTextInsertion {
     fn insert(
         &self,
         transcription: &crate::FinalTranscription,
-    ) -> Result<crate::TextInsertionOutcome, crate::TextInsertionError> {
+    ) -> Result<(), crate::TextInsertionError> {
         let remaining = self.settle_remaining_at(std::time::Instant::now());
         if !remaining.is_zero() {
             std::thread::sleep(remaining);
@@ -106,7 +106,10 @@ pub fn prepare_text_insertion(target: Option<i32>) -> Result<PreparedInsertion, 
     let insertion = make_text_insertion()?;
 
     Ok(PreparedInsertion {
-        insertion: SettledTextInsertion { inner: insertion, ready_at },
+        insertion: SettledTextInsertion {
+            inner: insertion,
+            ready_at,
+        },
         rescue: make_insertion_rescue(),
     })
 }
@@ -163,7 +166,9 @@ fn make_insertion_rescue() -> Box<dyn InsertionRescue> {
 
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
-        unreachable!("prepare_text_insertion errors before reaching the rescue on unsupported platforms")
+        unreachable!(
+            "prepare_text_insertion errors before reaching the rescue on unsupported platforms"
+        )
     }
 }
 
@@ -177,7 +182,8 @@ mod tests {
         let deadline = settle_deadline(true, started).expect("activated");
 
         // Transcription finished 40 ms in; 80 ms of the window is still owed.
-        let remaining = deadline.saturating_duration_since(started + std::time::Duration::from_millis(40));
+        let remaining =
+            deadline.saturating_duration_since(started + std::time::Duration::from_millis(40));
 
         assert_eq!(remaining, std::time::Duration::from_millis(80));
     }
@@ -187,8 +193,7 @@ mod tests {
         let started = std::time::Instant::now();
         let deadline = settle_deadline(true, started).expect("activated");
 
-        let remaining =
-            deadline.saturating_duration_since(started + FOCUS_SETTLE_DELAY);
+        let remaining = deadline.saturating_duration_since(started + FOCUS_SETTLE_DELAY);
 
         assert_eq!(remaining, std::time::Duration::ZERO);
     }
@@ -198,8 +203,7 @@ mod tests {
         let started = std::time::Instant::now();
         let deadline = settle_deadline(true, started).expect("activated");
 
-        let remaining = deadline
-            .saturating_duration_since(started + FOCUS_SETTLE_DELAY * 10);
+        let remaining = deadline.saturating_duration_since(started + FOCUS_SETTLE_DELAY * 10);
 
         assert_eq!(remaining, std::time::Duration::ZERO);
     }
@@ -235,7 +239,10 @@ mod tests {
             // not a failure of the X11 path.
             let has_x_server = std::env::var("DISPLAY").is_ok_and(|value| !value.is_empty());
             if has_x_server && crate::detect_session().is_supported() {
-                assert!(pid.is_some(), "an X11 session with a display has a frontmost app");
+                assert!(
+                    pid.is_some(),
+                    "an X11 session with a display has a frontmost app"
+                );
             } else {
                 assert_eq!(pid, None, "no display server session means no text target");
             }
@@ -254,11 +261,10 @@ mod tests {
             ready_at: Some(started + FOCUS_SETTLE_DELAY),
         };
 
-        let outcome = insertion
+        insertion
             .insert(&crate::FinalTranscription::plain("hello".to_string()))
             .unwrap();
 
-        assert_eq!(outcome, crate::TextInsertionOutcome::ClipboardFree);
         assert!(
             started.elapsed() >= FOCUS_SETTLE_DELAY,
             "insert must honour the settlement window"
@@ -271,8 +277,8 @@ mod tests {
         fn insert(
             &self,
             _transcription: &crate::FinalTranscription,
-        ) -> Result<crate::TextInsertionOutcome, crate::TextInsertionError> {
-            Ok(crate::TextInsertionOutcome::ClipboardFree)
+        ) -> Result<(), crate::TextInsertionError> {
+            Ok(())
         }
     }
 
@@ -282,7 +288,7 @@ mod tests {
         fn insert(
             &self,
             _transcription: &crate::FinalTranscription,
-        ) -> Result<crate::TextInsertionOutcome, crate::TextInsertionError> {
+        ) -> Result<(), crate::TextInsertionError> {
             panic!("test never inserts");
         }
     }

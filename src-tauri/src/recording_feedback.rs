@@ -8,24 +8,16 @@ pub enum DictationSound {
     Stop,
 }
 
-/// What a dictation produces when it ends: a stopped dictation is `Completed` so
-/// it can be transcribed; a cancelled dictation is `Discarded` (CONTEXT.md:
-/// Dictation Bar).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DictationOutcome {
-    Completed,
-    Discarded,
-}
-
 /// The observable response of the recording surface to a [`DictationEvent`]: the
-/// audible cue to play (if any), whether the Dictation Bar is now shown, and the
-/// session outcome once the dictation has ended. It deliberately carries no
-/// transcription text — v1 shows no live transcript (ADR-0014, ADR-0005).
+/// audible cue to play (if any) and whether the Dictation Bar is now shown. It
+/// deliberately carries no transcription text — v1 shows no live transcript
+/// (ADR-0014, ADR-0005). Whether the dictation completed or was discarded is not
+/// repeated here: the caller already has the event, and that is where the two
+/// are told apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordingFeedbackEffect {
     pub sound: Option<DictationSound>,
     pub bar_visible: bool,
-    pub outcome: Option<DictationOutcome>,
 }
 
 /// The recording surface state (ADR-0014). Translates dictation lifecycle
@@ -61,7 +53,6 @@ impl RecordingFeedback {
             return RecordingFeedbackEffect {
                 sound: None,
                 bar_visible: false,
-                outcome: None,
             };
         }
 
@@ -71,7 +62,6 @@ impl RecordingFeedback {
                 RecordingFeedbackEffect {
                     sound: Some(DictationSound::Start),
                     bar_visible: true,
-                    outcome: None,
                 }
             }
             DictationEvent::Stop => {
@@ -79,7 +69,6 @@ impl RecordingFeedback {
                 RecordingFeedbackEffect {
                     sound: Some(DictationSound::Stop),
                     bar_visible: false,
-                    outcome: Some(DictationOutcome::Completed),
                 }
             }
             DictationEvent::Cancel => {
@@ -87,7 +76,6 @@ impl RecordingFeedback {
                 RecordingFeedbackEffect {
                     sound: None,
                     bar_visible: false,
-                    outcome: Some(DictationOutcome::Discarded),
                 }
             }
         }
@@ -154,7 +142,6 @@ mod tests {
 
         assert_eq!(effect.sound, Some(DictationSound::Stop));
         assert!(!effect.bar_visible);
-        assert_eq!(effect.outcome, Some(DictationOutcome::Completed));
         assert!(!feedback.bar_visible());
     }
 
@@ -167,7 +154,6 @@ mod tests {
 
         assert_eq!(effect.sound, None);
         assert!(!effect.bar_visible);
-        assert_eq!(effect.outcome, Some(DictationOutcome::Discarded));
         assert!(!feedback.bar_visible());
     }
 
@@ -183,7 +169,6 @@ mod tests {
 
         assert_eq!(effect.sound, None);
         assert!(!effect.bar_visible);
-        assert_eq!(effect.outcome, None);
     }
 
     #[cfg(target_os = "macos")]
