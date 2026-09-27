@@ -5,8 +5,8 @@
 //! same module, so they cannot disagree about what can run.
 
 use crate::{
-    default_model_path, engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticAsrRuntime,
-    DiagnosticEvent, DiagnosticSink, EngineAvailability, LocalWhisperRuntime, ParakeetProvider,
+    default_model_path, engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticEvent,
+    DiagnosticSink, EngineAvailability, LocalWhisperRuntime, ParakeetProvider,
     SecondOpinionCoordinator, SecondOpinionMode, SecondOpinionRouter, Settings,
     SharedDiagnosticLog, TranscriptionEngine, TranscriptionProvider, WhisperRuntimeCache,
     WhisperTranscriptionProvider,
@@ -284,11 +284,12 @@ impl EngineWarmUp {
 }
 
 /// The assembled transcription stack for one dictation: a [`SecondOpinionRouter`]
-/// reporting its routing decisions to the Local Diagnostic Log, ready to be
-/// borrowed as an [`crate::AsrRuntime`] that also logs transcription outcomes.
+/// reporting its routing decisions to the Local Diagnostic Log, and itself the
+/// [`crate::AsrRuntime`] the Dictation Workflow transcribes through.
 ///
-/// Owns the router so callers never hold the pieces apart; borrow it through
-/// [`DictationStack::asr_runtime`] at the point of transcription.
+/// Owns the router so callers never hold the pieces apart, and is the runtime
+/// rather than handing one out, so there is no way to hold a router that skips
+/// the log.
 pub struct DictationStack<S> {
     router: SecondOpinionRouter,
     log: SharedDiagnosticLog<S>,
@@ -308,11 +309,28 @@ where
         });
         Self { router, log }
     }
+}
 
-    /// The stack as an [`crate::AsrRuntime`]. The borrow ends with the
-    /// transcription, which is exactly the router's lifetime requirement.
-    pub fn asr_runtime(&self) -> DiagnosticAsrRuntime<'_, S> {
-        DiagnosticAsrRuntime::new(&self.router, self.log.clone())
+impl<S> crate::AsrRuntime for DictationStack<S>
+where
+    S: DiagnosticSink,
+{
+    /// Report how the transcription went, never what it said (ADR-0019), and
+    /// hand the result back exactly as the router produced it.
+    fn transcribe(
+        &self,
+        audio: crate::CapturedAudio,
+    ) -> Result<crate::FinalTranscription, AsrError> {
+        let result = self.router.transcribe(audio);
+        match &result {
+            Ok(transcription) => self
+                .log
+                .record(DiagnosticEvent::transcription_completed(transcription)),
+            Err(error) => self
+                .log
+                .record(DiagnosticEvent::transcription_failed(error)),
+        }
+        result
     }
 }
 
@@ -544,7 +562,6 @@ mod tests {
         );
 
         let transcription = stack
-            .asr_runtime()
             .transcribe(crate::CapturedAudio::mono_16khz(vec![0.0]))
             .unwrap();
         assert_eq!(transcription.text, "");

@@ -547,6 +547,7 @@ mod tests {
             },
             inserted,
             rescued,
+            insertion_failure: None,
         }
     }
 
