@@ -452,7 +452,9 @@ fn reveal_command(path: &std::path::Path, _select: bool) -> std::process::Comman
     } else {
         path
     };
-    std::process::Command::new("xdg-open").arg(target)
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(target);
+    command
 }
 
 /// The active X11 window id, captured at record start so insertion can
