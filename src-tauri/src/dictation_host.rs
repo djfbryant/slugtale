@@ -70,26 +70,32 @@ pub struct DictationHost<R = crate::CpalAudioRecorder> {
     focus_target: Mutex<Option<i32>>,
     capture: Mutex<crate::AudioCaptureSession<R>>,
     runtime_state: Mutex<Option<Arc<crate::DictationRuntime>>>,
+    usage: Arc<crate::UsageQueue>,
 }
 
 impl<R> DictationHost<R>
 where
     R: crate::DictationRecorder,
 {
-    pub fn new(surface: Arc<dyn DictationSurface>) -> Self
+    pub fn new(surface: Arc<dyn DictationSurface>, usage: Arc<crate::UsageQueue>) -> Self
     where
         R: Default,
     {
-        Self::with_recorder(surface, R::default())
+        Self::with_recorder(surface, R::default(), usage)
     }
 
-    pub fn with_recorder(surface: Arc<dyn DictationSurface>, recorder: R) -> Self {
+    pub fn with_recorder(
+        surface: Arc<dyn DictationSurface>,
+        recorder: R,
+        usage: Arc<crate::UsageQueue>,
+    ) -> Self {
         Self {
             surface,
             feedback: Mutex::new(crate::RecordingFeedback::default()),
             focus_target: Mutex::new(None),
             capture: Mutex::new(crate::AudioCaptureSession::new(recorder)),
             runtime_state: Mutex::new(None),
+            usage,
         }
     }
 
@@ -410,6 +416,37 @@ where
                 None
             }
         }
+    }
+}
+
+/// The Dictation Host is the Dictation Runtime's host, so the Tauri shell needs
+/// no adapter of its own: the microphone cut, the Dictation Workflow, the
+/// Usage handoff, and the Dictation Bar hide that follows the final job are all
+/// answers this module already had. The recorder is `Send` because the worker
+/// thread reaches this host while the level-emitter thread and the app handle
+/// still hold it.
+impl<R> crate::DictationRuntimeHost for DictationHost<R>
+where
+    R: crate::DictationRecorder + Send,
+{
+    fn take_pause_segment(&self, cut: u64) -> Option<crate::CapturedAudio> {
+        self.take_dictation_segment(cut)
+    }
+
+    fn complete(
+        &self,
+        audio: crate::CapturedAudio,
+        position: crate::DictationSegmentPosition,
+    ) -> Result<crate::DictationSegmentOutcome, String> {
+        self.run_dictation_segment(audio, position)
+    }
+
+    fn record(&self, segment: crate::CountedSegment) {
+        self.usage.record(segment);
+    }
+
+    fn last_job_settled(&self) {
+        self.surface.hide_dictation_bar();
     }
 }
 
@@ -785,12 +822,12 @@ mod tests {
     }
 
     impl DictationRuntimeHost for PausingRuntimeHost {
-        fn take_pause_segment(&mut self, cut: u64) -> Option<CapturedAudio> {
+        fn take_pause_segment(&self, cut: u64) -> Option<CapturedAudio> {
             self.host()?.take_dictation_segment(cut)
         }
 
         fn complete(
-            &mut self,
+            &self,
             audio: CapturedAudio,
             position: DictationSegmentPosition,
         ) -> Result<DictationSegmentOutcome, String> {
@@ -799,7 +836,13 @@ mod tests {
                 .run_dictation_segment(audio, position)
         }
 
-        fn last_job_settled(&mut self) {
+        fn record(&self, segment: CountedSegment) {
+            if let Some(host) = self.host() {
+                host.record(segment);
+            }
+        }
+
+        fn last_job_settled(&self) {
             self.surface.hide_dictation_bar();
         }
     }
@@ -813,29 +856,34 @@ mod tests {
     struct UnreachableRuntimeHost;
 
     impl DictationRuntimeHost for UnreachableRuntimeHost {
-        fn take_pause_segment(&mut self, _cut: u64) -> Option<CapturedAudio> {
+        fn take_pause_segment(&self, _cut: u64) -> Option<CapturedAudio> {
             None
         }
 
         fn complete(
-            &mut self,
+            &self,
             _audio: CapturedAudio,
             _position: DictationSegmentPosition,
         ) -> Result<DictationSegmentOutcome, String> {
             Err("test host never transcribes".to_string())
         }
 
-        fn last_job_settled(&mut self) {}
+        fn record(&self, _segment: CountedSegment) {}
+
+        fn last_job_settled(&self) {}
+    }
+
+    /// The Usage handoff these tests never read: a writer thread that discards
+    /// every Counted Segment.
+    fn discarding_usage_queue() -> Arc<crate::UsageQueue> {
+        crate::UsageQueue::start(Arc::new(|_: crate::LocalDate, _: CountedSegment| {}))
+            .expect("the usage writer starts")
     }
 
     fn started_runtime() -> Arc<DictationRuntime> {
         Arc::new(
-            DictationRuntime::start(
-                UnreachableRuntimeHost,
-                || 0,
-                Arc::new(|_: crate::LocalDate, _: CountedSegment| {}),
-            )
-            .expect("test runtime starts"),
+            DictationRuntime::start(Arc::new(UnreachableRuntimeHost), || 0)
+                .expect("test runtime starts"),
         )
     }
 
@@ -855,25 +903,31 @@ mod tests {
             let microphone = recorder.microphone.clone();
             let (cut_sender, cuts) = mpsc::channel();
             recorder.cuts = cut_sender;
-            let host = Arc::new(DictationHost::with_recorder(surface.clone(), recorder));
             let (counted_tx, counted) = mpsc::channel();
+            // The Usage queue is the host's, so the counted segments come back
+            // through its own sink rather than through the runtime.
+            let host = Arc::new(DictationHost::with_recorder(
+                surface.clone(),
+                recorder,
+                crate::UsageQueue::start(Arc::new(move |_: crate::LocalDate, segment: CountedSegment| {
+                    let _ = counted_tx.send(segment);
+                }))
+                .expect("the usage writer starts"),
+            ));
             // The watermark the runtime probes is the host's own read of the
             // microphone, so a queued flush carries the position the capture
             // session reported rather than a number the test made up.
             let watermark = Arc::downgrade(&host);
             let runtime = DictationRuntime::start_with_test_pause(
-                PausingRuntimeHost {
+                Arc::new(PausingRuntimeHost {
                     host: Arc::downgrade(&host),
                     surface: surface.clone(),
-                },
+                }),
                 Arc::new(move || {
                     watermark
                         .upgrade()
                         .map(|host| host.voice_watermark())
                         .unwrap_or(0)
-                }),
-                Arc::new(move |_: crate::LocalDate, segment: CountedSegment| {
-                    let _ = counted_tx.send(segment);
                 }),
                 TEST_PAUSE,
             )
@@ -943,7 +997,8 @@ mod tests {
         surface: &Arc<FakeSurface>,
         recorder: FakeRecorder,
     ) -> DictationHost<FakeRecorder> {
-        let host = DictationHost::with_recorder(surface.clone(), recorder);
+        let host =
+            DictationHost::with_recorder(surface.clone(), recorder, discarding_usage_queue());
         host.set_runtime(started_runtime()).unwrap();
         host
     }

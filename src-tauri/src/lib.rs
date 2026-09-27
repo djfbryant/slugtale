@@ -106,13 +106,11 @@ pub use segmentation::*;
 mod dictation_workflow;
 pub use dictation_workflow::*;
 
-mod dictation_segments;
-pub use dictation_segments::*;
-
-/// The Dictation Runtime (CONTEXT.md, ADR-0026): the module that coordinates
-/// ordered Dictation Segment execution — the segment channel, the single
-/// worker that preserves spoken order, and the Counted Segment handoff — with
-/// everything OS-touching behind the `DictationRuntimeHost` adapter.
+/// The Dictation Runtime (CONTEXT.md, ADR-0015, ADR-0026): the module that
+/// coordinates ordered Dictation Segment execution — spoken order, the
+/// watermark cut, rescue suspension, panic containment, the Counted Segment
+/// handoff, and the Usage queue — with everything OS-touching behind the
+/// `DictationRuntimeHost` adapter, which the Dictation Host implements.
 mod dictation_runtime;
 pub use dictation_runtime::*;
 
