@@ -54,6 +54,12 @@ pub struct SettledTextInsertion {
 }
 
 impl SettledTextInsertion {
+    /// Wrap `inner` so its first keystroke waits for `ready_at`. `ready_at` of
+    /// `None` means the text target never moved, so nothing is owed.
+    pub(crate) fn new(inner: Box<dyn TextInsertion>, ready_at: Option<std::time::Instant>) -> Self {
+        Self { inner, ready_at }
+    }
+
     /// How much of the settlement window is still owed at `now`. Injected-clock
     /// seam for tests: shorter than the window leaves time to wait, equal or
     /// longer leaves none.
@@ -106,10 +112,7 @@ pub fn prepare_text_insertion(target: Option<i32>) -> Result<PreparedInsertion, 
     let insertion = make_text_insertion()?;
 
     Ok(PreparedInsertion {
-        insertion: SettledTextInsertion {
-            inner: insertion,
-            ready_at,
-        },
+        insertion: SettledTextInsertion::new(insertion, ready_at),
         rescue: make_insertion_rescue(),
     })
 }
@@ -218,10 +221,7 @@ mod tests {
     #[test]
     fn settled_insertion_reports_zero_remaining_without_an_activation() {
         // A SettledTextInsertion built outside prepare (tests) has no deadline.
-        let insertion = SettledTextInsertion {
-            inner: Box::new(UnreachableInsertion),
-            ready_at: None,
-        };
+        let insertion = SettledTextInsertion::new(Box::new(UnreachableInsertion), None);
 
         assert_eq!(
             insertion.settle_remaining_at(std::time::Instant::now()),
@@ -256,10 +256,10 @@ mod tests {
     #[test]
     fn settled_insertion_waits_before_inserting_when_settlement_is_still_owed() {
         let started = std::time::Instant::now();
-        let insertion = SettledTextInsertion {
-            inner: Box::new(RecordingInsertion),
-            ready_at: Some(started + FOCUS_SETTLE_DELAY),
-        };
+        let insertion = SettledTextInsertion::new(
+            Box::new(RecordingInsertion),
+            Some(started + FOCUS_SETTLE_DELAY),
+        );
 
         insertion
             .insert(&crate::FinalTranscription::plain("hello".to_string()))

@@ -252,6 +252,13 @@ impl DictationSurface for TauriSurface {
             .dictation_stack(settings, diagnostic_log)
             .map_err(|error| error.to_string())
     }
+
+    fn prepared_insertion(
+        &self,
+        target_pid: Option<i32>,
+    ) -> Result<slugtale_lib::PreparedInsertion, String> {
+        slugtale_lib::prepare_text_insertion(target_pid)
+    }
 }
 
 /// The app's one dictation lifecycle host, managed by setup before any

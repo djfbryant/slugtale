@@ -301,7 +301,7 @@ where
     /// Assemble the stack: routing decisions are reported to the same log the
     /// transcription outcomes go to. There is no way to hold a router that
     /// skips this, which is what keeps both dictation entry points identical.
-    fn new(router: SecondOpinionRouter, log: SharedDiagnosticLog<S>) -> Self {
+    pub(crate) fn new(router: SecondOpinionRouter, log: SharedDiagnosticLog<S>) -> Self {
         let routing_log = log.clone();
         let router = router.observing(move |routing| {
             routing_log.record(DiagnosticEvent::routing_decision(routing))

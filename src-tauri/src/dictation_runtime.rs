@@ -212,6 +212,18 @@ impl DictationRuntime {
             .unwrap_or(false)
     }
 
+    /// A test in another module drives the same trigger at a pause it does not
+    /// have to sit out, which is the only reason this exists.
+    #[cfg(test)]
+    pub(crate) fn start_with_test_pause(
+        host: impl DictationRuntimeHost + Send + 'static,
+        voice_watermark: Arc<dyn Fn() -> u64 + Send + Sync>,
+        usage_sink: Arc<UsageSink>,
+        pause: std::time::Duration,
+    ) -> Result<Self, String> {
+        Self::start_with_pause(host, voice_watermark, usage_sink, pause)
+    }
+
     /// A runtime with no worker thread, for tests that read the queued jobs.
     #[cfg(test)]
     fn for_testing(

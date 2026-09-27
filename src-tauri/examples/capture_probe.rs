@@ -8,7 +8,7 @@
 //! Usage:
 //!   cargo run --example capture_probe -- [seconds] [out.wav]
 
-use slugtale_lib::{AudioRecorder, CpalAudioRecorder};
+use slugtale_lib::{CpalAudioRecorder, DictationRecorder};
 
 fn main() {
     let mut args = std::env::args().skip(1);

@@ -16,7 +16,7 @@ use objc2_core_audio::{
     kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyElementMain,
     kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
 };
-use slugtale_lib::{AudioRecorder, CpalAudioRecorder};
+use slugtale_lib::{CpalAudioRecorder, DictationRecorder};
 use std::ptr::NonNull;
 use std::time::Duration;
 
