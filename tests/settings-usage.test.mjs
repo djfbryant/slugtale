@@ -1,80 +1,26 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+
+import { runPage } from "./harness.mjs";
 
 const settingsHtml = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 
-// The Usage pane is driven entirely by one command's answer, so the harness only
-// has to stand up enough DOM for the script to run and then read back what the
-// pane put on screen.
+// The Usage pane is driven entirely by one command's answer, so a test reads back
+// what the pane put on screen rather than reaching into the page.
 function loadSettingsScript({ invoke }) {
-  const [, script] = settingsHtml.match(/<script>\s*([\s\S]*?)\s*<\/script>/);
-  const elements = new Map();
-
-  function createElement(tagName, id = "") {
-    return {
-      id,
-      tagName,
-      children: [],
-      className: "",
-      classList: { add() {}, remove() {}, toggle() {} },
-      dataset: {},
-      checked: false,
-      disabled: false,
-      hidden: false,
-      innerHTML: "",
-      style: { removeProperty() {} },
-      textContent: "",
-      value: "",
-      addEventListener() {},
-      setAttribute() {},
-      focus() {},
-      append(...children) {
-        this.children.push(...children);
-      },
-      querySelector() {
-        return createElement("div");
-      },
-      replaceChildren(...children) {
-        this.children = children;
-      }
-    };
-  }
-
-  function element(id) {
-    if (!elements.has(id)) elements.set(id, createElement("div", id));
-    return elements.get(id);
-  }
-
-  const context = {
-    console,
-    navigator: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" },
-    document: {
-      createElement,
-      getElementById: element,
-      // Nothing in these tests types into the estimate field, so no element is
-      // ever the active one — which is what lets renderUsage refill it.
-      activeElement: null,
-      addEventListener() {}
-    },
-    setTimeout(callback) {
-      return callback && 0;
-    },
-    window: {
-      __TAURI__: { core: { invoke } },
-      addEventListener() {}
-    }
-  };
-  context.globalThis = context;
-
-  const testableScript = script.replace(
-    /\s*init\(\);\s*$/,
-    "\nwindow.__slugtaleTest = { loadUsage, setUsageStoring, saveTypingEstimate, askRedoTypingChallenges, acceptUsageConfirm, cancelUsageConfirm };\n"
-  );
-  vm.runInNewContext(testableScript, context);
-
-  return { elements, ...context.window.__slugtaleTest };
+  const { api, elements } = runPage("index.html", {
+    exports: [
+      "loadUsage",
+      "setUsageStoring",
+      "saveTypingEstimate",
+      "askRedoTypingChallenges",
+      "acceptUsageConfirm",
+      "cancelUsageConfirm"
+    ],
+    invoke
+  });
+  return { elements, ...api };
 }
 
 function summary(overrides = {}) {
@@ -319,6 +265,30 @@ test("turning storing on does not ask, because it only starts a count", async ()
   assert.equal(commands.length, 1);
   assert.equal(commands[0][0], "set_usage_storing");
   assert.equal(commands[0][1].enabled, true);
+});
+
+test("a background refresh does not overwrite the estimate the user is typing", async () => {
+  // The pane refills the estimate from stored counts on every load, so a refresh
+  // landing mid-keystroke would wipe what the user has typed so far.
+  const { elements, loadUsage } = loadSettingsScript({
+    async invoke() {
+      return summary({ measured_wpm: null, typed_estimate: 45, completed_challenges: 0 });
+    }
+  });
+
+  await loadUsage();
+  const estimate = elements.get("usage-estimate-input");
+  estimate.focus();
+  estimate.value = "47";
+
+  await loadUsage();
+
+  assert.equal(estimate.value, "47");
+
+  // Once the field loses focus the stored value is authoritative again.
+  estimate.blur();
+  await loadUsage();
+  assert.equal(estimate.value, "45");
 });
 
 test("a refused estimate leaves the pane showing what is actually stored", async () => {

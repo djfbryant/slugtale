@@ -1,96 +1,18 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+
+import { runPage } from "./harness.mjs";
 
 function loadSettingsScript({ invoke }) {
-  const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
-  const [, script] = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/);
-  const elements = new Map();
-  const timers = [];
+  const { api, elements, flushNextTimeout } = runPage("index.html", {
+    exports: ["loadReadiness", "openReadinessAction", "saveDictationBarSettings", "saveEngineSettings"],
+    invoke,
+    userAgent: "Mozilla/5.0 (X11; Linux x86_64)"
+  });
 
-  function createElement(tagName, id = "") {
-    return {
-      id,
-      tagName,
-      children: [],
-      className: "",
-      classList: {
-        add() {},
-        remove() {},
-        toggle() {}
-      },
-      dataset: {},
-      disabled: false,
-      hidden: false,
-      innerHTML: "",
-      style: {
-        removeProperty() {}
-      },
-      textContent: "",
-      value: "",
-      addEventListener() {},
-      // The settings window drives segmented controls through aria-pressed and
-      // focuses the hotkey field when capture starts; both are no-ops here.
-      setAttribute() {},
-      focus() {},
-      append(...children) {
-        this.children.push(...children);
-      },
-      querySelector() {
-        return createElement("div");
-      },
-      replaceChildren(...children) {
-        this.children = children;
-      }
-    };
-  }
-
-  function element(id) {
-    if (!elements.has(id)) elements.set(id, createElement("div", id));
-    return elements.get(id);
-  }
-
-  const context = {
-    console,
-    navigator: { userAgent: "Mozilla/5.0 (X11; Linux x86_64)" },
-    document: {
-      createElement,
-      getElementById: element
-    },
-    setTimeout(callback) {
-      timers.push(callback);
-      return timers.length;
-    },
-    window: {
-      __TAURI__: {
-        core: { invoke }
-      }
-    }
-  };
-  context.globalThis = context;
-
-  const testableScript = script.replace(
-    /\s*init\(\);\s*$/,
-    "\nwindow.__slugtaleTest = { loadReadiness, openReadinessAction, saveDictationBarSettings, saveEngineSettings };\n"
-  );
-  vm.runInNewContext(testableScript, context);
-
-  return {
-    elements,
-    saveDictationBarSettings: context.window.__slugtaleTest.saveDictationBarSettings,
-    saveEngineSettings: context.window.__slugtaleTest.saveEngineSettings,
-    async flushNextTimer() {
-      for (let spin = 0; timers.length === 0 && spin < 10; spin += 1) {
-        await Promise.resolve();
-      }
-      const callback = timers.shift();
-      if (!callback) throw new Error("No pending timer to flush");
-      callback();
-    },
-    loadReadiness: context.window.__slugtaleTest.loadReadiness,
-    openReadinessAction: context.window.__slugtaleTest.openReadinessAction
-  };
+  // The readiness pane polls after asking the OS for a permission, and the
+  // harness never fires a timer on its own, so each poll is stepped by hand.
+  return { elements, ...api, flushNextTimer: flushNextTimeout };
 }
 
 test("readiness permission action ignores repeated requests while polling", async () => {
@@ -243,7 +165,7 @@ test("a blocked transcription engine shows the reason the backend reported", asy
   const row = elements.get("readiness-list").children.at(-1);
   const guidanceText = row.children
     .flatMap((child) => child.children || [])
-    .find((child) => child.tagName === "small");
+    .find((child) => child.tagName === "SMALL");
 
   assert.equal(elements.get("overall-status").textContent, "Not ready");
   assert.equal(

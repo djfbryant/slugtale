@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+
+import { runPage } from "./harness.mjs";
 
 const challengeHtml = readFileSync(new URL("../src/typing-challenge.html", import.meta.url), "utf8");
 
@@ -11,78 +12,31 @@ function flush() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// The window is its own page with its own script, so the harness stands up a
-// small DOM and a fake clock: the whole point of the challenge is that thirty
-// seconds elapse, and no test should actually wait for them.
+// The whole point of the challenge is that thirty seconds elapse, and no test
+// should actually wait for them, so the clock and the tick are the test's.
 function loadChallengeScript({ invoke, now = { value: 1_000_000 } }) {
-  const [, script] = challengeHtml.match(/<script>\s*([\s\S]*?)\s*<\/script>/);
-  const elements = new Map();
-  const intervals = [];
-
-  function createElement(tagName, id = "") {
-    const node = {
-      id,
-      tagName,
-      classList: { add() {}, remove() {}, toggle() {} },
-      dataset: {},
-      disabled: false,
-      hidden: false,
-      innerHTML: "",
-      textContent: "",
-      value: "",
-      listeners: {},
-      addEventListener(type, handler) {
-        this.listeners[type] = handler;
-      },
-      focus() {},
-      // The passage is rendered as one span per word, keyed by index, so the
-      // typed-word marking can be read back the way the user would see it.
-      querySelector(selector) {
-        const match = selector.match(/\[data-index="(\d+)"\]/);
-        if (!match) return null;
-        const index = Number(match[1]);
-        if (!node.words) node.words = new Map();
-        if (!node.words.has(index)) node.words.set(index, createElement("span"));
-        return node.words.get(index);
-      }
-    };
-    return node;
-  }
-
-  function element(id) {
-    if (!elements.has(id)) elements.set(id, createElement("div", id));
-    return elements.get(id);
-  }
-
-  const context = {
-    console,
-    Date: { now: () => now.value },
-    setInterval(callback) {
-      intervals.push(callback);
-      return intervals.length;
-    },
-    clearInterval() {},
-    document: { createElement, getElementById: element },
-    window: { __TAURI__: { core: { invoke } }, close() {} }
-  };
-  context.globalThis = context;
-
-  vm.runInNewContext(script, context);
+  const { api, document, elements, tickIntervals } = runPage("typing-challenge.html", {
+    exports: [],
+    invoke,
+    now: () => now.value,
+    // The Typing Challenge starts itself on open, so its tests drive the page
+    // through the listeners it registered rather than around them.
+    runBootstrap: true
+  });
 
   return {
+    api,
+    document,
     elements,
-    typing: element("typing"),
     // Type into the box the way a person would: set the value, then fire input.
     type(text) {
-      const box = element("typing");
+      const box = elements.get("typing");
       box.value = text;
-      box.listeners.input({ target: box });
+      box.dispatch("input", { target: box });
     },
-    tick() {
-      intervals.forEach((callback) => callback());
-    },
+    tick: tickIntervals,
     click(id) {
-      element(id).listeners.click();
+      elements.get(id).dispatch("click");
     }
   };
 }
