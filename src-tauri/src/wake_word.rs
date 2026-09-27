@@ -267,13 +267,7 @@ impl SpeechWindowBuffer {
         }
 
         let new_audio = &self.samples[self.evaluated_up_to..];
-        let rms = crate::audio_capture::audio_level_from_samples(new_audio);
-        let peak = new_audio
-            .iter()
-            .fold(0.0f32, |highest, sample| highest.max(sample.abs()));
-        if rms <= crate::audio_capture::DIGITAL_SILENCE_EPSILON
-            && peak <= crate::audio_capture::DIGITAL_SILENCE_EPSILON
-        {
+        if crate::audio_capture::is_digital_silence(new_audio) {
             return NewAudioState::DigitalSilence;
         }
 

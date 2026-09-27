@@ -12,23 +12,16 @@
 //! Dictation Bar renders and answers a single question, so the rule can be
 //! tested at real timescales without a microphone, a clock, or a thread.
 
-/// How long the user must stay below [`SEGMENT_VOICE_LEVEL`] before the speech
-/// so far becomes its own Dictation Segment.
+use crate::audio_capture::is_voice_level;
+
+/// How long the user must stay below [`crate::audio_capture::VOICE_LEVEL`] before
+/// the speech so far becomes its own Dictation Segment.
 ///
 /// Fixed rather than configurable for now: five seconds is long enough that
 /// ordinary between-sentence breathing does not trigger it, and short enough
 /// that a paragraph lands while the user is still thinking about the next one.
 /// A setting can follow once the behaviour has been lived with.
 pub const SEGMENT_PAUSE: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// The perceptual voice level above which the user counts as speaking.
-///
-/// This is the Dictation Bar's own `VOICE_LEVEL` (src/dictation-bar.html), and
-/// it has to stay that way: the bar visibly flexes its waveform on exactly the
-/// input that keeps a Segment Pause from firing, so a user watching the bar can
-/// see why a flush did or did not happen. Note this is a *perceptual* level from
-/// `voice_level_from_rms`, not raw microphone RMS.
-pub const SEGMENT_VOICE_LEVEL: f32 = 0.08;
 
 /// Watches the dictation's voice level and decides when a Segment Pause has
 /// elapsed.
@@ -46,24 +39,23 @@ pub struct SegmentPauseDetector {
     last_voice: Option<std::time::Instant>,
 }
 
-impl Default for SegmentPauseDetector {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SegmentPauseDetector {
-    pub fn new() -> Self {
-        Self::with_pause(SEGMENT_PAUSE)
-    }
-
     /// A detector with a non-default pause. Tests use this to exercise the rule
-    /// without waiting five real seconds.
+    /// without waiting five real seconds; production passes [`SEGMENT_PAUSE`].
     pub fn with_pause(pause: std::time::Duration) -> Self {
         Self {
             pause,
             last_voice: None,
         }
+    }
+
+    /// Forget the speech heard so far, so the detector cannot fire until the
+    /// user speaks again. This is what a new dictation needs from a detector it
+    /// is keeping: only the remembered last word has to go, and rebuilding the
+    /// whole object to drop one field made the five-second pause a second place
+    /// the default could be written.
+    pub fn rearm(&mut self) {
+        self.last_voice = None;
     }
 
     /// Feed one voice level sampled at `at`, and report whether a Segment Pause
@@ -73,7 +65,7 @@ impl SegmentPauseDetector {
     /// Firing re-arms the detector: it will not fire again until it has heard
     /// speech again, so a long silence produces exactly one flush.
     pub fn on_level(&mut self, level: f32, at: std::time::Instant) -> bool {
-        if level > SEGMENT_VOICE_LEVEL {
+        if is_voice_level(level) {
             self.last_voice = Some(at);
             return false;
         }
@@ -103,7 +95,7 @@ mod tests {
     const TEST_PAUSE: Duration = Duration::from_millis(500);
 
     fn speaking() -> f32 {
-        SEGMENT_VOICE_LEVEL + 0.2
+        crate::audio_capture::VOICE_LEVEL + 0.2
     }
 
     fn quiet() -> f32 {
@@ -179,22 +171,56 @@ mod tests {
 
     #[test]
     fn the_voice_threshold_matches_the_dictation_bar() {
-        // The bar treats *strictly above* 0.08 as voice. A level sitting exactly
-        // on the threshold is room noise to both, so it must not hold a pause
-        // open — otherwise a steady hum would silently disable flushing.
+        // The bar treats *strictly above* the threshold as voice. A level
+        // sitting exactly on it is room noise to both, so it must not hold a
+        // pause open — otherwise a steady hum would silently disable flushing.
+        let threshold = crate::audio_capture::VOICE_LEVEL;
         let mut detector = SegmentPauseDetector::with_pause(TEST_PAUSE);
         let start = std::time::Instant::now();
         detector.on_level(speaking(), start);
 
-        assert!(!detector.on_level(SEGMENT_VOICE_LEVEL, start + Duration::from_millis(100)));
-        assert!(detector.on_level(SEGMENT_VOICE_LEVEL, start + Duration::from_millis(700)));
+        assert!(!detector.on_level(threshold, start + Duration::from_millis(100)));
+        assert!(detector.on_level(threshold, start + Duration::from_millis(700)));
+    }
+
+    #[test]
+    fn rearming_leaves_the_detector_exactly_as_a_fresh_one() {
+        // The Dictation Runtime keeps one detector for the app's whole life and
+        // re-arms it per dictation instead of building a new one. That is only
+        // the same thing if rearm clears everything a constructor would leave
+        // unset, and the sequence has to open with silence to show it: six
+        // quiet ticks is 600 ms, past the 500 ms pause, so a detector that
+        // still remembers a word fires inside that run and a fresh one cannot.
+        let start = std::time::Instant::now();
+        let mut used = SegmentPauseDetector::with_pause(TEST_PAUSE);
+        used.on_level(speaking(), start);
+        used.rearm();
+
+        let mut fresh = SegmentPauseDetector::with_pause(TEST_PAUSE);
+
+        let mut level = quiet();
+        for tick in 0..30 {
+            // Silence past the pause, then speech, then silence past it again.
+            if tick == 7 {
+                level = speaking();
+            }
+            if tick == 12 {
+                level = quiet();
+            }
+            let at = start + Duration::from_millis(tick * 100);
+            assert_eq!(
+                used.on_level(level, at),
+                fresh.on_level(level, at),
+                "tick {tick} answered differently after rearm"
+            );
+        }
     }
 
     #[test]
     fn the_default_pause_is_five_seconds() {
         assert_eq!(SEGMENT_PAUSE, Duration::from_secs(5));
 
-        let mut detector = SegmentPauseDetector::new();
+        let mut detector = SegmentPauseDetector::with_pause(SEGMENT_PAUSE);
         let start = std::time::Instant::now();
         detector.on_level(speaking(), start);
 

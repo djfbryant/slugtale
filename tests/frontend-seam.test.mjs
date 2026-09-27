@@ -103,6 +103,26 @@ test("every event a frontend listens for is an event the backend emits", () => {
   );
 });
 
+test("the voice level threshold is one number in Rust and in the bar", () => {
+  // The Dictation Bar holds the bar open on voice, and the Segment Pause
+  // detector and the capture ring's watermark both hold a flush off on the same
+  // thing. A user watching the bar has to be able to read why a flush did or did
+  // not happen, which is only true while the two numbers are the same number.
+  const rust = rustSources.match(
+    /pub const VOICE_LEVEL: f32 = ([0-9.]+);/,
+  );
+  assert.ok(rust, "expected the Rust VOICE_LEVEL constant in audio_capture.rs");
+
+  const bar = frontendSources.match(/const VOICE_LEVEL = ([0-9.]+);/);
+  assert.ok(bar, "expected the bar's own VOICE_LEVEL constant");
+
+  assert.equal(
+    Number(bar[1]),
+    Number(rust[1]),
+    "the bar and the Segment Pause threshold must be the same level",
+  );
+});
+
 test("the dictation bar only asks dictation_event for known events", () => {
   const known = new Set(["start", "stop", "cancel"]);
   const requested = new Set(
