@@ -32,13 +32,6 @@ impl WindowLabel {
     pub const DICTATION_BAR: &'static str = "dictation-bar";
     pub const TYPING_CHALLENGE: &'static str = "typing-challenge";
 
-    /// The whole set, so a test can walk it instead of repeating it.
-    pub const ALL: [WindowLabel; 3] = [
-        WindowLabel::Settings,
-        WindowLabel::DictationBar,
-        WindowLabel::TypingChallenge,
-    ];
-
     pub fn as_str(self) -> &'static str {
         match self {
             WindowLabel::Settings => WindowLabel::SETTINGS,
@@ -94,8 +87,29 @@ mod tests {
 
     #[test]
     fn every_window_round_trips_through_its_label() {
-        for label in WindowLabel::ALL {
+        for label in [
+            WindowLabel::Settings,
+            WindowLabel::DictationBar,
+            WindowLabel::TypingChallenge,
+        ] {
             assert_eq!(WindowLabel::from_label(label.as_str()), Some(label));
+        }
+    }
+
+    #[test]
+    fn no_two_windows_answer_to_the_same_label() {
+        // Two windows sharing a label is not something Tauri allows, and
+        // `from_label` would quietly return only the first of them, so a
+        // duplicated label would make one window unreachable rather than fail.
+        let labels = [
+            WindowLabel::Settings.as_str(),
+            WindowLabel::DictationBar.as_str(),
+            WindowLabel::TypingChallenge.as_str(),
+        ];
+        for (index, label) in labels.iter().enumerate() {
+            for other in &labels[index + 1..] {
+                assert_ne!(label, other, "two windows are both called {label}");
+            }
         }
     }
 
