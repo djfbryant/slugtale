@@ -68,7 +68,7 @@
 
 use slugtale_lib::{
     AppleSpeechProvider, CapturedAudio, EngineAvailability, EscalationReason, LocalWhisperRuntime,
-    ParakeetProvider, SecondOpinionMode, SecondOpinionRouter, TranscriptionProvider,
+    ParakeetProvider, SecondOpinionMode, SecondOpinionRouter, SpeedProfile, TranscriptionProvider,
     WhisperTranscriptionProvider,
 };
 use std::collections::BTreeMap;
@@ -1021,8 +1021,12 @@ fn main() {
         // unlike Parakeet below there is nothing to release here explicitly.
         // The process exit at the end of `main` frees it either way.
         let runtime = Arc::new(LocalWhisperRuntime::new(model_path.clone()));
-        let provider: Arc<dyn TranscriptionProvider> =
-            Arc::new(WhisperTranscriptionProvider::new(runtime));
+        // Balanced, the app's default: the benchmark that produced the profile
+        // numbers was measured with the profile a fresh install runs.
+        let provider: Arc<dyn TranscriptionProvider> = Arc::new(WhisperTranscriptionProvider::new(
+            runtime,
+            SpeedProfile::default(),
+        ));
         let (report, wers) = evaluate_engine("whisper", provider.as_ref(), &clips, &terms);
         engine_reports.push(report);
         whisper_wers = wers;

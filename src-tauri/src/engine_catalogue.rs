@@ -75,10 +75,22 @@ impl TranscriptionEngineCatalogue {
         })
     }
 
-    pub fn whisper_runtime(&self, settings: &Settings) -> Option<Arc<LocalWhisperRuntime>> {
-        let runtime = self.whisper.runtime_for(&self.model_path(settings)?);
-        runtime.set_speed_profile(settings.speed_profile);
-        Some(runtime)
+    /// The loaded Whisper model for `settings`, or `None` when no model path
+    /// resolves. Read-only: the Transcription Speed Profile is not here, because
+    /// this runtime is shared by every caller naming the same model path.
+    fn whisper_runtime(&self, settings: &Settings) -> Option<Arc<LocalWhisperRuntime>> {
+        Some(self.whisper.runtime_for(&self.model_path(settings)?))
+    }
+
+    /// The Whisper provider for one caller, carrying the Transcription Speed
+    /// Profile that caller's Settings asked for. The concrete type is what the
+    /// tests read the pinned profile from; production takes it as a
+    /// [`TranscriptionProvider`] through [`Self::whisper_provider`].
+    fn whisper_transcription(&self, settings: &Settings) -> Option<WhisperTranscriptionProvider> {
+        Some(WhisperTranscriptionProvider::new(
+            self.whisper_runtime(settings)?,
+            settings.speed_profile,
+        ))
     }
 
     /// Which engine the next dictation would actually use, applying the same
@@ -134,9 +146,8 @@ impl TranscriptionEngineCatalogue {
     }
 
     pub fn whisper_provider(&self, settings: &Settings) -> Option<Arc<dyn TranscriptionProvider>> {
-        Some(Arc::new(WhisperTranscriptionProvider::new(
-            self.whisper_runtime(settings)?,
-        )))
+        self.whisper_transcription(settings)
+            .map(|provider| Arc::new(provider) as Arc<dyn TranscriptionProvider>)
     }
 
     pub fn parakeet_provider(&self) -> Option<Arc<ParakeetProvider>> {
@@ -549,6 +560,102 @@ mod tests {
             .expect("a catalogue with no runnable engine must not hand out a stack");
 
         assert!(error.to_string().contains("could not resolve"));
+    }
+
+    /// A wake check runs on the always-listening microphone while no dictation
+    /// is running, and it decodes greedily because the user's wider Beam Search
+    /// buys nothing on a two-word phrase. The runtime it borrows is the very one
+    /// the next dictation borrows, so the profile has to travel with the
+    /// provider rather than sit in the model.
+    #[test]
+    fn a_wake_check_does_not_change_the_profile_the_next_dictation_uses() {
+        let catalogue = TranscriptionEngineCatalogue::new(Some(PathBuf::from("models")));
+        let dictation_settings = Settings {
+            speed_profile: crate::SpeedProfile::Accurate,
+            ..Settings::default()
+        };
+        let wake_check_settings = Settings {
+            speed_profile: crate::SpeedProfile::Fast,
+            ..dictation_settings.clone()
+        };
+
+        // The exact handoff that used to leak: a dictation's provider is built,
+        // then a wake check runs over the same model, then the next dictation.
+        let next_dictation = catalogue
+            .whisper_transcription(&dictation_settings)
+            .unwrap();
+        let wake_check = catalogue
+            .whisper_transcription(&wake_check_settings)
+            .unwrap();
+
+        assert_eq!(wake_check.speed_profile(), crate::SpeedProfile::Fast);
+        assert_eq!(
+            next_dictation.speed_profile(),
+            crate::SpeedProfile::Accurate
+        );
+    }
+
+    /// `provider()` — and through it `availability()`, `router()`,
+    /// `effective_primary_engine()`, and `prepare_primary_warm_up()` — is
+    /// reached by every "can this engine run?" question the app asks, and each
+    /// one is asked on whatever Settings the asker happens to hold. A Settings
+    /// pane poll, a Voice Activation save, or a warm-up must not re-decode a
+    /// dictation that is already under way.
+    #[test]
+    fn asking_availability_leaves_the_decode_strategy_alone() {
+        let catalogue = TranscriptionEngineCatalogue::new(Some(PathBuf::from("models")));
+        let in_flight = catalogue
+            .whisper_transcription(&Settings {
+                speed_profile: crate::SpeedProfile::Accurate,
+                ..Settings::default()
+            })
+            .unwrap();
+        let other_caller = Settings {
+            speed_profile: crate::SpeedProfile::Fast,
+            ..Settings::default()
+        };
+
+        let _ = catalogue.availability(&other_caller);
+        let _ = catalogue.effective_primary_engine(&other_caller);
+        let _ = catalogue.prepare_primary_warm_up(&other_caller);
+
+        assert_eq!(in_flight.speed_profile(), crate::SpeedProfile::Accurate);
+    }
+
+    /// Every dictation stack is built from one Settings value and decodes with
+    /// the profile that value carries, for all three profiles. A stack is the
+    /// routed providers plus the log; Whisper's leg is this provider. All three
+    /// are asked for up front, as three dictations in flight would be, so a
+    /// profile stored in the shared model would show up here as the last write
+    /// winning three times over.
+    #[test]
+    fn each_dictation_stack_pins_exactly_the_profile_its_settings_carried() {
+        let catalogue = TranscriptionEngineCatalogue::new(Some(PathBuf::from("models")));
+        let profiles = [
+            crate::SpeedProfile::Fast,
+            crate::SpeedProfile::Balanced,
+            crate::SpeedProfile::Accurate,
+        ];
+
+        let stacks = profiles
+            .iter()
+            .map(|profile| {
+                catalogue
+                    .whisper_transcription(&Settings {
+                        speed_profile: *profile,
+                        ..Settings::default()
+                    })
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        for (profile, stack) in profiles.iter().zip(stacks) {
+            assert_eq!(
+                stack.speed_profile(),
+                *profile,
+                "{profile:?} did not reach the provider that carries it"
+            );
+        }
     }
 
     #[test]

@@ -173,12 +173,12 @@ pub fn transcribe_captured_audio(
     runtime.transcribe(audio)
 }
 
+/// The loaded Whisper model and nothing else. The Transcription Speed Profile
+/// deliberately lives outside this type: the runtime is shared by every caller
+/// whose Settings name the same model path, and a decode strategy stored here
+/// would be whichever caller spoke last.
 pub struct LocalWhisperRuntime {
     model_path: std::path::PathBuf,
-    // The Transcription Speed Profile sets the decode strategy per call. It is
-    // interior-mutable so the caller can update it from settings without
-    // rebuilding the cached model context, which the profile does not affect.
-    speed_profile: Mutex<SpeedProfile>,
     // The loaded model is expensive to read and parse, so it is initialized once
     // and reused across transcriptions rather than rebuilt on every call. The
     // mutex also owns the model lifetime: shutdown takes it before dropping the
@@ -193,7 +193,6 @@ impl LocalWhisperRuntime {
     pub fn new(model_path: std::path::PathBuf) -> Self {
         Self {
             model_path,
-            speed_profile: Mutex::new(SpeedProfile::default()),
             #[cfg(feature = "local-whisper-runtime")]
             context: Mutex::new(None),
             #[cfg(feature = "local-whisper-runtime")]
@@ -203,24 +202,6 @@ impl LocalWhisperRuntime {
 
     pub fn model_path(&self) -> &std::path::Path {
         &self.model_path
-    }
-
-    /// Set the Transcription Speed Profile applied to subsequent transcriptions.
-    /// Callers set this from the current Settings File before each dictation so
-    /// the accuracy/speed choice takes effect without reloading the model.
-    pub fn set_speed_profile(&self, profile: SpeedProfile) {
-        match self.speed_profile.lock() {
-            Ok(mut current) => *current = profile,
-            Err(poisoned) => *poisoned.into_inner() = profile,
-        }
-    }
-
-    #[cfg(any(test, feature = "local-whisper-runtime"))]
-    fn speed_profile(&self) -> SpeedProfile {
-        match self.speed_profile.lock() {
-            Ok(profile) => *profile,
-            Err(poisoned) => *poisoned.into_inner(),
-        }
     }
 }
 
@@ -362,13 +343,20 @@ impl LocalWhisperRuntime {
 }
 
 #[cfg(feature = "local-whisper-runtime")]
-impl AsrRuntime for LocalWhisperRuntime {
-    fn transcribe(&self, audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+impl LocalWhisperRuntime {
+    /// Transcribe `audio` with the caller's Transcription Speed Profile. The
+    /// profile is a parameter rather than runtime state so two callers sharing
+    /// one loaded model can decode differently at the same moment.
+    pub fn transcribe(
+        &self,
+        audio: CapturedAudio,
+        speed_profile: SpeedProfile,
+    ) -> Result<FinalTranscription, AsrError> {
         self.with_context(|context| {
             let mut state = context
                 .create_state()
                 .map_err(|error| AsrError::Runtime(error.to_string()))?;
-            let decode_settings = recommended_whisper_decode_settings(self.speed_profile());
+            let decode_settings = recommended_whisper_decode_settings(speed_profile);
             let mut params = whisper_rs::FullParams::new(match decode_settings.strategy {
                 WhisperDecodeStrategy::Greedy { best_of } => {
                     whisper_rs::SamplingStrategy::Greedy { best_of }
@@ -442,12 +430,11 @@ impl LocalWhisperRuntime {
         Err(local_whisper_runtime_disabled_error())
     }
 
-    fn shutdown(&self) {}
-}
-
-#[cfg(not(feature = "local-whisper-runtime"))]
-impl AsrRuntime for LocalWhisperRuntime {
-    fn transcribe(&self, _audio: CapturedAudio) -> Result<FinalTranscription, AsrError> {
+    pub fn transcribe(
+        &self,
+        _audio: CapturedAudio,
+        _speed_profile: SpeedProfile,
+    ) -> Result<FinalTranscription, AsrError> {
         if !self.model_path.exists() {
             return Err(AsrError::ModelMissing {
                 path: self.model_path.clone(),
@@ -456,6 +443,8 @@ impl AsrRuntime for LocalWhisperRuntime {
 
         Err(local_whisper_runtime_disabled_error())
     }
+
+    fn shutdown(&self) {}
 }
 
 #[cfg(not(feature = "local-whisper-runtime"))]
@@ -473,13 +462,30 @@ fn local_whisper_runtime_disabled_error() -> AsrError {
 /// text today. That is why Whisper can only ever be escalated *from* on the
 /// anomaly rules (empty output, repetition, implausibly short text), never on a
 /// confidence threshold — see [`crate::EngineConfidence`].
+///
+/// The Transcription Speed Profile belongs here rather than on the runtime
+/// behind it. The runtime is one loaded model shared by every caller whose
+/// Settings name the same path, and a profile stored there is whichever caller
+/// spoke last: a wake check on the always-listening microphone decoding greedily
+/// would silently re-decode the next dictation too.
 pub struct WhisperTranscriptionProvider {
     runtime: Arc<LocalWhisperRuntime>,
+    speed_profile: SpeedProfile,
 }
 
 impl WhisperTranscriptionProvider {
-    pub fn new(runtime: Arc<LocalWhisperRuntime>) -> Self {
-        Self { runtime }
+    pub fn new(runtime: Arc<LocalWhisperRuntime>, speed_profile: SpeedProfile) -> Self {
+        Self {
+            runtime,
+            speed_profile,
+        }
+    }
+
+    /// The Transcription Speed Profile this provider decodes with. Read by the
+    /// engine catalogue's tests to prove one caller's profile cannot reach
+    /// another's; the runtime it wraps no longer knows the value at all.
+    pub fn speed_profile(&self) -> SpeedProfile {
+        self.speed_profile
     }
 }
 
@@ -529,7 +535,7 @@ impl crate::TranscriptionProvider for WhisperTranscriptionProvider {
         // The runtime still owns its audio, so this clone is the cost of giving
         // every provider a borrowing signature. It only happens on the Whisper
         // leg; the router never clones for the engines that borrow natively.
-        let transcription = self.runtime.transcribe(audio.clone())?;
+        let transcription = self.runtime.transcribe(audio.clone(), self.speed_profile)?;
         Ok(crate::EngineTranscription::plain(
             crate::TranscriptionEngine::Whisper,
             transcription,
@@ -577,7 +583,10 @@ mod tests {
         let runtime = LocalWhisperRuntime::new(model_path.clone());
 
         let error = runtime
-            .transcribe(CapturedAudio::mono_16khz(vec![0.0; 16_000]))
+            .transcribe(
+                CapturedAudio::mono_16khz(vec![0.0; 16_000]),
+                SpeedProfile::default(),
+            )
             .unwrap_err();
 
         assert_eq!(error, AsrError::ModelMissing { path: model_path });
@@ -646,13 +655,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_defaults_to_balanced_profile_and_accepts_updates() {
-        let runtime =
-            LocalWhisperRuntime::new(unique_test_dir("profile").join(DEFAULT_MODEL_FILENAME));
-        assert_eq!(runtime.speed_profile(), SpeedProfile::Balanced);
+    fn one_loaded_model_serves_providers_that_decode_differently() {
+        // The whole point of putting the profile on the provider: two callers
+        // share the model context and neither can move the other's Beam Search.
+        let runtime = Arc::new(LocalWhisperRuntime::new(
+            unique_test_dir("shared-model-profiles").join(DEFAULT_MODEL_FILENAME),
+        ));
 
-        runtime.set_speed_profile(SpeedProfile::Fast);
-        assert_eq!(runtime.speed_profile(), SpeedProfile::Fast);
+        let fast = WhisperTranscriptionProvider::new(Arc::clone(&runtime), SpeedProfile::Fast);
+        let accurate =
+            WhisperTranscriptionProvider::new(Arc::clone(&runtime), SpeedProfile::Accurate);
+
+        assert_eq!(fast.speed_profile(), SpeedProfile::Fast);
+        assert_eq!(accurate.speed_profile(), SpeedProfile::Accurate);
     }
 
     #[test]
