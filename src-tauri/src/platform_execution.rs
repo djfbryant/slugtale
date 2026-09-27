@@ -228,14 +228,22 @@ mod tests {
     #[test]
     fn capture_text_target_reports_the_frontmost_application() {
         let pid = capture_text_target();
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        #[cfg(target_os = "linux")]
         {
-            assert!(pid.is_some(), "a desktop session should have a frontmost app");
+            // Only an X11 session with a reachable X server can answer, and a
+            // headless runner has neither. `None` is the honest answer there,
+            // not a failure of the X11 path.
+            let has_x_server = std::env::var("DISPLAY").is_ok_and(|value| !value.is_empty());
+            if has_x_server && crate::detect_session().is_supported() {
+                assert!(pid.is_some(), "an X11 session with a display has a frontmost app");
+            } else {
+                assert_eq!(pid, None, "no display server session means no text target");
+            }
         }
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        assert!(pid.is_some(), "a desktop session has a frontmost app");
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-        {
-            assert_eq!(pid, None);
-        }
+        assert_eq!(pid, None);
     }
 
     #[test]
