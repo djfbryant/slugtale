@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const {
@@ -19,10 +20,11 @@ const { runDev, defaultMacosSignIdentity } = require("../scripts/run-dev.js");
 function runDeveloperBuild({ environment = {}, identityOutput = "1) abc \"Slugtale Dev\"" } = {}) {
   const commands = [];
   const logs = [];
-  const appPath = new URL(
-    "../src-tauri/target/debug/bundle/macos/Slugtale.app",
-    import.meta.url,
-  ).pathname;
+  // `fileURLToPath` rather than `URL.pathname`, which turns a Windows path into
+  // `/D:/...` and would make the expected argv disagree with the real one there.
+  const appPath = fileURLToPath(
+    new URL("../src-tauri/target/debug/bundle/macos/Slugtale.app", import.meta.url),
+  );
 
   runDev({
     platform: "darwin",
