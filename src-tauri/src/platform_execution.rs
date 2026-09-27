@@ -56,7 +56,7 @@ pub struct SettledTextInsertion {
 impl SettledTextInsertion {
     /// Wrap `inner` so its first keystroke waits for `ready_at`. `ready_at` of
     /// `None` means the text target never moved, so nothing is owed.
-    pub fn new(inner: Box<dyn TextInsertion>, ready_at: Option<std::time::Instant>) -> Self {
+    pub(crate) fn new(inner: Box<dyn TextInsertion>, ready_at: Option<std::time::Instant>) -> Self {
         Self { inner, ready_at }
     }
 

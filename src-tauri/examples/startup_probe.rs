@@ -10,7 +10,7 @@
 //! Usage:
 //!   cargo run --example startup_probe -- [starts] [max-warm-start-ms]
 
-use slugtale_lib::{AudioRecorder, CpalAudioRecorder};
+use slugtale_lib::{CpalAudioRecorder, DictationRecorder};
 use std::time::{Duration, Instant};
 
 fn main() {

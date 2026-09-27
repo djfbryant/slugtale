@@ -56,9 +56,11 @@ pub trait DictationSurface: Send + Sync {
 }
 /// The dictation lifecycle's one owner of state: recording feedback, the focus
 /// target, the audio capture session, and the runtime handle. The locks are
-/// private so the ordering rules stay inside this module; every method holds a
-/// lock no longer than the state move itself, and never reaches a surface or
-/// the operating system while holding one.
+/// private so the ordering rules stay inside this module. No method reaches a
+/// [`DictationSurface`] while holding one. [`Self::prepare_capture`] is the one
+/// exception and it is deliberate: it calls the operating system to discover the
+/// input device, and doing that once while idle is cheaper than holding no lock
+/// and racing another caller onto the same device.
 pub struct DictationHost<R = crate::CpalAudioRecorder> {
     surface: Arc<dyn DictationSurface>,
     feedback: Mutex<crate::RecordingFeedback>,
@@ -645,8 +647,8 @@ mod tests {
     }
 
     /// The microphone a test speaks into. `level` hands back the level publisher
-    /// the host installed, so a test drives the Dictation Bar and the Segment
-    /// Pause detector through the same callback the audio emitter thread calls.
+    /// the host installed, so a test reaches the Segment Pause detector through
+    /// the same callback the audio emitter thread calls.
     #[derive(Clone, Default)]
     struct FakeMicrophone {
         level: Arc<std::sync::Mutex<Option<crate::AudioLevelCallback>>>,
@@ -859,7 +861,7 @@ mod tests {
             // microphone, so a queued flush carries the position the capture
             // session reported rather than a number the test made up.
             let watermark = Arc::downgrade(&host);
-            let runtime = DictationRuntime::start_with_pause(
+            let runtime = DictationRuntime::start_with_test_pause(
                 PausingRuntimeHost {
                     host: Arc::downgrade(&host),
                     surface: surface.clone(),
@@ -922,7 +924,7 @@ mod tests {
             }
         }
 
-        /// Every cut a Pause Flush has asked for so far, in order.
+        /// Every cut not yet read back by `cut_reached_the_microphone`, in order.
         fn cuts(&self) -> Vec<u64> {
             self.cuts.try_iter().collect()
         }

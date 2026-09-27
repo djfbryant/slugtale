@@ -1,7 +1,7 @@
 //! Development-only local ASR corpus recorder and evaluation rig.
 
 use slugtale_lib::{
-    AsrRuntime, AudioRecorder, CapturedAudio, CpalAudioRecorder, LocalWhisperRuntime,
+    AsrRuntime, CapturedAudio, CpalAudioRecorder, DictationRecorder, LocalWhisperRuntime,
 };
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, Write};

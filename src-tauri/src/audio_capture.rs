@@ -1310,8 +1310,10 @@ mod tests {
     #[test]
     fn audio_capture_session_stops_with_captured_samples_for_transcription() {
         let log = Rc::new(RecorderLog::default());
-        let recorder =
-            FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.0, 0.2, -0.2]), log.clone());
+        let recorder = FakeDictationRecorder::new(
+            CapturedAudio::mono_16khz(vec![0.0, 0.2, -0.2]),
+            log.clone(),
+        );
         let mut session = AudioCaptureSession::new(recorder);
 
         assert_eq!(session.on_event(DictationEvent::Start).unwrap(), None);
@@ -1330,7 +1332,7 @@ mod tests {
     fn audio_capture_session_rejects_digital_silence_before_transcription() {
         let log = Rc::new(RecorderLog::default());
         let recorder =
-            FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.0; 80_000]), log.clone());
+            FakeDictationRecorder::new(CapturedAudio::mono_16khz(vec![0.0; 80_000]), log.clone());
         let mut session = AudioCaptureSession::new(recorder);
 
         session.on_event(DictationEvent::Start).unwrap();
@@ -1348,7 +1350,7 @@ mod tests {
     #[test]
     fn cutting_a_segment_keeps_the_recording_running_for_the_next_one() {
         let log = Rc::new(RecorderLog::default());
-        let recorder = FakeAudioRecorder::flushing(
+        let recorder = FakeDictationRecorder::with_pending_segments(
             CapturedAudio::mono_16khz(vec![0.3, 0.3]),
             vec![
                 CapturedAudio::mono_16khz(vec![0.1, 0.1]),
@@ -1383,7 +1385,7 @@ mod tests {
     fn cutting_a_drained_ring_yields_no_segment() {
         // Nothing new since the last Segment Pause must not enqueue an empty
         // segment for the transcription engine to chew on.
-        let recorder = FakeAudioRecorder::new(
+        let recorder = FakeDictationRecorder::new(
             CapturedAudio::mono_16khz(vec![0.2]),
             Rc::new(RecorderLog::default()),
         );
@@ -1396,7 +1398,7 @@ mod tests {
     #[test]
     fn cutting_outside_a_dictation_yields_no_segment() {
         let log = Rc::new(RecorderLog::default());
-        let recorder = FakeAudioRecorder::flushing(
+        let recorder = FakeDictationRecorder::with_pending_segments(
             CapturedAudio::mono_16khz(vec![0.2]),
             vec![CapturedAudio::mono_16khz(vec![0.1])],
             log.clone(),
@@ -1412,7 +1414,7 @@ mod tests {
         // The watermark is the whole reason the segment ends where it does, so
         // the session must pass the position it was queued with straight down.
         let log = Rc::new(RecorderLog::default());
-        let mut session = AudioCaptureSession::new(FakeAudioRecorder::flushing(
+        let mut session = AudioCaptureSession::new(FakeDictationRecorder::with_pending_segments(
             CapturedAudio::mono_16khz(vec![0.1]),
             vec![CapturedAudio::mono_16khz(vec![0.2, 0.2])],
             log.clone(),
@@ -1428,7 +1430,7 @@ mod tests {
     fn the_voice_watermark_a_pause_flush_cuts_at_is_read_off_the_recorder() {
         let log = Rc::new(RecorderLog::default());
         log.watermark.set(12_000);
-        let session = AudioCaptureSession::new(FakeAudioRecorder::new(
+        let session = AudioCaptureSession::new(FakeDictationRecorder::new(
             CapturedAudio::mono_16khz(vec![0.1]),
             log,
         ));
@@ -1442,7 +1444,7 @@ mod tests {
         // session forwards both the install and the clear rather than keeping
         // the publisher for itself.
         let log = Rc::new(RecorderLog::default());
-        let mut session = AudioCaptureSession::new(FakeAudioRecorder::new(
+        let mut session = AudioCaptureSession::new(FakeDictationRecorder::new(
             CapturedAudio::mono_16khz(vec![0.1]),
             log.clone(),
         ));
@@ -1461,7 +1463,7 @@ mod tests {
         // Idle-time preparation is idempotent, and Start consumes the prepared
         // state rather than repeating the work on the Hotkey path.
         let log = Rc::new(RecorderLog::default());
-        let mut session = AudioCaptureSession::new(FakeAudioRecorder::new(
+        let mut session = AudioCaptureSession::new(FakeDictationRecorder::new(
             CapturedAudio::mono_16khz(vec![0.2]),
             log.clone(),
         ));
@@ -1476,7 +1478,7 @@ mod tests {
     fn a_failed_prepare_does_not_block_the_next_dictation_start() {
         // Preparation is opportunistic: if the device cannot be validated while
         // idle — or comes back with an error — the Hotkey path must still work.
-        let recorder = FakeAudioRecorder::new(
+        let recorder = FakeDictationRecorder::new(
             CapturedAudio::mono_16khz(vec![0.2]),
             Rc::new(RecorderLog::default()),
         )
@@ -1495,7 +1497,7 @@ mod tests {
         // A prepare racing an active dictation (the caller holds the same mutex
         // the Hotkey uses) must not disturb the recording in progress.
         let log = Rc::new(RecorderLog::default());
-        let mut session = AudioCaptureSession::new(FakeAudioRecorder::new(
+        let mut session = AudioCaptureSession::new(FakeDictationRecorder::new(
             CapturedAudio::mono_16khz(vec![0.2]),
             log.clone(),
         ));
@@ -1525,7 +1527,7 @@ mod tests {
         // The user paused, the pause was flushed and inserted, and then they
         // pressed Stop without speaking again. The remainder is genuinely silent
         // and must not be reported as a missing microphone.
-        let recorder = FakeAudioRecorder::flushing(
+        let recorder = FakeDictationRecorder::with_pending_segments(
             CapturedAudio::mono_16khz(vec![0.0; 16_000]),
             vec![CapturedAudio::mono_16khz(vec![0.4, -0.4])],
             Rc::new(RecorderLog::default()),
@@ -1543,7 +1545,7 @@ mod tests {
     fn a_new_dictation_restores_the_digital_silence_guard() {
         // The relaxation above must not leak into the next dictation, or a
         // microphone revoked between dictations would go unreported.
-        let recorder = FakeAudioRecorder::flushing(
+        let recorder = FakeDictationRecorder::with_pending_segments(
             CapturedAudio::mono_16khz(vec![0.0; 16_000]),
             vec![CapturedAudio::mono_16khz(vec![0.4, -0.4])],
             Rc::new(RecorderLog::default()),
@@ -1568,7 +1570,7 @@ mod tests {
     fn audio_capture_session_cancel_discards_without_returning_audio() {
         let log = Rc::new(RecorderLog::default());
         let recorder =
-            FakeAudioRecorder::new(CapturedAudio::mono_16khz(vec![0.4, 0.5]), log.clone());
+            FakeDictationRecorder::new(CapturedAudio::mono_16khz(vec![0.4, 0.5]), log.clone());
         let mut session = AudioCaptureSession::new(recorder);
 
         session.on_event(DictationEvent::Start).unwrap();
@@ -1730,7 +1732,7 @@ mod tests {
         watermark: Cell<u64>,
     }
 
-    struct FakeAudioRecorder {
+    struct FakeDictationRecorder {
         audio: CapturedAudio,
         /// What each successive `cut_segment` hands back, mimicking a ring that
         /// is drained mid-recording and refills from the microphone.
@@ -1742,7 +1744,7 @@ mod tests {
         fail_prepare: bool,
     }
 
-    impl FakeAudioRecorder {
+    impl FakeDictationRecorder {
         fn new(audio: CapturedAudio, log: Rc<RecorderLog>) -> Self {
             Self {
                 audio,
@@ -1753,7 +1755,8 @@ mod tests {
             }
         }
 
-        fn flushing(
+        /// Successive `cut_segment` calls hand back this queue in order.
+        fn with_pending_segments(
             audio: CapturedAudio,
             segments: Vec<CapturedAudio>,
             log: Rc<RecorderLog>,
@@ -1769,7 +1772,7 @@ mod tests {
         }
     }
 
-    impl DictationRecorder for FakeAudioRecorder {
+    impl DictationRecorder for FakeDictationRecorder {
         fn prepare(&mut self) -> Result<(), AudioCaptureError> {
             if self.fail_prepare {
                 return Err(AudioCaptureError::new("fake prepare failure"));
