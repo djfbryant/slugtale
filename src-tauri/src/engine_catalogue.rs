@@ -23,6 +23,7 @@ pub struct TranscriptionEngineCatalogue {
     model_manager: Mutex<Option<LocalModelManager>>,
     whisper: WhisperRuntimeCache,
     parakeet: Mutex<Option<Arc<ParakeetProvider>>>,
+    phonon: Mutex<Option<Arc<ParakeetProvider>>>,
     apple: Arc<AppleSpeechProvider>,
     /// Bumped every time a warm-up is requested, so a slow warm-up started by
     /// an older Settings state can recognise that it was superseded and stand
@@ -49,6 +50,7 @@ impl TranscriptionEngineCatalogue {
             model_manager: Mutex::new(None),
             whisper: WhisperRuntimeCache::default(),
             parakeet: Mutex::new(None),
+            phonon: Mutex::new(None),
             apple: Arc::new(AppleSpeechProvider::new()),
             warm_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             released_for: Mutex::new(None),
@@ -65,14 +67,19 @@ impl TranscriptionEngineCatalogue {
             .model_dir
             .lock()
             .expect("engine catalogue model directory mutex poisoned") = Some(model_dir.clone());
-        let mut parakeet = self
-            .parakeet
-            .lock()
-            .expect("engine catalogue parakeet mutex poisoned");
-        if parakeet.is_none() {
-            *parakeet = Some(Arc::new(ParakeetProvider::new(crate::parakeet_asset_dir(
-                &model_dir,
-            ))));
+        for (slot, model) in [
+            (&self.parakeet, &crate::PARAKEET_TDT_V2),
+            (&self.phonon, &crate::PHONON_2),
+        ] {
+            let mut provider = slot
+                .lock()
+                .expect("engine catalogue TDT provider mutex poisoned");
+            if provider.is_none() {
+                *provider = Some(Arc::new(ParakeetProvider::for_model(
+                    model,
+                    model.asset_dir(&model_dir),
+                )));
+            }
         }
     }
 
@@ -175,6 +182,11 @@ impl TranscriptionEngineCatalogue {
                 parakeet.unload();
             }
         }
+        if keep != TranscriptionEngine::Phonon {
+            if let Some(phonon) = self.phonon_provider() {
+                phonon.unload();
+            }
+        }
     }
 
     pub fn whisper_provider(&self, settings: &Settings) -> Option<Arc<dyn TranscriptionProvider>> {
@@ -184,6 +196,13 @@ impl TranscriptionEngineCatalogue {
 
     fn parakeet_provider(&self) -> Option<Arc<ParakeetProvider>> {
         self.parakeet
+            .lock()
+            .ok()
+            .and_then(|provider| provider.clone())
+    }
+
+    fn phonon_provider(&self) -> Option<Arc<ParakeetProvider>> {
+        self.phonon
             .lock()
             .ok()
             .and_then(|provider| provider.clone())
@@ -206,6 +225,9 @@ impl TranscriptionEngineCatalogue {
             TranscriptionEngine::Whisper => self.whisper_provider(settings),
             TranscriptionEngine::Parakeet => self
                 .parakeet_provider()
+                .map(|provider| provider as Arc<dyn TranscriptionProvider>),
+            TranscriptionEngine::Phonon => self
+                .phonon_provider()
                 .map(|provider| provider as Arc<dyn TranscriptionProvider>),
             TranscriptionEngine::AppleSpeech => {
                 Some(self.apple_provider() as Arc<dyn TranscriptionProvider>)
@@ -285,6 +307,9 @@ impl TranscriptionEngineCatalogue {
         self.whisper.shutdown();
         if let Some(parakeet) = self.parakeet_provider() {
             parakeet.shutdown();
+        }
+        if let Some(phonon) = self.phonon_provider() {
+            phonon.shutdown();
         }
     }
 }

@@ -58,7 +58,7 @@ See [SECURITY.md](SECURITY.md) for the full data-handling policy.
 
 - Local English transcription with Whisper `base.en`. macOS builds use Metal
   acceleration.
-- Optional local Parakeet and Apple SpeechTranscriber engines.
+- Optional local Parakeet, Phonon-2, and Apple SpeechTranscriber engines.
 - An optional second local engine when the first result looks uncertain.
 - A configurable hotkey with toggle and hold modes.
 - Experimental voice activation on macOS. Say "Hi Slugtale" to start
@@ -152,7 +152,8 @@ then select **Settings...**.
 3. Open Slugtale Settings and download the local `base.en` model.
 4. Choose a hotkey and an activation mode.
 
-The Status pane shows when Slugtale is ready.
+The top of the Settings sidebar shows when Slugtale is ready to dictate. A
+section with a problem shows a warning and a count in the sidebar.
 
 If macOS does not show a new permission request, reset the installed app's
 Microphone and Accessibility grants:
@@ -199,7 +200,7 @@ Slugtale already inserted.
 
 ## Choose transcript cleanup
 
-Select a cleanup mode under **Settings > Dictation > Transcript cleanup**:
+Select a cleanup mode under **Settings > Text & cleanup > Transcript cleanup**:
 
 - **Basic** fixes spacing and the first letter.
 - **Clean dictation** also removes safe hesitation words such as "um", "uh",
@@ -237,8 +238,8 @@ SLUGTALE_ENGINE_FEATURES=apple-speech-runtime,local-parakeet-runtime \
 | Cargo feature | Engine | Requirement |
 | --- | --- | --- |
 | `apple-speech-runtime` | Apple SpeechTranscriber | macOS 26 or later |
-| `local-parakeet-runtime` | Parakeet TDT v2 on CPU | Model assets installed from Settings |
-| `local-parakeet-runtime-coreml` | Parakeet TDT v2 with Core ML | macOS and the same model assets |
+| `local-parakeet-runtime` | Parakeet TDT v2 and Phonon-2 on CPU | Model assets installed from Settings |
+| `local-parakeet-runtime-coreml` | Parakeet TDT v2 and Phonon-2 with Core ML | macOS and the same model assets |
 
 Settings shows an unavailable engine when the build does not include its Cargo
 feature. The second-opinion setting needs two available local engines.
@@ -298,8 +299,8 @@ copies the transcript when direct insertion fails so you can paste it yourself.
 
 ### The hotkey does not start dictation
 
-Open the Status pane and fix each required item. If another app uses the same
-shortcut, record a different hotkey.
+Open Settings and fix each section that shows a warning in the sidebar. If
+another app uses the same shortcut, record a different hotkey.
 
 ### The model download fails
 

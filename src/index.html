@@ -30,6 +30,21 @@
       /* Text drawn on top of an accent/ok/warn fill, in both appearances. */
       --on-fill: #ffffff;
 
+      /* One hue per settings section, behind its sidebar icon. */
+      --group-shortcut: #6366f1;
+      --group-transcription: #0ea5e9;
+      --group-text: #a855f7;
+      --group-bar: #f97316;
+      --group-usage: #22a35a;
+      --group-privacy: #64748b;
+      --group-general: #78716c;
+
+      /* The small picture of a screen behind the Dictation Bar preview. */
+      --preview-sky: #b9cde0;
+      --preview-ground: #e9d6c4;
+      --preview-window: #ffffffbf;
+      --preview-bar: #14161adb;
+
       /* The Dictation Bar orb palette (ADR-0004): fixed colours that must read
          as the same accent in both appearances, so they live outside the dark
          overrides. Each maps to one AccentColor enum value. */
@@ -71,6 +86,17 @@
         /* White on accent/ok/warn fills reads in dark too; restated so every
            colour token is explicitly overridden here. */
         --on-fill: #ffffff;
+        --group-shortcut: #7c7ff2;
+        --group-transcription: #2bb3ec;
+        --group-text: #b57af8;
+        --group-bar: #f7843a;
+        --group-usage: #2fb56a;
+        --group-privacy: #7a8799;
+        --group-general: #8d8580;
+        --preview-sky: #24324a;
+        --preview-ground: #3a2a3a;
+        --preview-window: #1e2228bf;
+        --preview-bar: #14161adb;
         --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
       }
     }
@@ -97,58 +123,123 @@
       border: 0;
     }
 
-    /* ---------- shell: icon rail + content ---------- */
+    /* ---------- shell: sidebar + content ---------- */
 
     .shell {
       display: grid;
-      grid-template-columns: 62px minmax(0, 1fr);
+      grid-template-columns: 214px minmax(0, 1fr);
       height: 100%;
     }
 
-    .rail {
+    .sidebar {
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: 4px;
-      padding: 10px 0;
+      gap: 10px;
+      min-height: 0;
+      padding: 10px;
       background: var(--rail);
       border-right: 1px solid var(--border);
     }
 
-    .rail-button {
-      position: relative;
+    .search { position: relative; display: block; }
+    .search svg { position: absolute; left: 8px; top: 7px; width: 14px; height: 14px; color: var(--text-faint); }
+
+    .search input {
+      width: 100%;
+      min-height: 28px;
+      padding: 3px 8px 3px 28px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.84rem;
+    }
+
+    .search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+
+    /* Ready or not, nothing more: where the problems are is the nav's job. */
+    .ready-line {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 6px;
+      color: var(--ok-text);
+      font-size: 0.8rem;
+      font-weight: 650;
+    }
+
+    .ready-line svg { width: 15px; height: 15px; }
+    .ready-line[data-ready="false"] { color: var(--warn-text); }
+
+    .nav { display: grid; gap: 1px; min-height: 0; overflow: auto; }
+
+    .nav-group {
+      margin: 8px 8px 3px;
+      color: var(--text-faint);
+      font-size: 0.66rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .nav-group:first-child { margin-top: 0; }
+
+    .nav-button {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+      min-height: 30px;
+      padding: 4px 8px 4px 5px;
+      border: 0;
+      border-radius: 7px;
+      background: none;
+      color: var(--text);
+      font-size: 0.84rem;
+      font-weight: 550;
+      text-align: left;
+    }
+
+    .nav-button[data-active="true"] { background: var(--accent); color: var(--on-fill); }
+    .nav-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    .tile-icon {
       display: grid;
       place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: var(--group);
+      color: var(--on-fill);
+    }
+
+    .tile-icon svg { width: 13px; height: 13px; }
+    [data-group="shortcut"] { --group: var(--group-shortcut); }
+    [data-group="transcription"] { --group: var(--group-transcription); }
+    [data-group="text"] { --group: var(--group-text); }
+    [data-group="bar"] { --group: var(--group-bar); }
+    [data-group="usage"] { --group: var(--group-usage); }
+    [data-group="privacy"] { --group: var(--group-privacy); }
+    [data-group="general"] { --group: var(--group-general); }
+
+    /* How many problems a section holds, so setup never needs a status page. */
+    .issue-count {
+      display: inline-flex;
+      align-items: center;
       gap: 3px;
-      width: 48px;
-      padding: 7px 0 6px;
-      border: 0;
-      border-radius: 10px;
-      background: none;
-      color: var(--text-dim);
-      font: inherit;
-      font-size: 0.62rem;
-      font-weight: 650;
-      letter-spacing: 0.02em;
-      cursor: pointer;
-    }
-
-    .rail-button svg { width: 18px; height: 18px; }
-    .rail-button[data-active="true"] { background: var(--accent-soft); color: var(--accent); }
-    .rail-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-    .rail-badge {
-      position: absolute;
-      top: 5px;
-      right: 9px;
-      width: 7px;
-      height: 7px;
+      padding: 1px 6px 1px 5px;
       border-radius: 999px;
-      background: var(--warn);
-      border: 1.5px solid var(--rail);
+      background: var(--warn-soft);
+      color: var(--warn-text);
+      font-size: 0.72rem;
+      font-weight: 750;
     }
 
-    .rail-badge[hidden] { display: none; }
+    .issue-count svg { width: 12px; height: 12px; }
+    .issue-count[hidden] { display: none; }
+    .nav-button[data-active="true"] .issue-count { background: var(--on-fill); color: var(--warn-text); }
 
     .content {
       display: flex;
@@ -160,21 +251,24 @@
 
     .content-head {
       display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 20px 22px 12px;
+      align-items: center;
+      gap: 11px;
+      padding: 16px 22px 10px;
     }
+
+    .content-head .tile-icon { width: 32px; height: 32px; border-radius: 9px; }
+    .content-head .tile-icon svg { width: 18px; height: 18px; }
+    .content-head .tile-icon[hidden] { display: none; }
 
     .content-head h1 {
       margin: 0;
-      font-size: 1.5rem;
+      font-size: 1.3rem;
       font-weight: 700;
       letter-spacing: -0.02em;
     }
 
     .summary {
-      margin: 3px 0 0;
+      margin: 0;
       color: var(--text-dim);
       font-size: 0.84rem;
     }
@@ -185,7 +279,7 @@
       overflow: auto;
       scrollbar-color: var(--border-strong) transparent;
       scrollbar-gutter: stable;
-      padding: 0 22px 20px;
+      padding: 4px 22px 22px;
     }
 
     .content-scroll::-webkit-scrollbar { width: 10px; }
@@ -199,44 +293,6 @@
     }
 
     /* ---------- atoms ---------- */
-
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      flex: 0 0 auto;
-      margin-top: 4px;
-      padding: 3px 10px;
-      border: 1px solid var(--border-strong);
-      border-radius: 999px;
-      background: var(--surface);
-      color: var(--text-dim);
-      font-size: 0.76rem;
-      font-weight: 650;
-      white-space: nowrap;
-    }
-
-    .status-pill::before {
-      content: "";
-      width: 7px;
-      height: 7px;
-      border-radius: 999px;
-      background: var(--text-faint);
-    }
-
-    .status-pill[data-ready="true"] {
-      border-color: color-mix(in srgb, var(--ok) 40%, transparent);
-      color: var(--ok-text);
-    }
-
-    .status-pill[data-ready="true"]::before { background: var(--ok); }
-
-    .status-pill[data-ready="false"] {
-      border-color: color-mix(in srgb, var(--warn) 45%, transparent);
-      color: var(--warn-text);
-    }
-
-    .status-pill[data-ready="false"]::before { background: var(--warn); }
 
     button {
       display: inline-flex;
@@ -288,7 +344,37 @@
     }
 
     input[type="text"][hidden] { display: none; }
-    input[type="checkbox"] { width: 36px; height: 20px; accent-color: var(--accent); }
+    /* Checkboxes read as switches, the way system settings draws them. */
+    input[type="checkbox"] {
+      position: relative;
+      flex: 0 0 auto;
+      width: 36px;
+      height: 21px;
+      margin: 0;
+      border-radius: 999px;
+      background: var(--border-strong);
+      appearance: none;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    input[type="checkbox"]::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 17px;
+      height: 17px;
+      border-radius: 999px;
+      background: var(--on-fill);
+      box-shadow: var(--shadow);
+      transition: transform 0.15s;
+    }
+
+    input[type="checkbox"]:checked { background: var(--ok); }
+    input[type="checkbox"]:checked::after { transform: translateX(15px); }
+    input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.45; }
+    input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
     .keys { display: inline-flex; gap: 4px; }
 
@@ -397,7 +483,66 @@
       overflow-wrap: anywhere;
     }
 
-    .row-control { display: inline-flex; align-items: center; gap: 8px; }
+    .row-control { display: inline-flex; align-items: center; gap: 8px; justify-self: end; }
+
+    /* Rows sit in inset cards, the way system settings groups them. */
+    .card {
+      margin-top: 12px;
+      padding: 2px 14px;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: var(--surface-sunken);
+    }
+
+    .card:first-child { margin-top: 0; }
+    .card[hidden] { display: none; }
+
+    .card-title {
+      margin: 16px 2px 0;
+      color: var(--text-dim);
+      font-size: 0.74rem;
+      font-weight: 700;
+    }
+
+    .card-title:first-child { margin-top: 0; }
+    .card-title + .card, .card-title + .engine-list { margin-top: 6px; }
+    .pane-heading + .card, .pane-heading + .card-title, .pane-heading + .usage-hero { margin-top: 0; }
+
+    /* The setting that is a readiness problem, marked on its own pane. */
+    .row[data-issue="true"] .row-label::before {
+      content: "";
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      margin: 0 6px 1px 0;
+      border-radius: 999px;
+      background: var(--warn);
+    }
+
+    .chip {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--ok) 18%, transparent);
+      color: var(--ok-text);
+      font-size: 0.74rem;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .appearance-now {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 650;
+    }
+
+    .appearance-now svg { width: 14px; height: 14px; }
 
     .note {
       margin: 12px 0 0;
@@ -409,7 +554,17 @@
 
     /* ---------- readiness ---------- */
 
-    .checklist { display: grid; margin: 0; padding: 0; list-style: none; }
+    .checklist {
+      display: grid;
+      margin: 0 0 12px;
+      padding: 2px 14px;
+      border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+      border-radius: 11px;
+      background: var(--warn-soft);
+      list-style: none;
+    }
+
+    .checklist[hidden] { display: none; }
 
     .item {
       display: grid;
@@ -445,25 +600,6 @@
       color: var(--text-dim);
       font-size: 0.78rem;
     }
-
-    /* ---------- blocker banner ---------- */
-
-    .blocker {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 12px;
-      padding: 9px 11px;
-      border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
-      border-radius: 9px;
-      background: var(--warn-soft);
-      font-size: 0.84rem;
-    }
-
-    .blocker[hidden] { display: none; }
-    .blocker strong { display: block; font-weight: 650; }
-    .blocker small { color: var(--warn-text); }
 
     /* ---------- model ---------- */
 
@@ -590,7 +726,6 @@
     /* Time Saved is the hero, so it gets the only large number in the window.
        Everything else on the pane is a supporting row. */
     .usage-hero {
-      margin-top: 14px;
       padding: 18px 18px 16px;
       border: 1px solid var(--border);
       border-radius: 12px;
@@ -618,22 +753,22 @@
     /* The hole: no Typing Baseline, so there is no honest number to print. */
     .usage-hero[data-baseline="false"] .usage-hero-value { color: var(--text-faint); }
 
-    .usage-hero-note { margin: 6px 0 0; color: var(--text-dim); font-size: 0.79rem; }
+    .usage-hero-note, .usage-hero-counts { margin: 5px 0 0; color: var(--text-dim); font-size: 0.79rem; }
     .usage-hero-note[hidden] { display: none; }
-    .usage-hero-action { margin-top: 10px; }
+    .usage-hero[hidden], .usage-hero-action[hidden] { display: none; }
 
     .usage-spans {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      margin-top: 12px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
     }
 
     .usage-span {
-      padding: 11px 12px 12px;
+      padding: 11px 14px;
       border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--surface);
+      border-radius: 11px;
+      background: var(--surface-sunken);
     }
 
     .usage-span-label {
@@ -659,7 +794,6 @@
     }
 
     .usage-empty {
-      margin-top: 12px;
       padding: 14px 16px;
       border: 1px dashed var(--border-strong);
       border-radius: 10px;
@@ -698,200 +832,388 @@
 
     input[type="number"]:disabled { opacity: 0.5; cursor: not-allowed; }
 
+    /* ---------- transcript cleanup example ---------- */
+
+    .example {
+      display: grid;
+      gap: 6px;
+      margin-top: 12px;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: var(--surface-sunken);
+      font-size: 0.82rem;
+    }
+
+    .example-label {
+      color: var(--text-faint);
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .example-said { color: var(--text-dim); }
+    .example-said s { color: var(--text-faint); text-decoration-color: var(--danger); }
+    .example-typed { font-weight: 550; white-space: pre-line; }
+
+    /* ---------- dictation bar preview ---------- */
+
+    .bar-preview {
+      position: relative;
+      height: 92px;
+      overflow: hidden;
+      border: 1px solid var(--border-strong);
+      border-radius: 9px;
+      background: linear-gradient(160deg, var(--preview-sky), var(--preview-ground));
+    }
+
+    .bar-preview-window {
+      position: absolute;
+      top: 20px;
+      left: 18%;
+      width: 50%;
+      height: 44px;
+      border-radius: 5px;
+      background: var(--preview-window);
+    }
+
+    .bar-preview-pill {
+      position: absolute;
+      bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 20px;
+      padding: 0 9px 0 6px;
+      border-radius: 999px;
+      background: var(--preview-bar);
+      box-shadow: var(--shadow);
+    }
+
+    .bar-preview-pill[data-position="bottom-center"] { left: 50%; transform: translateX(-50%); }
+    .bar-preview-pill[data-position="bottom-left"] { left: 10px; }
+    .bar-preview-pill[data-position="bottom-right"] { right: 10px; }
+    .bar-preview-pill[data-accent="red"] { --swatch: var(--accent-swatch-red); }
+    .bar-preview-pill[data-accent="amber"] { --swatch: var(--accent-swatch-amber); }
+    .bar-preview-pill[data-accent="green"] { --swatch: var(--accent-swatch-green); }
+    .bar-preview-pill[data-accent="blue"] { --swatch: var(--accent-swatch-blue); }
+    .bar-preview-pill[data-accent="violet"] { --swatch: var(--accent-swatch-violet); }
+    .bar-preview-pill[data-accent="graphite"] { --swatch: var(--accent-swatch-graphite); }
+
+    .bar-preview-orb { width: 10px; height: 10px; border-radius: 999px; background: var(--swatch); }
+    .bar-preview-wave { display: flex; align-items: center; gap: 2px; height: 12px; }
+
+    .bar-preview-wave i {
+      display: block;
+      width: 2px;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--swatch);
+      animation: preview-wave 1s ease-in-out infinite;
+    }
+
+    .bar-preview-wave i:nth-child(2) { animation-delay: 0.1s; }
+    .bar-preview-wave i:nth-child(3) { animation-delay: 0.25s; }
+    .bar-preview-wave i:nth-child(4) { animation-delay: 0.4s; }
+    .bar-preview-wave i:nth-child(5) { animation-delay: 0.15s; }
+
+    @keyframes preview-wave { 50% { height: 12px; } }
+
+    @media (prefers-reduced-motion: reduce) {
+      .bar-preview-wave i { animation: none; height: 8px; }
+    }
+
+    /* ---------- search ---------- */
+
+    /* While searching, every pane shows under its own heading and only the
+       rows that match stay; the blocks around them step aside. */
+    .pane-heading { display: none; }
+
+    .searching .pane-heading {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin: 14px 2px 6px;
+      color: var(--text-dim);
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+
+    .searching .pane-heading .tile-icon { width: 18px; height: 18px; border-radius: 5px; }
+    .searching .pane-heading .tile-icon svg { width: 11px; height: 11px; }
+    .searching .search-hide, .searching .note, .searching .card-title, .search-miss { display: none; }
+    .search-empty { margin-top: 40px; color: var(--text-dim); text-align: center; }
+    .search-empty[hidden] { display: none; }
+
     .pane[hidden] { display: none; }
   </style>
 </head>
 <body>
   <div class="shell">
-    <nav class="rail" aria-label="Settings sections">
-      <button id="rail-status" class="rail-button" type="button" data-pane="status" data-active="true">
-        <span id="rail-icon-status" class="rail-icon"></span>
-        <span>Status</span>
-        <span id="badge-status" class="rail-badge" hidden></span>
-      </button>
-      <button id="rail-dictation" class="rail-button" type="button" data-pane="dictation" data-active="false">
-        <span id="rail-icon-dictation" class="rail-icon"></span>
-        <span>Dictation</span>
-        <span id="badge-dictation" class="rail-badge" hidden></span>
-      </button>
-      <button id="rail-usage" class="rail-button" type="button" data-pane="usage" data-active="false">
-        <span id="rail-icon-usage" class="rail-icon"></span>
-        <span>Usage</span>
-      </button>
-      <button id="rail-model" class="rail-button" type="button" data-pane="model" data-active="false">
-        <span id="rail-icon-model" class="rail-icon"></span>
-        <span>Model</span>
-        <span id="badge-model" class="rail-badge" hidden></span>
-      </button>
-      <button id="rail-general" class="rail-button" type="button" data-pane="general" data-active="false">
-        <span id="rail-icon-general" class="rail-icon"></span>
-        <span>General</span>
-        <span id="badge-general" class="rail-badge" hidden></span>
-      </button>
-    </nav>
+    <aside class="sidebar">
+      <label class="search">
+        <span id="search-icon"></span>
+        <input id="settings-search" type="search" placeholder="Search settings" autocomplete="off" spellcheck="false" aria-label="Search settings" />
+      </label>
+      <!-- Ready or not, and nothing else. Which section holds the problem is
+           what the nav counts below are for. -->
+      <div id="overall-status" class="ready-line" role="status" data-ready="false"><span id="overall-status-icon"></span><span id="overall-status-text">Not ready to dictate</span></div>
+      <nav class="nav" aria-label="Settings sections">
+        <p class="nav-group">Dictate</p>
+        <button id="rail-shortcut" class="nav-button" type="button" data-pane="shortcut" data-active="true">
+          <span id="rail-icon-shortcut" class="tile-icon" data-group="shortcut"></span>
+          <span>Shortcut</span>
+          <span id="badge-shortcut" class="issue-count" hidden></span>
+        </button>
+        <button id="rail-transcription" class="nav-button" type="button" data-pane="transcription" data-active="false">
+          <span id="rail-icon-transcription" class="tile-icon" data-group="transcription"></span>
+          <span>Transcription</span>
+          <span id="badge-transcription" class="issue-count" hidden></span>
+        </button>
+        <button id="rail-text" class="nav-button" type="button" data-pane="text" data-active="false">
+          <span id="rail-icon-text" class="tile-icon" data-group="text"></span>
+          <span>Text &amp; cleanup</span>
+          <span id="badge-text" class="issue-count" hidden></span>
+        </button>
+        <button id="rail-bar" class="nav-button" type="button" data-pane="bar" data-active="false">
+          <span id="rail-icon-bar" class="tile-icon" data-group="bar"></span>
+          <span>Dictation Bar</span>
+          <span id="badge-bar" class="issue-count" hidden></span>
+        </button>
+        <p class="nav-group">You</p>
+        <button id="rail-usage" class="nav-button" type="button" data-pane="usage" data-active="false">
+          <span id="rail-icon-usage" class="tile-icon" data-group="usage"></span>
+          <span>Usage</span>
+          <span id="badge-usage" class="issue-count" hidden></span>
+        </button>
+        <p class="nav-group">App</p>
+        <button id="rail-privacy" class="nav-button" type="button" data-pane="privacy" data-active="false">
+          <span id="rail-icon-privacy" class="tile-icon" data-group="privacy"></span>
+          <span>Privacy &amp; access</span>
+          <span id="badge-privacy" class="issue-count" hidden></span>
+        </button>
+        <button id="rail-general" class="nav-button" type="button" data-pane="general" data-active="false">
+          <span id="rail-icon-general" class="tile-icon" data-group="general"></span>
+          <span>General</span>
+          <span id="badge-general" class="issue-count" hidden></span>
+        </button>
+      </nav>
+    </aside>
 
-    <main class="content">
+    <main id="content" class="content">
       <div class="content-head">
+        <span id="pane-icon" class="tile-icon" data-group="shortcut"></span>
         <div>
-          <h1 id="pane-title">Status</h1>
-          <p id="summary" class="summary">Checking dictation readiness…</p>
+          <h1 id="pane-title">Shortcut</h1>
+          <p id="summary" class="summary">How you start and stop dictating.</p>
         </div>
-        <div id="overall-status" class="status-pill" data-ready="false">Not ready</div>
       </div>
 
       <div class="content-scroll">
-        <!-- The first outstanding step follows the user onto whichever pane they
-             are on, so setup never depends on visiting Status. -->
-        <div id="blocker-banner" class="blocker" hidden>
-          <div>
-            <strong id="blocker-title"></strong>
-            <small id="blocker-detail"></small>
-          </div>
-          <button id="blocker-action" type="button" class="primary"></button>
-        </div>
+        <!-- The required steps this pane settles, with the reason the backend
+             gave. The sidebar counts them; this says what each one needs. -->
+        <ul id="readiness-list" class="checklist search-hide" aria-live="polite" hidden></ul>
+        <p id="settings-message" class="note search-hide" aria-live="polite"></p>
 
-        <section id="pane-status" class="pane" aria-labelledby="pane-title">
-          <ul id="readiness-list" class="checklist" aria-live="polite"></ul>
+        <section id="pane-shortcut" class="pane" aria-labelledby="pane-title">
+          <h2 class="pane-heading"><span class="tile-icon pane-heading-icon" data-group="shortcut"></span>Shortcut</h2>
+          <div class="card">
+            <div id="hotkey-row" class="row" data-keywords="hotkey keyboard keys record">
+              <span class="row-label">
+                Shortcut
+                <span class="row-sub">Starts dictation while another app has focus</span>
+              </span>
+              <span class="row-control">
+                <span id="hotkey-display" class="keys"></span>
+                <input id="hotkey-input" type="text" hidden placeholder="Press a shortcut" autocomplete="off" spellcheck="false" aria-label="Hotkey" />
+                <button id="hotkey-record-button" type="button" class="ghost"></button>
+                <button id="clear-hotkey-button" type="button" class="ghost"></button>
+              </span>
+            </div>
+            <div class="row" data-keywords="hold toggle push to talk">
+              <span class="row-label">
+                Activation
+                <span class="row-sub">How the shortcut behaves</span>
+              </span>
+              <span class="segmented" role="group" aria-label="Activation mode">
+                <button id="mode-toggle" type="button" data-mode="toggle" aria-pressed="true">Toggle</button>
+                <button id="mode-hold" type="button" data-mode="hold" aria-pressed="false">Hold</button>
+              </span>
+            </div>
+            <div class="row" id="voice-activation-row" data-keywords="wake word hands free">
+              <span class="row-label">
+                Voice activation
+                <span class="row-sub">Coming soon. Start dictation with your hotkey for now.</span>
+              </span>
+              <span class="row-control">
+                <input id="voice-activation-toggle" type="checkbox" aria-label="Voice activation, coming soon" disabled />
+              </span>
+            </div>
+          </div>
+          <p id="voice-activation-message" class="note" aria-live="polite"></p>
         </section>
 
-        <section id="pane-dictation" class="pane" aria-labelledby="pane-title" hidden>
-          <div class="row">
-            <span class="row-label">
-              Shortcut
-              <span class="row-sub">While another app has focus</span>
-            </span>
-            <span class="row-control">
-              <span id="hotkey-display" class="keys"></span>
-              <input id="hotkey-input" type="text" hidden placeholder="Press a shortcut" autocomplete="off" spellcheck="false" aria-label="Hotkey" />
-              <button id="hotkey-record-button" type="button" class="ghost"></button>
-              <button id="clear-hotkey-button" type="button" class="ghost"></button>
-            </span>
-          </div>
-          <div class="row">
-            <span class="row-label">
-              Activation
-              <span class="row-sub">How the hotkey behaves</span>
-            </span>
-            <span class="segmented" role="group" aria-label="Activation mode">
-              <button id="mode-toggle" type="button" data-mode="toggle" aria-pressed="true">Toggle</button>
-              <button id="mode-hold" type="button" data-mode="hold" aria-pressed="false">Hold</button>
-            </span>
-          </div>
-          <div class="row">
-            <span class="row-label">
-              Speed vs. accuracy
-              <span class="row-sub">Applies to every dictation</span>
-            </span>
-            <span class="segmented" role="group" aria-label="Speed versus accuracy">
-              <button id="speed-fast" type="button" data-profile="fast" aria-pressed="false">Fast</button>
-              <button id="speed-balanced" type="button" data-profile="balanced" aria-pressed="true">Balanced</button>
-              <button id="speed-accurate" type="button" data-profile="accurate" aria-pressed="false">Accurate</button>
-            </span>
-          </div>
-          <div class="row">
-            <span class="row-label">
-              Transcript cleanup
-              <span class="row-sub">Clean dictation removes hesitations like “um” locally. Pause breaks put short phrases on new lines after a clear pause. Nothing leaves this device.</span>
-            </span>
-            <span class="segmented" role="group" aria-label="Transcript cleanup">
-              <button id="cleanup-basic" type="button" data-cleanup="basic" aria-pressed="true">Basic</button>
-              <button id="cleanup-clean-dictation" type="button" data-cleanup="clean-dictation" aria-pressed="false">Clean dictation</button>
-              <button id="cleanup-clean-dictation-with-pause-breaks" type="button" data-cleanup="clean-dictation-with-pause-breaks" aria-pressed="false">Pause breaks</button>
-            </span>
-          </div>
-          <div class="row">
-            <span class="row-label">
-              Transcription engines
-              <span class="row-sub">On-device only. Audio and transcripts never leave this machine, and there is no cloud fallback.</span>
-            </span>
-          </div>
-          <ul id="engine-list" class="engine-list" aria-live="polite"></ul>
-          <div class="row">
-            <span class="row-label">
-              Second opinion
-              <span class="row-sub">Automatic runs a second local engine only when the first result looks uncertain, and always inserts exactly one transcript.</span>
-            </span>
-            <span class="segmented" role="group" aria-label="Second opinion mode">
-              <button id="second-opinion-off" type="button" data-second-opinion="off" aria-pressed="true">Off</button>
-              <button id="second-opinion-automatic" type="button" data-second-opinion="automatic" aria-pressed="false">Automatic</button>
-            </span>
-          </div>
+        <section id="pane-transcription" class="pane" aria-labelledby="pane-title" hidden>
+          <h2 class="pane-heading"><span class="tile-icon pane-heading-icon" data-group="transcription"></span>Transcription</h2>
+          <p class="card-title">Engine · on this device only</p>
+          <ul id="engine-list" class="engine-list search-hide" aria-live="polite"></ul>
           <p id="engine-message" class="note" aria-live="polite"></p>
-          <div class="row">
-            <span class="row-label">
-              Display
-              <span class="row-sub">Where the Dictation Bar appears</span>
-            </span>
-            <select id="bar-display" aria-label="Dictation Bar display">
-              <option value="primary">Main display</option>
-            </select>
+
+          <p class="card-title">Whisper model</p>
+          <div class="card">
+            <div id="model-row" class="row" data-keywords="model download whisper base">
+              <span class="row-label">
+                <span id="model-name">base.en</span>
+                <span id="model-state" class="row-sub" data-present="false">Checking…</span>
+              </span>
+              <span class="row-control">
+                <button id="download-model-button" type="button" class="primary"></button>
+              </span>
+            </div>
+            <div id="model-progress" class="progress search-hide" hidden>
+              <div class="progress-bar"></div>
+            </div>
+            <div id="model-location-row" class="row" data-keywords="model folder path reveal">
+              <span class="row-label">
+                Location
+                <code id="model-path" class="row-sub mono">Checking model path…</code>
+              </span>
+              <span class="row-control">
+                <button id="reveal-model-button" type="button" class="ghost"></button>
+              </span>
+            </div>
+            <div id="model-delete-row" class="row" data-keywords="model remove delete">
+              <span class="row-label">
+                Remove model
+                <span class="row-sub">Dictation stops working until it is downloaded again.</span>
+              </span>
+              <span class="row-control">
+                <button id="delete-model-button" type="button" class="danger" disabled></button>
+              </span>
+            </div>
           </div>
-          <div class="row">
-            <span class="row-label">
-              Bar position
-              <span class="row-sub">Along the bottom of the screen</span>
-            </span>
-            <span class="segmented" role="group" aria-label="Dictation bar position">
-              <button id="position-bottom-center" type="button" data-position="bottom-center" aria-pressed="true">Centre</button>
-              <button id="position-bottom-left" type="button" data-position="bottom-left" aria-pressed="false">Left</button>
-              <button id="position-bottom-right" type="button" data-position="bottom-right" aria-pressed="false">Right</button>
-            </span>
+          <p id="model-message" class="note">Captured audio and transcriptions stay on this machine.</p>
+
+          <p class="card-title">Quality</p>
+          <div class="card">
+            <div class="row" data-keywords="speed accuracy quality profile fast accurate">
+              <span class="row-label">
+                Speed vs. accuracy
+                <span class="row-sub">Applies to every dictation</span>
+              </span>
+              <span class="segmented" role="group" aria-label="Speed versus accuracy">
+                <button id="speed-fast" type="button" data-profile="fast" aria-pressed="false">Fast</button>
+                <button id="speed-balanced" type="button" data-profile="balanced" aria-pressed="true">Balanced</button>
+                <button id="speed-accurate" type="button" data-profile="accurate" aria-pressed="false">Accurate</button>
+              </span>
+            </div>
+            <div class="row" data-keywords="second opinion fallback double check">
+              <span class="row-label">
+                Second opinion
+                <span class="row-sub">Automatic runs a second local engine only when the first result looks uncertain, and always inserts exactly one transcript.</span>
+              </span>
+              <span class="segmented" role="group" aria-label="Second opinion mode">
+                <button id="second-opinion-off" type="button" data-second-opinion="off" aria-pressed="true">Off</button>
+                <button id="second-opinion-automatic" type="button" data-second-opinion="automatic" aria-pressed="false">Automatic</button>
+              </span>
+            </div>
           </div>
-          <div class="row">
-            <span class="row-label">
-              Accent colour
-              <span class="row-sub">Shown while dictating</span>
-            </span>
-            <span class="swatches" role="group" aria-label="Accent colour">
-              <button id="accent-red" type="button" data-accent="red" aria-pressed="true" aria-label="Red" title="Red"></button>
-              <button id="accent-amber" type="button" data-accent="amber" aria-pressed="false" aria-label="Amber" title="Amber"></button>
-              <button id="accent-green" type="button" data-accent="green" aria-pressed="false" aria-label="Green" title="Green"></button>
-              <button id="accent-blue" type="button" data-accent="blue" aria-pressed="false" aria-label="Blue" title="Blue"></button>
-              <button id="accent-violet" type="button" data-accent="violet" aria-pressed="false" aria-label="Violet" title="Violet"></button>
-              <button id="accent-graphite" type="button" data-accent="graphite" aria-pressed="false" aria-label="Graphite" title="Graphite"></button>
-            </span>
-          </div>
-          <p id="settings-message" class="note" aria-live="polite"></p>
           <p id="transcription-message" class="note" aria-live="polite"></p>
+        </section>
+
+        <section id="pane-text" class="pane" aria-labelledby="pane-title" hidden>
+          <h2 class="pane-heading"><span class="tile-icon pane-heading-icon" data-group="text"></span>Text &amp; cleanup</h2>
+          <div class="card">
+            <div class="row" data-keywords="cleanup filler um uh hesitation pause line break transcript">
+              <span class="row-label">
+                Transcript cleanup
+                <span class="row-sub">Runs on this device. Nothing leaves it.</span>
+              </span>
+              <span class="segmented" role="group" aria-label="Transcript cleanup">
+                <button id="cleanup-basic" type="button" data-cleanup="basic" aria-pressed="true">Basic</button>
+                <button id="cleanup-clean-dictation" type="button" data-cleanup="clean-dictation" aria-pressed="false">Clean</button>
+                <button id="cleanup-clean-dictation-with-pause-breaks" type="button" data-cleanup="clean-dictation-with-pause-breaks" aria-pressed="false">Pause breaks</button>
+              </span>
+            </div>
+          </div>
+          <!-- A worked example, because "removes hesitations" means little
+               until you see what lands in the document. -->
+          <div class="example search-hide" aria-live="polite">
+            <span class="example-label">You say</span>
+            <span id="cleanup-example-said" class="example-said"></span>
+            <span class="example-label">Slugtale types</span>
+            <span id="cleanup-example-typed" class="example-typed"></span>
+          </div>
+          <p id="cleanup-message" class="note" aria-live="polite"></p>
+        </section>
+
+        <section id="pane-bar" class="pane" aria-labelledby="pane-title" hidden>
+          <h2 class="pane-heading"><span class="tile-icon pane-heading-icon" data-group="bar"></span>Dictation Bar</h2>
+          <div class="card search-hide">
+            <div class="bar-preview" aria-hidden="true">
+              <div class="bar-preview-window"></div>
+              <div id="bar-preview-pill" class="bar-preview-pill" data-position="bottom-center" data-accent="red">
+                <span class="bar-preview-orb"></span>
+                <span class="bar-preview-wave"><i></i><i></i><i></i><i></i><i></i></span>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="row" data-keywords="display monitor screen">
+              <span class="row-label">
+                Display
+                <span class="row-sub">Where the Dictation Bar appears</span>
+              </span>
+              <select id="bar-display" aria-label="Dictation Bar display">
+                <option value="primary">Main display</option>
+              </select>
+            </div>
+            <div class="row" data-keywords="position place left right centre center">
+              <span class="row-label">
+                Bar position
+                <span class="row-sub">Along the bottom of the screen</span>
+              </span>
+              <span class="segmented" role="group" aria-label="Dictation bar position">
+                <button id="position-bottom-left" type="button" data-position="bottom-left" aria-pressed="false">Left</button>
+                <button id="position-bottom-center" type="button" data-position="bottom-center" aria-pressed="true">Centre</button>
+                <button id="position-bottom-right" type="button" data-position="bottom-right" aria-pressed="false">Right</button>
+              </span>
+            </div>
+            <div class="row" data-keywords="accent colour color orb waveform">
+              <span class="row-label">
+                Accent colour
+                <span class="row-sub">Shown while dictating</span>
+              </span>
+              <span class="swatches" role="group" aria-label="Accent colour">
+                <button id="accent-red" type="button" data-accent="red" aria-pressed="true" aria-label="Red" title="Red"></button>
+                <button id="accent-amber" type="button" data-accent="amber" aria-pressed="false" aria-label="Amber" title="Amber"></button>
+                <button id="accent-green" type="button" data-accent="green" aria-pressed="false" aria-label="Green" title="Green"></button>
+                <button id="accent-blue" type="button" data-accent="blue" aria-pressed="false" aria-label="Blue" title="Blue"></button>
+                <button id="accent-violet" type="button" data-accent="violet" aria-pressed="false" aria-label="Violet" title="Violet"></button>
+                <button id="accent-graphite" type="button" data-accent="graphite" aria-pressed="false" aria-label="Graphite" title="Graphite"></button>
+              </span>
+            </div>
+          </div>
           <p id="dictation-bar-message" class="note" aria-live="polite"></p>
         </section>
 
         <!-- Usage (ADR-0025). Everything here is a count: no transcript, no
-             audio, and no record of which app was dictated into. -->
+             audio, and no record of which app was dictated into. Numbers come
+             first, then the two settings that feed them. -->
         <section id="pane-usage" class="pane" aria-labelledby="pane-title" hidden>
-          <div class="row">
-            <span class="row-label">
-              Store usage counts
-              <span class="row-sub">Daily counts of dictations, words, and speaking time, kept on this machine. No transcripts and no audio.</span>
-            </span>
-            <span class="row-control">
-              <input id="usage-store-toggle" type="checkbox" aria-label="Store usage counts" />
-            </span>
-          </div>
-
-          <div id="usage-hero" class="usage-hero" data-baseline="false">
+          <h2 class="pane-heading"><span class="tile-icon pane-heading-icon" data-group="usage"></span>Usage</h2>
+          <div id="usage-hero" class="usage-hero search-hide" data-baseline="false">
             <p class="usage-hero-label">Time saved, all time</p>
             <p id="usage-hero-value" class="usage-hero-value">—</p>
+            <p id="usage-all-counts" class="usage-hero-counts">0 dictations · 0 words</p>
             <p id="usage-hero-note" class="usage-hero-note" hidden></p>
-            <div id="usage-hero-action" class="usage-hero-action">
-              <button id="usage-baseline-button" type="button" class="primary"></button>
-            </div>
           </div>
 
-          <!-- Confirmation is in the pane rather than a browser dialog: the
-               webview implements no JS confirm panel, so window.confirm would
-               silently answer "no" and the user could never opt out. -->
-          <div id="usage-confirm" class="usage-confirm" hidden>
-            <p id="usage-confirm-text" class="usage-confirm-text"></p>
-            <span class="usage-confirm-actions">
-              <button id="usage-confirm-cancel" type="button">Cancel</button>
-              <button id="usage-confirm-accept" type="button" class="danger"></button>
-            </span>
-          </div>
+          <p id="usage-empty" class="usage-empty search-hide" hidden></p>
 
-          <p id="usage-empty" class="usage-empty" hidden></p>
-
-          <div id="usage-spans" class="usage-spans">
+          <!-- All time lives in the hero alone, so no number is shown twice. -->
+          <div id="usage-spans" class="usage-spans search-hide">
             <div id="usage-span-today" class="usage-span" data-baseline="false">
               <p class="usage-span-label">Today</p>
               <p id="usage-today-saved" class="usage-span-saved">—</p>
@@ -902,110 +1224,134 @@
               <p id="usage-week-saved" class="usage-span-saved">—</p>
               <p id="usage-week-counts" class="usage-span-counts">0 dictations · 0 words</p>
             </div>
-            <div id="usage-span-all" class="usage-span" data-baseline="false">
-              <p class="usage-span-label">All time</p>
-              <p id="usage-all-saved" class="usage-span-saved">—</p>
-              <p id="usage-all-counts" class="usage-span-counts">0 dictations · 0 words</p>
+          </div>
+
+          <p class="card-title">How it is counted</p>
+          <div class="card">
+            <div class="row" data-keywords="store statistics count">
+              <span class="row-label">
+                Count my dictations
+                <span class="row-sub">Daily counts of dictations, words, and speaking time, kept on this machine. No transcripts and no audio.</span>
+              </span>
+              <span class="row-control">
+                <input id="usage-store-toggle" type="checkbox" aria-label="Store usage counts" />
+              </span>
+            </div>
+            <div class="row" data-keywords="typing speed wpm baseline challenge measure">
+              <span class="row-label">
+                Typing speed
+                <span id="usage-baseline-state" class="row-sub">Not measured yet.</span>
+              </span>
+              <span class="row-control">
+                <span id="usage-hero-action">
+                  <button id="usage-baseline-button" type="button" class="primary"></button>
+                </span>
+                <button id="usage-redo-button" type="button" class="ghost" hidden>Redo</button>
+              </span>
+            </div>
+            <div id="usage-estimate-row" class="row" data-keywords="typing speed estimate wpm guess">
+              <span class="row-label">
+                Estimate instead
+                <span class="row-sub">A stand-in until you take the challenge, in words per minute. The measured speed replaces it.</span>
+              </span>
+              <span class="row-control">
+                <input id="usage-estimate-input" type="number" min="10" max="150" step="1" inputmode="numeric" aria-label="Typing speed estimate in words per minute" />
+                <button id="usage-estimate-save" type="button" class="ghost">Save</button>
+                <button id="usage-estimate-clear" type="button" class="ghost">Clear</button>
+              </span>
             </div>
           </div>
 
-          <div class="row">
-            <span class="row-label">
-              Typing speed
-              <span id="usage-baseline-state" class="row-sub">Not measured yet.</span>
-            </span>
-            <span class="row-control">
-              <button id="usage-redo-button" type="button" class="ghost" hidden>Redo</button>
-            </span>
-          </div>
-          <div id="usage-estimate-row" class="row">
-            <span class="row-label">
-              Estimate instead
-              <span class="row-sub">A stand-in until you take the challenge, in words per minute. The measured speed replaces it.</span>
-            </span>
-            <span class="row-control">
-              <input id="usage-estimate-input" type="number" min="10" max="150" step="1" inputmode="numeric" aria-label="Typing speed estimate in words per minute" />
-              <button id="usage-estimate-save" type="button" class="ghost">Save</button>
-              <button id="usage-estimate-clear" type="button" class="ghost">Clear</button>
+          <!-- Confirmation is in the pane rather than a browser dialog: the
+               webview implements no JS confirm panel, so window.confirm would
+               silently answer "no" and the user could never opt out. -->
+          <div id="usage-confirm" class="usage-confirm search-hide" hidden>
+            <p id="usage-confirm-text" class="usage-confirm-text"></p>
+            <span class="usage-confirm-actions">
+              <button id="usage-confirm-cancel" type="button">Cancel</button>
+              <button id="usage-confirm-accept" type="button" class="danger"></button>
             </span>
           </div>
           <p id="usage-message" class="note" aria-live="polite"></p>
         </section>
 
-        <section id="pane-model" class="pane" aria-labelledby="pane-title" hidden>
-          <div class="row">
-            <span class="row-label">
-              <span id="model-name">base.en</span>
-              <span id="model-state" class="row-sub" data-present="false">Checking…</span>
-            </span>
-            <span class="row-control">
-              <button id="download-model-button" type="button" class="primary"></button>
-            </span>
+        <section id="pane-privacy" class="pane" aria-labelledby="pane-title" hidden>
+          <h2 class="pane-heading"><span class="tile-icon pane-heading-icon" data-group="privacy"></span>Privacy &amp; access</h2>
+          <p class="card-title">Permissions</p>
+          <div class="card">
+            <div id="permission-microphone-row" class="row" data-keywords="microphone permission audio access">
+              <span class="row-label">
+                Microphone
+                <span id="permission-microphone-state" class="row-sub">Checking…</span>
+              </span>
+              <span id="permission-microphone-control" class="row-control"></span>
+            </div>
+            <div id="permission-text_insertion-row" class="row" data-keywords="text insertion accessibility permission typing">
+              <span class="row-label">
+                Text insertion
+                <span id="permission-text_insertion-state" class="row-sub">Checking…</span>
+              </span>
+              <span id="permission-text_insertion-control" class="row-control"></span>
+            </div>
           </div>
-          <div id="model-progress" class="progress" hidden>
-            <div class="progress-bar"></div>
+
+          <p class="card-title">Microphone</p>
+          <div class="card">
+            <div class="row" data-keywords="microphone bluetooth headphones built-in input">
+              <span class="row-label">
+                Built-in microphone
+                <span class="row-sub">Use it instead of Bluetooth headphones. Dictation starts faster and your headphones keep full sound quality.</span>
+              </span>
+              <span class="row-control">
+                <input id="prefer-built-in-microphone-toggle" type="checkbox" aria-label="Prefer the built-in microphone over Bluetooth headphones" />
+              </span>
+            </div>
+            <div class="row" data-keywords="privacy cloud local offline audio">
+              <span class="row-label">
+                Where your audio goes
+                <span class="row-sub">Nowhere. Audio and transcripts stay on this machine, and there is no cloud fallback.</span>
+              </span>
+            </div>
           </div>
-          <div id="model-location-row" class="row">
-            <span class="row-label">
-              Location
-              <code id="model-path" class="row-sub mono">Checking model path…</code>
-            </span>
-            <span class="row-control">
-              <button id="reveal-model-button" type="button" class="ghost"></button>
-            </span>
-          </div>
-          <div id="model-delete-row" class="row">
-            <span class="row-label">
-              Remove model
-              <span class="row-sub">Dictation stops working until it is downloaded again.</span>
-            </span>
-            <span class="row-control">
-              <button id="delete-model-button" type="button" class="danger" disabled></button>
-            </span>
-          </div>
-          <p id="model-message" class="note">Captured audio and transcriptions stay on this machine.</p>
+          <p id="microphone-message" class="note" aria-live="polite"></p>
         </section>
 
         <section id="pane-general" class="pane" aria-labelledby="pane-title" hidden>
-          <div class="row">
-            <span class="row-label">
-              Launch at login
-              <span class="row-sub">Start Slugtale automatically when you sign in.</span>
-            </span>
-            <span class="row-control">
-              <input id="launch-at-login-toggle" type="checkbox" aria-label="Launch at login" />
-            </span>
-          </div>
-          <div class="row" id="voice-activation-row">
-            <span class="row-label">
-              Voice activation
-              <span class="row-sub">Coming soon. Start dictation with your hotkey for now.</span>
-            </span>
-            <span class="row-control">
-              <input id="voice-activation-toggle" type="checkbox" aria-label="Voice activation, coming soon" disabled />
-            </span>
-          </div>
-          <div class="row">
-            <span class="row-label">
-              Appearance
-              <span class="row-sub">Slugtale follows your system light and dark setting.</span>
-            </span>
-          </div>
-          <div class="row">
-            <span class="row-label">
-              App updates
-              <span id="app-update-state" class="row-sub">Checks happen only when you select Check now.</span>
-            </span>
-            <span class="row-control">
-              <button id="app-update-release-button" type="button" class="primary" hidden>Open release page</button>
-              <button id="app-update-check-button" type="button" class="ghost">Check now</button>
-            </span>
+          <h2 class="pane-heading"><span class="tile-icon pane-heading-icon" data-group="general"></span>General</h2>
+          <div class="card">
+            <div class="row" data-keywords="login startup boot launch">
+              <span class="row-label">
+                Launch at login
+                <span class="row-sub">Start Slugtale automatically when you sign in.</span>
+              </span>
+              <span class="row-control">
+                <input id="launch-at-login-toggle" type="checkbox" aria-label="Launch at login" />
+              </span>
+            </div>
+            <div class="row" data-keywords="appearance theme dark light mode night day">
+              <span class="row-label">
+                Appearance
+                <span class="row-sub">Slugtale follows your system light and dark setting.</span>
+              </span>
+              <span id="appearance-now" class="appearance-now"></span>
+            </div>
+            <div class="row" data-keywords="update version upgrade release">
+              <span class="row-label">
+                App updates
+                <span id="app-update-state" class="row-sub">Checks happen only when you select Check now.</span>
+              </span>
+              <span class="row-control">
+                <button id="app-update-release-button" type="button" class="primary" hidden>Open release page</button>
+                <button id="app-update-check-button" type="button" class="ghost">Check now</button>
+              </span>
+            </div>
           </div>
           <p class="note">Slugtale will not replace this app. Another build can make macOS ask for Microphone and Accessibility access again.</p>
           <p id="app-update-message" class="note" aria-live="polite"></p>
           <p id="launch-at-login-message" class="note" aria-live="polite"></p>
-          <p id="voice-activation-message" class="note" aria-live="polite"></p>
         </section>
+
+        <p id="search-empty" class="search-empty" hidden>No setting matches.</p>
       </div>
     </main>
   </div>
@@ -1026,7 +1372,13 @@
       keyboard: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>',
       cpu: '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/>',
       gauge: '<path d="M12 14v-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/><circle cx="12" cy="14" r="2"/>',
-      sliders: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>'
+      sliders: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>',
+      search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+      wand: '<path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/>',
+      panel: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 15h18"/>',
+      shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+      sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2m-7.07-14.07 1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+      moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>'
     };
 
     function iconSvg(name, size = 16) {
@@ -1040,11 +1392,11 @@
     const fallbackReport = {
       dictation_available: false,
       items: [
-        { id: "microphone", label: "Microphone permission", ready: false, required: true, pane: null },
-        { id: "text_insertion", label: "Text insertion permission", ready: false, required: true, pane: null },
-        { id: "hotkey", label: "Hotkey", ready: false, required: true, pane: "dictation" },
-        { id: "local_model", label: "Local model", ready: false, required: true, pane: "model" },
-        { id: "transcription_engine", label: "Transcription engine", ready: false, required: true, pane: "dictation" },
+        { id: "microphone", label: "Microphone permission", ready: false, required: true, pane: "privacy" },
+        { id: "text_insertion", label: "Text insertion permission", ready: false, required: true, pane: "privacy" },
+        { id: "hotkey", label: "Hotkey", ready: false, required: true, pane: "shortcut" },
+        { id: "local_model", label: "Local model", ready: false, required: true, pane: "transcription" },
+        { id: "transcription_engine", label: "Transcription engine", ready: false, required: true, pane: "transcription" },
         { id: "launch_at_login", label: "Launch at login", ready: true, required: false, pane: "general" }
       ]
     };
@@ -1070,7 +1422,8 @@
       primary_engine: "whisper",
       second_opinion: "off",
       transcript_cleanup: "basic",
-      voice_activation_enabled: false
+      voice_activation_enabled: false,
+      prefer_built_in_microphone: true
     };
 
     // Shown only outside the desktop app (no Tauri bridge), so the pane is never
@@ -1174,15 +1527,38 @@
       return READINESS_COPY[id]?.actions?.[PLATFORM] || null;
     }
 
-    // Status and Dictation report readiness in the subtitle; the other panes
-    // describe themselves, because readiness is not what you came to them for.
+    // One entry per sidebar section, in sidebar order. A readiness item names
+    // the pane that shows it, so these ids are also the backend's
+    // `ReadinessPane` wire names.
     const PANES = [
-      { id: "status", title: "Status", icon: "activity" },
-      { id: "dictation", title: "Dictation", icon: "keyboard" },
+      { id: "shortcut", title: "Shortcut", icon: "keyboard", subtitle: "How you start and stop dictating." },
+      { id: "transcription", title: "Transcription", icon: "cpu", subtitle: "Which on-device engine turns speech into text." },
+      { id: "text", title: "Text & cleanup", icon: "wand", subtitle: "What your words look like when they land." },
+      { id: "bar", title: "Dictation Bar", icon: "panel", subtitle: "The small bar you see while you speak." },
       { id: "usage", title: "Usage", icon: "gauge", subtitle: "Counts only, and only if you ask. Nothing is shared." },
-      { id: "model", title: "Model", icon: "cpu", subtitle: "Runs locally. Nothing leaves this machine." },
+      { id: "privacy", title: "Privacy & access", icon: "shield", subtitle: "What Slugtale may use on this machine." },
       { id: "general", title: "General", icon: "sliders", subtitle: "How Slugtale behaves in the background." }
     ];
+
+    // The two OS permissions have a row of their own on the Privacy pane, so
+    // the pane's problem list leaves them to it rather than saying it twice.
+    const PERMISSION_ITEMS = ["microphone", "text_insertion"];
+
+    // What each cleanup mode does to the same spoken sentence.
+    const CLEANUP_EXAMPLES = {
+      basic: {
+        said: "“Um, so I think we should, uh, ship the beta on Friday… then collect feedback.”",
+        typed: "Um, so I think we should, uh, ship the beta on Friday. Then collect feedback."
+      },
+      "clean-dictation": {
+        said: "“<s>Um,</s> so I think we should, <s>uh,</s> ship the beta on Friday… then collect feedback.”",
+        typed: "So I think we should ship the beta on Friday. Then collect feedback."
+      },
+      "clean-dictation-with-pause-breaks": {
+        said: "“<s>Um,</s> so I think we should, <s>uh,</s> ship the beta on Friday… [pause] then collect feedback.”",
+        typed: "So I think we should ship the beta on Friday.\nThen collect feedback."
+      }
+    };
 
     // Shown only outside the desktop app (no Tauri bridge), so the pane is never
     // blank. Mirrors a fresh install: storing off, no baseline, nothing counted.
@@ -1210,12 +1586,16 @@
     let savingCleanup = false;
     let savingDictationBar = false;
     let savingLaunchAtLogin = false;
+    let savingMicrophone = false;
     let savingVoiceActivation = false;
     let openingReadinessAction = false;
     let capturingHotkey = false;
-    let activePane = "status";
+    let activePane = "shortcut";
+    // The window opens on the first pane with a problem, once, unless the user
+    // has already picked a pane themselves.
+    let paneChosen = false;
+    let searchQuery = "";
     let latestReport = fallbackReport;
-    let readinessSummary = "Checking dictation readiness…";
     let currentSettings = { ...fallbackSettings };
     let dictationBarDisplays = [{ value: "primary", label: "Main display" }];
     let latestEngines = fallbackEngines;
@@ -1265,130 +1645,206 @@
       return report.items.filter((item) => item.required && !item.ready);
     }
 
-    function selectPane(paneId) {
+    function selectPane(paneId, options = {}) {
       activePane = paneId;
+      if (options.byUser) paneChosen = true;
+      renderPanes();
+      renderReadinessList(latestReport);
+    }
+
+    function renderPanes() {
+      const searching = searchQuery !== "";
+      document.getElementById("content").classList.toggle("searching", searching);
 
       PANES.forEach((pane) => {
-        document.getElementById(`rail-${pane.id}`).dataset.active = String(pane.id === paneId);
-        document.getElementById(`pane-${pane.id}`).hidden = pane.id !== paneId;
+        document.getElementById(`rail-${pane.id}`).dataset.active = String(!searching && pane.id === activePane);
+        document.getElementById(`pane-${pane.id}`).hidden = !searching && pane.id !== activePane;
       });
 
-      renderHead();
-      renderBlocker(latestReport);
-    }
-
-    function renderHead() {
       const pane = PANES.find((entry) => entry.id === activePane) || PANES[0];
-      document.getElementById("pane-title").textContent = pane.title;
-      document.getElementById("summary").textContent = pane.subtitle || readinessSummary;
+      const paneIcon = document.getElementById("pane-icon");
+      paneIcon.hidden = searching;
+      paneIcon.dataset.group = pane.id;
+      paneIcon.innerHTML = iconSvg(pane.icon, 18);
+      document.getElementById("pane-title").textContent = searching ? "Results" : pane.title;
+      document.getElementById("summary").textContent = searching ? `for “${searchQuery}”` : pane.subtitle;
+
+      renderSearch();
     }
 
-    // Status is a pane like any other, so the outstanding step is repeated as a
-    // banner everywhere else. On Status itself the checklist already says it.
-    function renderBlocker(report) {
-      const banner = document.getElementById("blocker-banner");
-      const blocker = blockersOf(report)[0];
+    // Search runs over the rows already on every pane: a row stays when its
+    // words or keywords hold the query, and a card with no row left goes too.
+    function renderSearch() {
+      const query = searchQuery.toLowerCase();
+      let matches = 0;
 
-      if (!blocker || activePane === "status") {
-        banner.hidden = true;
-        return;
-      }
+      document.querySelectorAll(".row").forEach((row) => {
+        const words = `${row.textContent} ${row.dataset.keywords || ""}`.toLowerCase();
+        const hit = query === "" || words.includes(query);
+        row.classList.toggle("search-miss", !hit);
+        if (hit && !row.hidden) matches += 1;
+      });
 
-      const action = readinessAction(blocker.id);
-      const button = document.getElementById("blocker-action");
-      banner.hidden = false;
-      document.getElementById("blocker-title").textContent = blocker.label;
-      document.getElementById("blocker-detail").textContent =
-        blocker.detail || readinessGuidance(blocker.id);
-      button.dataset.item = blocker.id;
-      button.dataset.pane = blocker.pane || "";
-      button.textContent = action ? action.label : "Set up";
+      document.querySelectorAll(".card").forEach((card) => {
+        const rows = [...card.querySelectorAll(".row")];
+        card.classList.toggle(
+          "search-miss",
+          query !== "" && !rows.some((row) => !row.hidden && !row.classList.contains("search-miss"))
+        );
+      });
+
+      PANES.forEach((pane) => {
+        const section = document.getElementById(`pane-${pane.id}`);
+        const rows = [...section.querySelectorAll(".row")];
+        section.classList.toggle(
+          "search-miss",
+          query !== "" && !rows.some((row) => !row.hidden && !row.classList.contains("search-miss"))
+        );
+      });
+
+      document.getElementById("search-empty").hidden = query === "" || matches > 0;
     }
 
+    function setSearchQuery(query) {
+      searchQuery = query.trim();
+      renderPanes();
+    }
+
+    // Each pane's count is how many required items it shows that are not ready,
+    // so the sidebar points at the problem without a page of its own.
     function renderBadges(report) {
       const outstanding = blockersOf(report);
-      const panesWithWork = new Set(
-        outstanding.map((item) => item.pane).filter(Boolean)
-      );
 
-      // The rail buttons that can badge: every pane an item can send the user to.
-      document.getElementById("badge-status").hidden = outstanding.length === 0;
-      for (const paneId of ["dictation", "model", "general"]) {
-        document.getElementById(`badge-${paneId}`).hidden = !panesWithWork.has(paneId);
+      PANES.forEach((pane) => {
+        const count = outstanding.filter((item) => item.pane === pane.id).length;
+        const badge = document.getElementById(`badge-${pane.id}`);
+        badge.hidden = count === 0;
+        badge.innerHTML = count ? `${iconSvg("alert", 12)}<span>${count}</span>` : "";
+        badge.setAttribute("aria-label", `${count} to fix`);
+      });
+    }
+
+    function readinessRow(item) {
+      const row = document.createElement("li");
+      row.className = "item";
+      row.dataset.ready = String(item.ready);
+      row.dataset.required = String(item.required);
+
+      const icon = document.createElement("span");
+      icon.className = "icon";
+      icon.innerHTML = iconSvg(item.ready ? "check" : item.required ? "alert" : "minus", 12);
+
+      const copy = document.createElement("div");
+      copy.className = "copy";
+
+      const label = document.createElement("strong");
+      label.textContent = item.label;
+
+      const srState = document.createElement("span");
+      srState.className = "sr-only";
+      srState.textContent = ` — ${stateWord(item)}`;
+      label.append(srState);
+      copy.append(label);
+
+      // The report may carry a reason only the backend knows — which engine
+      // this build compiled in, which assets are installed. Prefer it over the
+      // static copy, which cannot know any of that.
+      const detail = item.detail || readinessGuidance(item.id);
+      if (detail) {
+        const small = document.createElement("small");
+        small.textContent = detail;
+        copy.append(small);
       }
+
+      const action = readinessAction(item.id);
+      if (action) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.innerHTML = `${iconSvg("external", 14)}<span>${action.label}</span>`;
+        button.addEventListener("click", () => openReadinessAction(item.id));
+        row.append(icon, copy, button);
+      } else {
+        row.append(icon, copy);
+      }
+      return row;
+    }
+
+    // The problems on the pane in view, above the controls that fix them.
+    function renderReadinessList(report) {
+      const list = document.getElementById("readiness-list");
+      const items = blockersOf(report).filter(
+        (item) => item.pane === activePane && !PERMISSION_ITEMS.includes(item.id)
+      );
+      list.hidden = items.length === 0;
+      list.replaceChildren(...items.map(readinessRow));
+    }
+
+    // The permissions are a fact about this machine, so their rows always say
+    // where they stand, and offer the way to system settings when not granted.
+    function renderPermissions(report) {
+      PERMISSION_ITEMS.forEach((id) => {
+        const item = report.items.find((entry) => entry.id === id);
+        const row = document.getElementById(`permission-${id}-row`);
+        const state = document.getElementById(`permission-${id}-state`);
+        const control = document.getElementById(`permission-${id}-control`);
+        row.hidden = !item;
+        if (!item) return;
+
+        row.dataset.issue = String(item.required && !item.ready);
+        state.textContent = item.ready ? "Allowed." : item.detail || readinessGuidance(id);
+
+        const action = readinessAction(id);
+        if (item.ready) {
+          const chip = document.createElement("span");
+          chip.className = "chip";
+          chip.textContent = "Allowed";
+          control.replaceChildren(chip);
+        } else if (action) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.innerHTML = `${iconSvg("external", 14)}<span>${action.label}</span>`;
+          button.addEventListener("click", () => openReadinessAction(id));
+          control.replaceChildren(button);
+        } else {
+          control.replaceChildren();
+        }
+      });
     }
 
     function render(report) {
       latestReport = report;
       const ready = report.dictation_available;
-      const list = document.getElementById("readiness-list");
       const status = document.getElementById("overall-status");
 
       status.dataset.ready = String(ready);
-      status.textContent = ready ? "Ready" : "Not ready";
-      readinessSummary = ready
-        ? "Dictation can start from the configured hotkey."
-        : "Finish the highlighted steps to enable dictation.";
-      renderHead();
+      document.getElementById("overall-status-icon").innerHTML = iconSvg(ready ? "check" : "alert", 15);
+      document.getElementById("overall-status-text").textContent =
+        ready ? "Ready to dictate" : "Not ready to dictate";
 
-      list.replaceChildren(...report.items.map((item) => {
-        const row = document.createElement("li");
-        row.className = "item";
-        row.dataset.ready = String(item.ready);
-        row.dataset.required = String(item.required);
-
-        const icon = document.createElement("span");
-        icon.className = "icon";
-        icon.innerHTML = iconSvg(item.ready ? "check" : item.required ? "alert" : "minus", 12);
-
-        const copy = document.createElement("div");
-        copy.className = "copy";
-
-        const label = document.createElement("strong");
-        label.textContent = item.label;
-
-        const srState = document.createElement("span");
-        srState.className = "sr-only";
-        srState.textContent = ` — ${stateWord(item)}`;
-        label.append(srState);
-        copy.append(label);
-
-        // Completed rows stay compact; guidance only appears where action is
-        // still required, so the eye lands on what is left to do.
-        if (!item.ready) {
-          // The report may carry a reason only the backend knows — which engine
-          // this build compiled in, which assets are installed. Prefer it over
-          // the static copy, which cannot know any of that.
-          const detail = item.detail || readinessGuidance(item.id);
-          if (detail) {
-            const small = document.createElement("small");
-            small.textContent = detail;
-            copy.append(small);
-          }
-        }
-
-        const action = readinessAction(item.id);
-
-        if (!item.ready && action) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.innerHTML = `${iconSvg("external", 14)}<span>${action.label}</span>`;
-          button.addEventListener("click", () => openReadinessAction(item.id));
-          row.append(icon, copy, button);
-        } else if (!item.ready && item.pane) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.textContent = "Set up";
-          button.addEventListener("click", () => selectPane(item.pane));
-          row.append(icon, copy, button);
-        } else {
-          row.append(icon, copy);
-        }
-        return row;
-      }));
+      const notReady = (id) => blockersOf(report).some((item) => item.id === id);
+      document.getElementById("hotkey-row").dataset.issue = String(notReady("hotkey"));
+      document.getElementById("model-row").dataset.issue = String(notReady("local_model"));
 
       renderBadges(report);
-      renderBlocker(report);
+      renderPermissions(report);
+
+      // The first report opens the window on its first problem, so the fix is
+      // one look away. Later reports leave the user where they are.
+      const firstProblem = blockersOf(report)[0];
+      if (!paneChosen) {
+        paneChosen = true;
+        if (firstProblem?.pane) {
+          selectPane(firstProblem.pane);
+          return;
+        }
+      }
+      renderReadinessList(report);
+    }
+
+    function renderAppearance() {
+      const dark = Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+      document.getElementById("appearance-now").innerHTML =
+        `${iconSvg(dark ? "moon" : "sun", 14)}<span>Now ${dark ? "dark" : "light"}</span>`;
     }
 
     function plural(count, word) {
@@ -1436,7 +1892,7 @@
       if (!storing) {
         empty.hidden = false;
         empty.textContent =
-          "Nothing is being stored. Turn on storing above and Slugtale will start counting from then on — dictations before that are not kept. You can still measure your typing speed.";
+          "Nothing is being stored. Turn on counting below and Slugtale will start counting from then on — dictations before that are not kept. You can still measure your typing speed.";
       } else if (!anyDays) {
         empty.hidden = false;
         empty.textContent = "No dictations counted yet.";
@@ -1444,12 +1900,14 @@
         empty.hidden = true;
       }
 
-      // With storing off the numbers are all zero, so showing three zero cards
-      // would only imply the user had a quiet week.
+      // With storing off the numbers are all zero, so showing zeroed cards would
+      // only imply the user had a quiet week.
+      hero.hidden = !storing;
       document.getElementById("usage-spans").hidden = !storing;
       renderUsageSpan("today", usage.today, hasBaseline);
       renderUsageSpan("week", usage.this_week, hasBaseline);
-      renderUsageSpan("all", usage.all_time, hasBaseline);
+      document.getElementById("usage-all-counts").textContent =
+        `${plural(usage.all_time.dictations, "dictation")} · ${plural(usage.all_time.words, "word")}`;
 
       const heroNote = document.getElementById("usage-hero-note");
       heroNote.hidden = hasBaseline;
@@ -1596,6 +2054,9 @@
         button.setAttribute("aria-pressed", String(option === cleanupMode));
         button.disabled = savingCleanup;
       });
+      const example = CLEANUP_EXAMPLES[cleanupMode] || CLEANUP_EXAMPLES.basic;
+      document.getElementById("cleanup-example-said").innerHTML = example.said;
+      document.getElementById("cleanup-example-typed").textContent = example.typed;
 
       const barPosition = currentSettings.bar_position || "bottom-center";
       BAR_POSITIONS.forEach((option) => {
@@ -1610,6 +2071,9 @@
         button.setAttribute("aria-pressed", String(option === accent));
         button.disabled = savingDictationBar;
       });
+      const preview = document.getElementById("bar-preview-pill");
+      preview.dataset.position = barPosition;
+      preview.dataset.accent = accent;
 
       renderDictationBarDisplays();
 
@@ -1623,6 +2087,10 @@
       const launchToggle = document.getElementById("launch-at-login-toggle");
       launchToggle.checked = Boolean(currentSettings.launch_at_login);
       launchToggle.disabled = savingLaunchAtLogin;
+
+      const microphoneToggle = document.getElementById("prefer-built-in-microphone-toggle");
+      microphoneToggle.checked = currentSettings.prefer_built_in_microphone !== false;
+      microphoneToggle.disabled = savingMicrophone;
 
       const voiceToggle = document.getElementById("voice-activation-toggle");
       const voiceMessage = document.getElementById("voice-activation-message");
@@ -1689,6 +2157,41 @@
         savingLaunchAtLogin = false;
         currentSettings = { ...previousSettings };
         toggle.checked = Boolean(currentSettings.launch_at_login);
+        toggle.disabled = false;
+        messageEl.classList.add("error");
+        messageEl.textContent = String(error);
+      }
+    }
+
+    // The next dictation opens the chosen microphone; nothing to restart.
+    async function saveMicrophonePreference(enabled) {
+      const invoke = tauriInvoke();
+      const previousSettings = { ...currentSettings };
+      const toggle = document.getElementById("prefer-built-in-microphone-toggle");
+      const messageEl = document.getElementById("microphone-message");
+
+      if (!invoke) {
+        currentSettings = { ...currentSettings, prefer_built_in_microphone: enabled };
+        toggle.checked = enabled;
+        return;
+      }
+
+      savingMicrophone = true;
+      toggle.disabled = true;
+      messageEl.classList.remove("error");
+      messageEl.textContent = "Saving…";
+
+      try {
+        const saved = await invoke("save_microphone_settings", { preferBuiltInMicrophone: enabled });
+        savingMicrophone = false;
+        currentSettings = { ...fallbackSettings, ...saved };
+        toggle.checked = currentSettings.prefer_built_in_microphone !== false;
+        toggle.disabled = false;
+        messageEl.textContent = "";
+      } catch (error) {
+        savingMicrophone = false;
+        currentSettings = { ...previousSettings };
+        toggle.checked = currentSettings.prefer_built_in_microphone !== false;
         toggle.disabled = false;
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
@@ -1830,7 +2333,7 @@
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };
       const nextSettings = { ...currentSettings, transcript_cleanup: cleanupMode };
-      const messageEl = document.getElementById("transcription-message");
+      const messageEl = document.getElementById("cleanup-message");
 
       if (!invoke) {
         renderSettings(nextSettings);
@@ -2570,9 +3073,32 @@
     function init() {
       PANES.forEach((pane) => {
         const button = document.getElementById(`rail-${pane.id}`);
-        document.getElementById(`rail-icon-${pane.id}`).innerHTML = iconSvg(pane.icon, 18);
-        button.addEventListener("click", () => selectPane(pane.id));
+        document.getElementById(`rail-icon-${pane.id}`).innerHTML = iconSvg(pane.icon, 13);
+        button.addEventListener("click", () => {
+          const search = document.getElementById("settings-search");
+          search.value = "";
+          searchQuery = "";
+          selectPane(pane.id, { byUser: true });
+        });
       });
+      document.querySelectorAll(".pane-heading-icon").forEach((icon) => {
+        const pane = PANES.find((entry) => entry.id === icon.dataset.group);
+        if (pane) icon.innerHTML = iconSvg(pane.icon, 11);
+      });
+
+      document.getElementById("search-icon").innerHTML = iconSvg("search", 14);
+      const search = document.getElementById("settings-search");
+      search.addEventListener("input", () => setSearchQuery(search.value));
+      search.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        search.value = "";
+        setSearchQuery("");
+      });
+
+      // There is no in-app theme choice: the window follows the system, and the
+      // General pane says which way it currently is.
+      renderAppearance();
+      window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", renderAppearance);
 
       document.getElementById("clear-hotkey-button").textContent = "Clear";
       setButton(document.getElementById("download-model-button"), "download", "Download");
@@ -2668,6 +3194,9 @@
       document.getElementById("voice-activation-toggle").addEventListener("change", (event) => {
         saveVoiceActivation(event.target.checked);
       });
+      document.getElementById("prefer-built-in-microphone-toggle").addEventListener("change", (event) => {
+        saveMicrophonePreference(event.target.checked);
+      });
 
       document.getElementById("app-update-check-button").addEventListener("click", () => {
         checkForAppUpdate();
@@ -2695,17 +3224,6 @@
       const listen = tauriEvent();
       if (listen) listen("usage-changed", () => loadUsage());
 
-      document.getElementById("blocker-action").addEventListener("click", (event) => {
-        const itemId = event.currentTarget.dataset.item;
-        if (!itemId) return;
-        if (readinessAction(itemId)) {
-          openReadinessAction(itemId);
-          return;
-        }
-        const pane = event.currentTarget.dataset.pane;
-        if (pane) selectPane(pane);
-      });
-
       window.addEventListener("focus", () => {
         loadReadiness({ background: true });
         loadUsage();
@@ -2717,7 +3235,7 @@
         }
       });
 
-      selectPane("status");
+      selectPane("shortcut");
       refreshSetup();
     }
 

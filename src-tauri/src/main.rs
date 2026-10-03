@@ -592,6 +592,19 @@ fn save_transcript_cleanup_settings(
     Ok(settings)
 }
 
+/// Save whether dictation records from the built-in microphone when the
+/// default one is Bluetooth. The next dictation picks the new microphone up.
+#[tauri::command]
+fn save_microphone_settings(
+    app: tauri::AppHandle,
+    prefer_built_in_microphone: bool,
+) -> Result<slugtale_lib::Settings, String> {
+    let mut settings = load_current_settings(&app);
+    slugtale_lib::apply_microphone_settings(&mut settings, prefer_built_in_microphone);
+    save_current_settings(&app, &settings)?;
+    Ok(settings)
+}
+
 #[tauri::command]
 fn voice_activation_supported() -> bool {
     voice_activation::supported()
@@ -986,8 +999,9 @@ fn mark_typing_challenge_closed(manager: &impl tauri::Manager<tauri::Wry>) {
 /// Open the Typing Challenge window, creating it on first use.
 ///
 /// It is its own window and larger than Settings on purpose: thirty seconds of
-/// typing against a passage needs room to read, and the 480x520 settings frame
-/// would put the passage and the typing box in a column too narrow to follow.
+/// typing against a passage needs room to read, and the settings content column
+/// beside its sidebar would put the passage and the typing box in a column too
+/// narrow to follow.
 #[tauri::command]
 fn open_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
     // Raised before the window exists, so the hotkey is already inert by the
@@ -1252,7 +1266,7 @@ fn main() {
             // must never prompt, and a denied microphone stays on the normal
             // permission path.
             if CurrentPlatform::new().microphone_granted() {
-                dictation_host(app.handle()).prepare_capture();
+                dictation_host(app.handle()).prepare_capture(&settings);
             }
             // Voice Activation is opt-in: the always-on listener only starts
             // when a previously saved preference asks for it (slugtale-e95).
@@ -1298,6 +1312,7 @@ fn main() {
             save_hotkey_settings,
             save_transcription_settings,
             save_transcript_cleanup_settings,
+            save_microphone_settings,
             voice_activation_supported,
             save_voice_activation_settings,
             save_dictation_bar_settings,

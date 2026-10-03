@@ -183,20 +183,21 @@ impl ReadinessItemId {
         }
     }
 
-    /// The settings pane whose control settles this item, when settling it is a
-    /// matter of changing a setting rather than of granting an OS permission.
-    /// `None` means there is no such pane: the two permissions are answered in
-    /// system settings, which the report names as a command instead.
-    pub fn pane(self) -> Option<ReadinessPane> {
+    /// The settings pane that shows this item and the control that settles it.
+    /// The settings window counts an item's problems against this pane, so every
+    /// item names one. The two permissions are granted in system settings, but
+    /// the Privacy pane is where Slugtale shows them and offers the way there.
+    pub fn pane(self) -> ReadinessPane {
         match self {
-            // Engine choice lives on the Dictation pane, next to the engine list
-            // that states why each one is unavailable.
-            ReadinessItemId::Hotkey | ReadinessItemId::TranscriptionEngine => {
-                Some(ReadinessPane::Dictation)
+            ReadinessItemId::Hotkey => ReadinessPane::Shortcut,
+            // The model and the engine share a pane: the model is one engine's
+            // assets, listed next to the engines that state why each one is
+            // unavailable.
+            ReadinessItemId::LocalModel | ReadinessItemId::TranscriptionEngine => {
+                ReadinessPane::Transcription
             }
-            ReadinessItemId::LocalModel => Some(ReadinessPane::Model),
-            ReadinessItemId::LaunchAtLogin => Some(ReadinessPane::General),
-            ReadinessItemId::Microphone | ReadinessItemId::TextInsertion => None,
+            ReadinessItemId::Microphone | ReadinessItemId::TextInsertion => ReadinessPane::Privacy,
+            ReadinessItemId::LaunchAtLogin => ReadinessPane::General,
         }
     }
 }
@@ -206,16 +207,18 @@ impl ReadinessItemId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadinessPane {
-    Dictation,
-    Model,
+    Shortcut,
+    Transcription,
+    Privacy,
     General,
 }
 
 impl ReadinessPane {
     pub fn as_str(self) -> &'static str {
         match self {
-            ReadinessPane::Dictation => "dictation",
-            ReadinessPane::Model => "model",
+            ReadinessPane::Shortcut => "shortcut",
+            ReadinessPane::Transcription => "transcription",
+            ReadinessPane::Privacy => "privacy",
             ReadinessPane::General => "general",
         }
     }
@@ -229,9 +232,8 @@ pub struct ReadinessItem {
     pub label: String,
     pub ready: bool,
     pub required: bool,
-    /// The settings pane that settles this item, when it has one. `None` for the
-    /// two OS permissions, which are settled in system settings.
-    pub pane: Option<ReadinessPane>,
+    /// The settings pane that shows this item.
+    pub pane: ReadinessPane,
     /// Why this item is not ready, when the reason is specific to this machine
     /// or this build rather than fixed guidance the settings window already
     /// knows. `None` means the static copy for `id` is the whole story.
@@ -524,9 +526,9 @@ mod tests {
     }
 
     #[test]
-    fn the_two_os_permissions_name_no_pane_because_no_setting_settles_them() {
-        assert_eq!(ReadinessItemId::Microphone.pane(), None);
-        assert_eq!(ReadinessItemId::TextInsertion.pane(), None);
+    fn the_two_os_permissions_are_shown_on_the_privacy_pane() {
+        assert_eq!(ReadinessItemId::Microphone.pane(), ReadinessPane::Privacy);
+        assert_eq!(ReadinessItemId::TextInsertion.pane(), ReadinessPane::Privacy);
     }
 
     #[test]

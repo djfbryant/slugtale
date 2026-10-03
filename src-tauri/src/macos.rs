@@ -1,8 +1,8 @@
 use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
-    InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, TextInsertion,
-    TextInsertionError, TextInsertionPermissionSetup, TextInsertionPipeline, TextInsertionSystem,
-    WeekStart,
+    InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, MicrophoneTransport,
+    TextInsertion, TextInsertionError, TextInsertionPermissionSetup, TextInsertionPipeline,
+    TextInsertionSystem, WeekStart,
 };
 use block2::RcBlock;
 use objc2::runtime::Bool;
@@ -46,7 +46,44 @@ extern "C" {
         value_callbacks: *const c_void,
     ) -> *const c_void;
     static kCFBooleanTrue: *const c_void;
+    fn CFStringCreateWithBytes(
+        allocator: *const c_void,
+        bytes: *const u8,
+        num_bytes: isize,
+        encoding: u32,
+        is_external_representation: bool,
+    ) -> *const c_void;
 }
+
+#[repr(C)]
+struct AudioObjectPropertyAddress {
+    selector: u32,
+    scope: u32,
+    element: u32,
+}
+
+#[link(name = "CoreAudio", kind = "framework")]
+extern "C" {
+    fn AudioObjectGetPropertyData(
+        object: u32,
+        address: *const AudioObjectPropertyAddress,
+        qualifier_size: u32,
+        qualifier: *const c_void,
+        data_size: *mut u32,
+        data: *mut c_void,
+    ) -> i32;
+}
+
+const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+const K_AUDIO_OBJECT_SYSTEM_OBJECT: u32 = 1;
+const K_AUDIO_OBJECT_UNKNOWN: u32 = 0;
+const K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: u32 = u32::from_be_bytes(*b"glob");
+const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
+const K_AUDIO_HARDWARE_PROPERTY_TRANSLATE_UID_TO_DEVICE: u32 = u32::from_be_bytes(*b"uidd");
+const K_AUDIO_DEVICE_PROPERTY_TRANSPORT_TYPE: u32 = u32::from_be_bytes(*b"tran");
+const K_AUDIO_DEVICE_TRANSPORT_TYPE_BUILT_IN: u32 = u32::from_be_bytes(*b"bltn");
+const K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH: u32 = u32::from_be_bytes(*b"blue");
+const K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH_LE: u32 = u32::from_be_bytes(*b"blea");
 
 const K_CG_HID_EVENT_TAP: u32 = 0;
 const K_CG_EVENT_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
@@ -319,6 +356,84 @@ fn applescript_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// How the Core Audio device with this UID is attached. The UID is what cpal
+/// reports as a CoreAudio device id. Anything Core Audio cannot answer for — a
+/// device that just disappeared — is `Other`, which keeps the default device.
+pub(crate) fn microphone_transport(uid: &str) -> MicrophoneTransport {
+    audio_device_for_uid(uid)
+        .and_then(audio_device_transport_type)
+        .map(microphone_transport_from_code)
+        .unwrap_or(MicrophoneTransport::Other)
+}
+
+fn microphone_transport_from_code(code: u32) -> MicrophoneTransport {
+    match code {
+        K_AUDIO_DEVICE_TRANSPORT_TYPE_BUILT_IN => MicrophoneTransport::BuiltIn,
+        K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH | K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH_LE => {
+            MicrophoneTransport::Bluetooth
+        }
+        _ => MicrophoneTransport::Other,
+    }
+}
+
+fn audio_device_for_uid(uid: &str) -> Option<u32> {
+    let address = AudioObjectPropertyAddress {
+        selector: K_AUDIO_HARDWARE_PROPERTY_TRANSLATE_UID_TO_DEVICE,
+        scope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+        element: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+    };
+    let mut device = K_AUDIO_OBJECT_UNKNOWN;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    // Safe: the bytes outlive the call, and a non-null CFString created here is
+    // released below on every path.
+    let status = unsafe {
+        let uid_string = CFStringCreateWithBytes(
+            ptr::null(),
+            uid.as_ptr(),
+            uid.len() as isize,
+            K_CF_STRING_ENCODING_UTF8,
+            false,
+        );
+        if uid_string.is_null() {
+            return None;
+        }
+        // The qualifier is the CFStringRef itself, passed by address.
+        let status = AudioObjectGetPropertyData(
+            K_AUDIO_OBJECT_SYSTEM_OBJECT,
+            &address,
+            std::mem::size_of::<*const c_void>() as u32,
+            (&uid_string as *const *const c_void).cast(),
+            &mut size,
+            (&mut device as *mut u32).cast(),
+        );
+        CFRelease(uid_string);
+        status
+    };
+    (status == 0 && device != K_AUDIO_OBJECT_UNKNOWN).then_some(device)
+}
+
+fn audio_device_transport_type(device: u32) -> Option<u32> {
+    let address = AudioObjectPropertyAddress {
+        selector: K_AUDIO_DEVICE_PROPERTY_TRANSPORT_TYPE,
+        scope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+        element: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+    };
+    let mut transport = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    // Safe: Core Audio writes one u32 into `transport` and reports its size.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device,
+            &address,
+            0,
+            ptr::null(),
+            &mut size,
+            (&mut transport as *mut u32).cast(),
+        )
+    };
+    (status == 0).then_some(transport)
+}
+
 /// Play the audible dictation cue through `afplay` against the built-in system
 /// sounds, so v1 ships no bundled audio assets. The helper is spawned detached
 /// so the recording lifecycle never blocks waiting on audio.
@@ -454,6 +569,36 @@ fn week_start_from_first_weekday(first_weekday: i64) -> WeekStart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_audio_transport_codes_map_to_the_microphone_kinds_capture_chooses_between() {
+        assert_eq!(
+            microphone_transport_from_code(u32::from_be_bytes(*b"bltn")),
+            MicrophoneTransport::BuiltIn
+        );
+        assert_eq!(
+            microphone_transport_from_code(u32::from_be_bytes(*b"blue")),
+            MicrophoneTransport::Bluetooth
+        );
+        assert_eq!(
+            microphone_transport_from_code(u32::from_be_bytes(*b"blea")),
+            MicrophoneTransport::Bluetooth
+        );
+        assert_eq!(
+            microphone_transport_from_code(u32::from_be_bytes(*b"usb ")),
+            MicrophoneTransport::Other
+        );
+    }
+
+    #[test]
+    fn a_device_core_audio_does_not_know_is_other_and_never_a_crash() {
+        // A headset that disconnected between listing and asking leaves a UID
+        // with no device behind it; that must keep the default, not fail.
+        assert_eq!(
+            microphone_transport("slugtale-no-such-device"),
+            MicrophoneTransport::Other
+        );
+    }
 
     #[test]
     fn a_sunday_start_locale_is_the_only_thing_that_moves_the_week_off_monday() {

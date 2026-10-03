@@ -38,13 +38,21 @@ pub enum TranscriptionEngine {
     Whisper,
     /// NVIDIA Parakeet TDT v2 0.6B through ONNX Runtime (slugtale-vjs.1).
     Parakeet,
+    /// Fermion Research's Phonon-2, a Parakeet TDT v3 derivative, through the
+    /// same ONNX Runtime path as Parakeet (slugtale-c7vx).
+    Phonon,
     /// Apple SpeechTranscriber, system-managed and Apple-only (slugtale-vjs.2).
     AppleSpeech,
 }
 
 impl TranscriptionEngine {
     /// Every engine Slugtale knows about, in the order Settings lists them.
-    pub const ALL: [Self; 3] = [Self::Whisper, Self::Parakeet, Self::AppleSpeech];
+    pub const ALL: [Self; 4] = [
+        Self::Whisper,
+        Self::Parakeet,
+        Self::Phonon,
+        Self::AppleSpeech,
+    ];
 
     /// The stable identifier used in the Settings File and in non-content
     /// diagnostics. It never changes once shipped, even if the display name does.
@@ -52,6 +60,7 @@ impl TranscriptionEngine {
         match self {
             Self::Whisper => "whisper",
             Self::Parakeet => "parakeet",
+            Self::Phonon => "phonon",
             Self::AppleSpeech => "apple-speech",
         }
     }
@@ -61,6 +70,7 @@ impl TranscriptionEngine {
         match self {
             Self::Whisper => "Whisper base.en",
             Self::Parakeet => "Parakeet TDT v2",
+            Self::Phonon => "Phonon-2",
             Self::AppleSpeech => "Apple SpeechTranscriber",
         }
     }
@@ -76,10 +86,12 @@ impl TranscriptionEngine {
             // model and a catalogue holding no model directory leave it nothing
             // to open.
             Self::Whisper => "could not resolve a local model directory for Whisper",
-            // The catalogue registers Parakeet once it has a model directory to
-            // put its assets in, and Apple when it is built, so reaching this
-            // means Settings was asked before startup finished.
-            Self::Parakeet | Self::AppleSpeech => "transcription engines are not ready yet",
+            // The catalogue registers Parakeet and Phonon once it has a model
+            // directory to put their assets in, and Apple when it is built, so
+            // reaching this means Settings was asked before startup finished.
+            Self::Parakeet | Self::Phonon | Self::AppleSpeech => {
+                "transcription engines are not ready yet"
+            }
         }
     }
 }
@@ -816,7 +828,7 @@ mod tests {
         // The Settings File and non-content diagnostics persist these ids, so a
         // rename would silently reset a user's engine choice.
         let ids: Vec<&str> = TranscriptionEngine::ALL.iter().map(|e| e.id()).collect();
-        assert_eq!(ids, vec!["whisper", "parakeet", "apple-speech"]);
+        assert_eq!(ids, vec!["whisper", "parakeet", "phonon", "apple-speech"]);
 
         let mut sorted = ids.clone();
         sorted.sort_unstable();

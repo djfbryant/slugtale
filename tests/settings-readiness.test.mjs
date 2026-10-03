@@ -125,14 +125,14 @@ test("background readiness refresh does not overwrite active permission polling 
   await Promise.resolve();
   await Promise.resolve();
 
-  assert.equal(elements.get("overall-status").textContent, "Ready");
+  assert.equal(elements.get("overall-status").textContent, "Ready to dictate");
 
   if (resolveBackgroundReadiness) {
     resolveBackgroundReadiness(staleReport);
   }
   await backgroundRefresh;
 
-  assert.equal(elements.get("overall-status").textContent, "Ready");
+  assert.equal(elements.get("overall-status").textContent, "Ready to dictate");
   await action;
 });
 
@@ -143,12 +143,13 @@ test("a blocked transcription engine shows the reason the backend reported", asy
   const report = {
     dictation_available: false,
     items: [
-      { id: "local_model", label: "Local model", ready: true, required: true },
+      { id: "local_model", label: "Local model", ready: true, required: true, pane: "transcription" },
       {
         id: "transcription_engine",
         label: "Transcription engine",
         ready: false,
         required: true,
+        pane: "transcription",
         detail: "Whisper base.en cannot run: this build was compiled without support for this engine"
       }
     ]
@@ -167,7 +168,7 @@ test("a blocked transcription engine shows the reason the backend reported", asy
     .flatMap((child) => child.children || [])
     .find((child) => child.tagName === "SMALL");
 
-  assert.equal(elements.get("overall-status").textContent, "Not ready");
+  assert.equal(elements.get("overall-status").textContent, "Not ready to dictate");
   assert.equal(
     guidanceText.textContent,
     "Whisper base.en cannot run: this build was compiled without support for this engine"

@@ -123,8 +123,10 @@ where
     /// Prepare audio capture while idle so the first Hotkey does not pay for
     /// device discovery and ring allocation (slugtale-g1o.3). Preparation must
     /// never prompt, so callers gate this on an already-granted microphone.
-    pub fn prepare_capture(&self) {
+    /// `settings` decides which microphone is prepared.
+    pub fn prepare_capture(&self, settings: &crate::Settings) {
         if let Ok(mut guard) = self.capture.lock() {
+            guard.set_prefer_built_in_microphone(settings.prefer_built_in_microphone);
             let _ = guard.prepare();
         }
     }
@@ -142,10 +144,7 @@ where
             .expect("dictation runtime started")
     }
 
-    pub fn handle_dictation_event(
-        &self,
-        event: crate::DictationEvent,
-    ) -> Result<(), String> {
+    pub fn handle_dictation_event(&self, event: crate::DictationEvent) -> Result<(), String> {
         self.handle_dictation_event_with(event, None)
     }
 
@@ -169,12 +168,17 @@ where
                 // Open the dictation before capture starts: the level callback
                 // installed below stamps every Pause Flush with this number.
                 self.runtime().begin();
-                // If the microphone cannot start, do not show a recording state.
-                self.handle_audio_capture_event(event)?;
+                // Resolved before capture: Settings choose the microphone as
+                // well as how the bar looks.
                 let settings = match activation.take() {
                     Some(activation) => activation.settings,
                     None => self.surface.settings(),
                 };
+                if let Ok(mut guard) = self.capture.lock() {
+                    guard.set_prefer_built_in_microphone(settings.prefer_built_in_microphone);
+                }
+                // If the microphone cannot start, do not show a recording state.
+                self.handle_audio_capture_event(event)?;
                 self.apply_recording_feedback(event, Some(&settings))?;
             }
             // Stop plays its cue but leaves the bar on screen: the audio-capture step
@@ -258,10 +262,7 @@ where
         }
     }
 
-    fn handle_audio_capture_event(
-        &self,
-        event: crate::DictationEvent,
-    ) -> Result<(), String> {
+    fn handle_audio_capture_event(&self, event: crate::DictationEvent) -> Result<(), String> {
         self.handle_audio_capture_event_with_settings(event, None)
     }
 
@@ -293,9 +294,8 @@ where
             Err(error) => {
                 self.clear_dictation_audio_level_callback();
                 self.surface.hide_dictation_bar();
-                self.surface.record_diagnostic_event(
-                    crate::DiagnosticEvent::audio_capture_failed(&error),
-                );
+                self.surface
+                    .record_diagnostic_event(crate::DiagnosticEvent::audio_capture_failed(&error));
                 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                 self.surface.notify_capture_failure(&error.to_string());
                 return Err(error.to_string());
@@ -626,7 +626,9 @@ mod tests {
                 insertion: SettledTextInsertion::new(
                     Box::new(RecordingInsertion {
                         inserted: self.inserted.clone(),
-                        fails: self.insertion_fails.load(std::sync::atomic::Ordering::SeqCst),
+                        fails: self
+                            .insertion_fails
+                            .load(std::sync::atomic::Ordering::SeqCst),
                     }),
                     None,
                 ),
@@ -771,6 +773,9 @@ mod tests {
         /// than a shared log so a test can wait for the cut instead of racing
         /// the Stop that would end the dictation first.
         cuts: mpsc::Sender<u64>,
+        /// The microphone preference in force when `start` last ran.
+        started_preferring_built_in: Arc<Mutex<Option<bool>>>,
+        prefer_built_in: bool,
     }
 
     impl FakeRecorder {
@@ -781,6 +786,8 @@ mod tests {
                 fail_cut: false,
                 microphone: FakeMicrophone::default(),
                 cuts: mpsc::channel().0,
+                started_preferring_built_in: Arc::default(),
+                prefer_built_in: false,
             }
         }
     }
@@ -797,10 +804,15 @@ mod tests {
         }
 
         fn start(&mut self) -> Result<(), AudioCaptureError> {
+            *self.started_preferring_built_in.lock().unwrap() = Some(self.prefer_built_in);
             if self.fail_start {
                 return Err(AudioCaptureError::new("fake start failure"));
             }
             Ok(())
+        }
+
+        fn set_prefer_built_in_microphone(&mut self, prefer: bool) {
+            self.prefer_built_in = prefer;
         }
 
         fn stop(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
@@ -903,9 +915,11 @@ mod tests {
             let host = Arc::new(DictationHost::with_recorder(
                 surface.clone(),
                 recorder,
-                crate::UsageQueue::start(Arc::new(move |_: crate::LocalDate, segment: CountedSegment| {
-                    let _ = counted_tx.send(segment);
-                }))
+                crate::UsageQueue::start(Arc::new(
+                    move |_: crate::LocalDate, segment: CountedSegment| {
+                        let _ = counted_tx.send(segment);
+                    },
+                ))
                 .expect("the usage writer starts"),
             ));
             // The watermark the runtime probes is the host's own read of the
@@ -1107,6 +1121,22 @@ mod tests {
     }
 
     #[test]
+    fn start_opens_the_microphone_the_settings_prefer() {
+        // The press's own Settings decide the microphone, before it opens.
+        let surface = Arc::new(FakeSurface::default());
+        let recorder = FakeRecorder::healthy();
+        let started = recorder.started_preferring_built_in.clone();
+        let host = host_with(&surface, recorder);
+
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+
+        assert_eq!(
+            *started.lock().unwrap(),
+            Some(crate::Settings::default().prefer_built_in_microphone)
+        );
+    }
+
+    #[test]
     fn stop_switches_the_bar_to_transcribing_and_keeps_it_up() {
         let surface = Arc::new(FakeSurface::default());
         let host = host_with(&surface, FakeRecorder::healthy());
@@ -1155,6 +1185,7 @@ mod tests {
             surface.calls(),
             vec![
                 Call::Diagnostic("hotkey_transition"),
+                Call::ReadSettings,
                 Call::ClearAudioLevel,
                 Call::HideBar,
                 Call::Diagnostic("audio_capture_failed"),

@@ -139,6 +139,17 @@ pub struct Settings {
     /// microphone is only ever held open by an explicit user choice.
     #[serde(default)]
     pub voice_activation_enabled: bool,
+    /// Whether a dictation records from the built-in microphone when the
+    /// default one is Bluetooth (see `choose_input_device`). On by default and
+    /// on for every Settings File written before the choice existed: a
+    /// Bluetooth headset takes seconds to open its microphone and drops the
+    /// user's audio to call quality while it is open.
+    #[serde(default = "prefer_built_in_microphone_by_default")]
+    pub prefer_built_in_microphone: bool,
+}
+
+fn prefer_built_in_microphone_by_default() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -159,6 +170,7 @@ impl Default for Settings {
             typing_baseline: crate::TypingBaseline::default(),
             transcript_cleanup: crate::TranscriptCleanupMode::default(),
             voice_activation_enabled: false,
+            prefer_built_in_microphone: prefer_built_in_microphone_by_default(),
         }
     }
 }
@@ -170,6 +182,12 @@ impl Default for Settings {
 /// the Settings File must not know where it lives.
 pub fn apply_usage_settings(settings: &mut Settings, store_usage: bool) {
     settings.store_usage = store_usage;
+}
+
+/// Update whether dictation prefers the built-in microphone over a Bluetooth
+/// default. The next dictation picks it up; nothing is open to reconfigure.
+pub fn apply_microphone_settings(settings: &mut Settings, prefer_built_in_microphone: bool) {
+    settings.prefer_built_in_microphone = prefer_built_in_microphone;
 }
 
 /// The one transactional settings save: apply the change to a copy of
@@ -415,6 +433,8 @@ mod tests {
             store_usage: true,
             transcript_cleanup: crate::TranscriptCleanupMode::CleanDictationWithPauseBreaks,
             voice_activation_enabled: true,
+            // The non-default value, so the round trip proves it is saved.
+            prefer_built_in_microphone: false,
             typing_baseline: crate::TypingBaseline {
                 challenges: vec![crate::TypingChallengeResult {
                     passage_index: 0,
@@ -676,6 +696,31 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
         assert_eq!(loaded.speed_profile, SpeedProfile::Balanced);
+    }
+
+    #[test]
+    fn settings_file_without_a_microphone_choice_prefers_the_built_in_microphone() {
+        // Every Settings File written before the choice existed gets the fast
+        // path: a Bluetooth headset is the slow, lower-quality microphone.
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-settings-legacy-microphone-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"hotkey":null,"activation_mode":"toggle","launch_at_login":false,"diagnostic_logging":false,"model":null}"#,
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        assert!(loaded.prefer_built_in_microphone);
+        assert!(Settings::default().prefer_built_in_microphone);
+
+        let mut settings = loaded;
+        apply_microphone_settings(&mut settings, false);
+        assert!(!settings.prefer_built_in_microphone);
     }
     #[test]
     fn dictation_bar_appearance_defaults_match_todays_bar() {

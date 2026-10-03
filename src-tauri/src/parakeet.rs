@@ -1,9 +1,15 @@
-//! NVIDIA Parakeet TDT v2 0.6B as a Transcription Engine (slugtale-vjs.1).
+//! NVIDIA Parakeet TDT v2 0.6B as a Transcription Engine (slugtale-vjs.1), and
+//! Phonon-2 beside it (slugtale-c7vx).
 //!
 //! Parakeet is the second entirely on-device engine behind the Transcription
 //! Engine boundary. It exists so the Second Opinion router has something to ask
 //! when Whisper's transcript looks wrong, and so a user who prefers it can make
 //! it the primary engine once benchmark slugtale-9dv settles the ordering.
+//!
+//! Phonon-2 is Fermion Research's English model derived from Parakeet TDT
+//! 0.6B v3. It is the same TDT architecture in the same ONNX layout, so it runs
+//! through this provider unchanged: a [`TdtModel`] says which model, and
+//! everything below is shared.
 //!
 //! Four things about this module are deliberate and worth reading before
 //! changing it.
@@ -42,13 +48,11 @@
 
 mod assets;
 
-// Only what the engine catalogue needs to place these assets crosses the seam.
 // Installing, deleting, and the asset status are this module's own business now
-// that the provider carries them.
-pub use assets::parakeet_asset_dir;
+// that the provider carries them; the catalogue only names a [`TdtModel`].
 use assets::{
-    delete_parakeet_assets, install_parakeet_assets, parakeet_asset_status, parakeet_total_bytes,
-    PARAKEET_ASSETS, PARAKEET_REVISION, PARAKEET_SOURCE_URL,
+    delete_parakeet_assets, install_parakeet_assets, parakeet_asset_status, TdtModelFiles,
+    PARAKEET_FILES, PHONON_FILES,
 };
 
 use crate::{
@@ -61,34 +65,83 @@ use crate::{EngineConfidence, FinalTranscription};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-/// The engine this module provides.
-const PARAKEET_ENGINE: TranscriptionEngine = TranscriptionEngine::Parakeet;
+/// One TDT model this provider can run: the engine it answers as, the licence
+/// obligations Settings has to render, and the pinned files it installs.
+pub struct TdtModel {
+    engine: TranscriptionEngine,
+    /// The upstream model, as its authors publish it. Slugtale installs an ONNX
+    /// export rather than the original checkpoint, but the identity Settings
+    /// shows the user is the authors', because that is whose model it is and
+    /// whose licence applies.
+    model_id: &'static str,
+    /// The pinned export, as `repo@commit`.
+    revision: &'static str,
+    /// Where a user can go and look at exactly what Slugtale installs, at the
+    /// pinned commit rather than at whatever the repository holds today.
+    source_url: &'static str,
+    attribution: &'static str,
+    /// The CC BY 4.0 "indicate if changes were made" clause.
+    modifications: &'static str,
+    files: TdtModelFiles,
+}
 
-/// The upstream model, as NVIDIA publishes it. Slugtale installs an ONNX export
-/// of these weights rather than the original NeMo checkpoint, but the identity
-/// Settings shows the user is NVIDIA's, because that is whose model it is and
-/// whose licence applies.
-const PARAKEET_MODEL_ID: &str = "nvidia/parakeet-tdt-0.6b-v2";
+impl TdtModel {
+    /// Where this model's files live for a given models directory.
+    pub fn asset_dir(&self, model_dir: &Path) -> PathBuf {
+        self.files.asset_dir(model_dir)
+    }
 
-/// NVIDIA released Parakeet TDT 0.6B v2 under CC BY 4.0, which is an
-/// attribution licence: Slugtale may use it commercially and offline, but must
-/// credit NVIDIA, link the licence, and state what was changed. Those three
-/// obligations are the reason [`EngineMetadata`] has `attribution` and
-/// `modifications` fields at all.
-const PARAKEET_LICENSE: &str = "CC BY 4.0";
-const PARAKEET_LICENSE_URL: &str = "https://creativecommons.org/licenses/by/4.0/";
+    /// The name used in the messages this provider writes for the user.
+    fn name(&self) -> &'static str {
+        self.engine.display_name()
+    }
+}
 
-const PARAKEET_ATTRIBUTION: &str =
-    "Speech recognition by NVIDIA Parakeet TDT 0.6B v2 (© NVIDIA Corporation), used under CC BY 4.0.";
+/// Both models are released under CC BY 4.0, which is an attribution licence:
+/// Slugtale may use them commercially and offline, but must credit the authors,
+/// link the licence, and state what was changed. Those three obligations are
+/// the reason [`EngineMetadata`] has `attribution` and `modifications` fields at
+/// all.
+const TDT_LICENSE: &str = "CC BY 4.0";
+const TDT_LICENSE_URL: &str = "https://creativecommons.org/licenses/by/4.0/";
 
-/// The CC BY 4.0 "indicate if changes were made" clause. Slugtale does not train
-/// or fine-tune the weights; the changes are the ONNX export and the int8
-/// quantisation carried out upstream, which Slugtale installs as-is.
-const PARAKEET_MODIFICATIONS: &str = concat!(
-    "Not the original NeMo checkpoint: exported to ONNX and quantised to int8 upstream ",
-    "(istupakov/parakeet-tdt-0.6b-v2-onnx). Slugtale installs those artefacts unmodified ",
-    "and does not train, fine-tune, or otherwise alter the weights."
-);
+/// NVIDIA Parakeet TDT 0.6B v2. Slugtale does not train or fine-tune the
+/// weights; the changes are the ONNX export and the int8 quantisation carried
+/// out upstream, which Slugtale installs as-is.
+pub const PARAKEET_TDT_V2: TdtModel = TdtModel {
+    engine: TranscriptionEngine::Parakeet,
+    model_id: "nvidia/parakeet-tdt-0.6b-v2",
+    revision: "istupakov/parakeet-tdt-0.6b-v2-onnx@0bbb45a3365852604aef28b538a8f066f4ccaa85",
+    source_url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/tree/0bbb45a3365852604aef28b538a8f066f4ccaa85",
+    attribution: "Speech recognition by NVIDIA Parakeet TDT 0.6B v2 (© NVIDIA Corporation), used under CC BY 4.0.",
+    modifications: concat!(
+        "Not the original NeMo checkpoint: exported to ONNX and quantised to int8 upstream ",
+        "(istupakov/parakeet-tdt-0.6b-v2-onnx). Slugtale installs those artefacts unmodified ",
+        "and does not train, fine-tune, or otherwise alter the weights."
+    ),
+    files: PARAKEET_FILES,
+};
+
+/// Phonon-2 by Fermion Research, itself a changed Parakeet TDT 0.6B v3, so the
+/// credit names both. The ONNX export is a third party's, not Fermion's.
+pub const PHONON_2: TdtModel = TdtModel {
+    engine: TranscriptionEngine::Phonon,
+    model_id: "FermionResearch/Phonon-2",
+    revision: "tiyuvta/Phonon-2-ONNX@12c9688bbc4fc52d23c1a66ca873fd3ac6ed4408",
+    source_url:
+        "https://huggingface.co/tiyuvta/Phonon-2-ONNX/tree/12c9688bbc4fc52d23c1a66ca873fd3ac6ed4408",
+    attribution: concat!(
+        "Speech recognition by Phonon-2 (Fermion Research), derived from NVIDIA Parakeet TDT ",
+        "0.6B v3 (© NVIDIA Corporation); both used under CC BY 4.0."
+    ),
+    modifications: concat!(
+        "Not Fermion's own runtime format: exported to ONNX upstream by Tiyuvta ",
+        "(tiyuvta/Phonon-2-ONNX), with the encoder's weights stored exactly as two 4-bit planes. ",
+        "Slugtale installs those artefacts unmodified and does not train, fine-tune, or otherwise ",
+        "alter the weights."
+    ),
+    files: PHONON_FILES,
+};
 
 /// How many ONNX Runtime intra-op threads to use.
 ///
@@ -103,7 +156,8 @@ fn parakeet_intra_threads(available: usize) -> usize {
     available.clamp(1, 8)
 }
 
-/// NVIDIA Parakeet TDT v2 0.6B behind the Transcription Engine boundary.
+/// A TDT model — Parakeet TDT v2 or Phonon-2 — behind the Transcription Engine
+/// boundary.
 ///
 /// Construction is a directory path and one cheap filesystem probe. No ONNX
 /// session is created and no 622 MiB encoder is read until
@@ -112,6 +166,7 @@ fn parakeet_intra_threads(available: usize) -> usize {
 /// startup on every machine, including the ones where the user never turns
 /// Parakeet on.
 pub struct ParakeetProvider {
+    model: &'static TdtModel,
     asset_dir: PathBuf,
     /// Availability is answered from here, never from a fresh filesystem probe.
     /// The Second Opinion router asks on the dictation fast path, and three
@@ -131,11 +186,18 @@ pub struct ParakeetProvider {
 }
 
 impl ParakeetProvider {
-    /// Build a provider for assets installed under `asset_dir` — normally
-    /// [`parakeet_asset_dir`] of Slugtale's models directory.
+    /// Build a Parakeet TDT v2 provider for assets installed under `asset_dir`
+    /// — normally [`TdtModel::asset_dir`] of Slugtale's models directory.
     pub fn new(asset_dir: PathBuf) -> Self {
-        let availability = probe_availability(&asset_dir);
+        Self::for_model(&PARAKEET_TDT_V2, asset_dir)
+    }
+
+    /// Build a provider for `model`, with its assets installed under
+    /// `asset_dir`.
+    pub fn for_model(model: &'static TdtModel, asset_dir: PathBuf) -> Self {
+        let availability = probe_availability(model, &asset_dir);
         Self {
+            model,
             asset_dir,
             availability: Mutex::new(availability),
             #[cfg(feature = "local-parakeet-runtime")]
@@ -148,7 +210,7 @@ impl ParakeetProvider {
     /// Re-probe the filesystem and republish the cached answer. Both asset
     /// operations below run it, so nothing on the dictation path does.
     fn refresh_availability(&self) -> EngineAvailability {
-        let refreshed = probe_availability(&self.asset_dir);
+        let refreshed = probe_availability(self.model, &self.asset_dir);
         *lock(&self.availability) = refreshed.clone();
         refreshed
     }
@@ -156,12 +218,12 @@ impl ParakeetProvider {
 
 /// The one place availability is decided, so Settings and the router cannot
 /// disagree about why Parakeet is off.
-fn probe_availability(asset_dir: &Path) -> EngineAvailability {
+fn probe_availability(model: &TdtModel, asset_dir: &Path) -> EngineAvailability {
     if !cfg!(feature = "local-parakeet-runtime") {
         return EngineAvailability::Unavailable(EngineUnavailable::RuntimeNotBuilt);
     }
 
-    let status = parakeet_asset_status(asset_dir);
+    let status = parakeet_asset_status(asset_dir, &model.files);
     if status.present {
         return EngineAvailability::Available;
     }
@@ -171,9 +233,10 @@ fn probe_availability(asset_dir: &Path) -> EngineAvailability {
     // row. The exact names stay available on `ParakeetAssetStatus::missing`.
     EngineAvailability::Unavailable(EngineUnavailable::AssetsMissing {
         detail: format!(
-            "The Parakeet TDT v2 model has not been installed yet ({} of {} files missing).",
+            "The {} model has not been installed yet ({} of {} files missing).",
+            model.name(),
             status.missing.len(),
-            PARAKEET_ASSETS.len()
+            model.files.assets.len()
         ),
     })
 }
@@ -196,38 +259,40 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// recording produces the same, reproducible error on every build and every
 /// machine, rather than being masked by "the model is not installed" on the
 /// developer's laptop and only surfacing in production.
-fn validate_captured_audio(audio: &CapturedAudio) -> Result<(), AsrError> {
+fn validate_captured_audio(model: &TdtModel, audio: &CapturedAudio) -> Result<(), AsrError> {
     if audio.sample_rate_hz != 16_000 {
-        return Err(AsrError::UnsupportedAudio(
-            "Parakeet transcription expects 16 kHz mono f32 samples".to_string(),
-        ));
+        return Err(AsrError::UnsupportedAudio(format!(
+            "{} transcription expects 16 kHz mono f32 samples",
+            model.name()
+        )));
     }
     if audio.samples.is_empty() {
         // The mel front-end windows the signal; an empty recording has no
         // frames to window and must not reach it.
-        return Err(AsrError::UnsupportedAudio(
-            "Parakeet transcription needs at least one audio sample".to_string(),
-        ));
+        return Err(AsrError::UnsupportedAudio(format!(
+            "{} transcription needs at least one audio sample",
+            model.name()
+        )));
     }
     Ok(())
 }
 
 impl TranscriptionProvider for ParakeetProvider {
     fn engine(&self) -> TranscriptionEngine {
-        PARAKEET_ENGINE
+        self.model.engine
     }
 
     fn metadata(&self) -> EngineMetadata {
         EngineMetadata {
-            engine: PARAKEET_ENGINE,
-            model_id: PARAKEET_MODEL_ID,
-            revision: PARAKEET_REVISION,
-            approximate_bytes: Some(parakeet_total_bytes()),
-            source_url: Some(PARAKEET_SOURCE_URL),
-            license: PARAKEET_LICENSE,
-            license_url: PARAKEET_LICENSE_URL,
-            attribution: Some(PARAKEET_ATTRIBUTION),
-            modifications: Some(PARAKEET_MODIFICATIONS),
+            engine: self.model.engine,
+            model_id: self.model.model_id,
+            revision: self.model.revision,
+            approximate_bytes: Some(self.model.files.total_bytes()),
+            source_url: Some(self.model.source_url),
+            license: TDT_LICENSE,
+            license_url: TDT_LICENSE_URL,
+            attribution: Some(self.model.attribution),
+            modifications: Some(self.model.modifications),
             // Slugtale downloads and owns these files; no operating system
             // manages them, and Settings must not imply otherwise.
             system_managed: false,
@@ -242,7 +307,7 @@ impl TranscriptionProvider for ParakeetProvider {
     }
 
     fn assets(&self) -> EngineAssets {
-        let status = parakeet_asset_status(&self.asset_dir);
+        let status = parakeet_asset_status(&self.asset_dir, &self.model.files);
         EngineAssets {
             installed_bytes: Some(status.installed_bytes),
             present: Some(status.present),
@@ -257,8 +322,13 @@ impl TranscriptionProvider for ParakeetProvider {
         &self,
         on_progress: &mut dyn FnMut(DownloadProgress),
     ) -> Result<AssetInstall, String> {
-        install_parakeet_assets(&self.asset_dir, &crate::HttpModelDownloader, on_progress)
-            .map_err(|error| error.to_string())?;
+        install_parakeet_assets(
+            &self.asset_dir,
+            &self.model.files,
+            &crate::HttpModelDownloader,
+            on_progress,
+        )
+        .map_err(|error| error.to_string())?;
         self.refresh_availability();
 
         Ok(AssetInstall {
@@ -270,13 +340,14 @@ impl TranscriptionProvider for ParakeetProvider {
     }
 
     fn remove_assets(&self) -> Result<(), String> {
-        delete_parakeet_assets(&self.asset_dir).map_err(|error| error.to_string())?;
+        delete_parakeet_assets(&self.asset_dir, &self.model.files)
+            .map_err(|error| error.to_string())?;
         self.refresh_availability();
         Ok(())
     }
 
     fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
-        validate_captured_audio(audio)?;
+        validate_captured_audio(self.model, audio)?;
         self.transcribe_validated(audio)
     }
 }
@@ -286,7 +357,7 @@ impl ParakeetProvider {
     /// Load the model ahead of the first dictation. Without the runtime feature
     /// there is nothing to load, and saying so is more useful than succeeding.
     pub fn warm_up(&self) -> Result<(), AsrError> {
-        Err(runtime_not_built())
+        Err(self.runtime_not_built())
     }
 
     /// Release the loaded model. A no-op on this build; kept unconditional so
@@ -301,15 +372,14 @@ impl ParakeetProvider {
         &self,
         _audio: &CapturedAudio,
     ) -> Result<EngineTranscription, AsrError> {
-        Err(runtime_not_built())
+        Err(self.runtime_not_built())
     }
-}
 
-#[cfg(not(feature = "local-parakeet-runtime"))]
-fn runtime_not_built() -> AsrError {
-    AsrError::EngineUnavailable {
-        engine: PARAKEET_ENGINE,
-        reason: EngineUnavailable::RuntimeNotBuilt,
+    fn runtime_not_built(&self) -> AsrError {
+        AsrError::EngineUnavailable {
+            engine: self.model.engine,
+            reason: EngineUnavailable::RuntimeNotBuilt,
+        }
     }
 }
 
@@ -373,19 +443,20 @@ impl ParakeetProvider {
             // Never fetch anything here. If the assets are absent this is a
             // recoverable "install it" answer, not a reason to reach for the
             // network — the network-denied test in slugtale-vjs.5 rests on this.
-            let status = parakeet_asset_status(&self.asset_dir);
+            let status = parakeet_asset_status(&self.asset_dir, &self.model.files);
             if !status.present {
                 let reason = EngineUnavailable::AssetsMissing {
                     detail: format!(
-                        "The Parakeet TDT v2 model is not installed in {} ({} of {} files missing). Install it from Settings.",
+                        "The {} model is not installed in {} ({} of {} files missing). Install it from Settings.",
+                        self.model.name(),
                         self.asset_dir.display(),
                         status.missing.len(),
-                        PARAKEET_ASSETS.len()
+                        self.model.files.assets.len()
                     ),
                 };
                 *lock(&self.availability) = EngineAvailability::Unavailable(reason.clone());
                 return Err(AsrError::EngineUnavailable {
-                    engine: PARAKEET_ENGINE,
+                    engine: self.model.engine,
                     reason,
                 });
             }
@@ -426,7 +497,8 @@ impl ParakeetProvider {
             // tokenizer. None of them can contain user content: this call has
             // not been given any audio yet.
             AsrError::Runtime(format!(
-                "the Parakeet model in {} could not be loaded ({error}). Re-install it from Settings.",
+                "the {} model in {} could not be loaded ({error}). Re-install it from Settings.",
+                self.model.name(),
                 self.asset_dir.display()
             ))
         })
@@ -454,15 +526,15 @@ impl ParakeetProvider {
                     // partial hypothesis, which is user content and must not
                     // reach an error string that gets logged.
                     let _ = error;
-                    AsrError::Runtime(
-                        "Parakeet could not decode this recording. Try dictating again."
-                            .to_string(),
-                    )
+                    AsrError::Runtime(format!(
+                        "{} could not decode this recording. Try dictating again.",
+                        self.model.name()
+                    ))
                 })
         })?;
 
         Ok(EngineTranscription {
-            engine: PARAKEET_ENGINE,
+            engine: self.model.engine,
             transcription: FinalTranscription::plain(result.text.trim()),
             // TDT greedy decoding produces a single hypothesis. There is no
             // n-best list to expose, so the router selects between engines
@@ -520,14 +592,49 @@ mod tests {
     }
 
     #[test]
+    fn phonon_answers_as_its_own_engine_and_credits_both_authors() {
+        // Phonon-2 is a changed Parakeet v3, so CC BY 4.0 obliges a credit to
+        // Fermion Research and to NVIDIA, and its own files and directory.
+        let model_dir = unique_test_dir("phonon-metadata");
+        let provider = ParakeetProvider::for_model(&PHONON_2, PHONON_2.asset_dir(&model_dir));
+        let metadata = provider.metadata();
+
+        assert_eq!(provider.engine(), TranscriptionEngine::Phonon);
+        assert_eq!(metadata.engine, TranscriptionEngine::Phonon);
+        assert_eq!(metadata.model_id, "FermionResearch/Phonon-2");
+        assert_eq!(metadata.license, "CC BY 4.0");
+        let attribution = metadata.attribution.unwrap();
+        assert!(attribution.contains("Fermion Research"));
+        assert!(attribution.contains("NVIDIA"));
+        assert!(metadata.modifications.unwrap().contains("ONNX"));
+        assert_eq!(metadata.approximate_bytes, Some(PHONON_FILES.total_bytes()));
+        assert!(metadata
+            .source_url
+            .unwrap()
+            .contains(PHONON_2.revision.split_once('@').unwrap().1));
+        assert_ne!(
+            PHONON_2.asset_dir(&model_dir),
+            PARAKEET_TDT_V2.asset_dir(&model_dir)
+        );
+        #[cfg(feature = "local-parakeet-runtime")]
+        assert_eq!(
+            EngineView::of(&provider, false)
+                .unavailable_reason
+                .as_deref(),
+            Some("The Phonon-2 model has not been installed yet (3 of 3 files missing).")
+        );
+    }
+
+    #[test]
     fn metadata_pins_a_commit_rather_than_a_branch() {
         // A floating `main` would let the bytes behind the pinned digests change
         // under an install the user already consented to.
         let provider = ParakeetProvider::new(unique_test_dir("revision"));
         let metadata = provider.metadata();
 
-        assert_eq!(metadata.revision, PARAKEET_REVISION);
-        let commit = PARAKEET_REVISION
+        assert_eq!(metadata.revision, PARAKEET_TDT_V2.revision);
+        let commit = PARAKEET_TDT_V2
+            .revision
             .split_once('@')
             .expect("the revision names a repository and a commit")
             .1;
@@ -557,10 +664,10 @@ mod tests {
 
         assert_eq!(
             provider.metadata().approximate_bytes,
-            Some(parakeet_total_bytes())
+            Some(PARAKEET_FILES.total_bytes())
         );
         // Roughly 631 MiB: the int8 export, not the 2.4 GiB fp32 one.
-        assert!((600..700).contains(&(parakeet_total_bytes() / (1024 * 1024))));
+        assert!((600..700).contains(&(PARAKEET_FILES.total_bytes() / (1024 * 1024))));
     }
 
     #[test]
@@ -574,7 +681,7 @@ mod tests {
         let at_construction = provider.availability();
 
         // Make the filesystem disagree with the cache in both directions.
-        for asset in PARAKEET_ASSETS {
+        for asset in PARAKEET_FILES.assets {
             std::fs::write(asset_dir.join(asset.filename), b"x").unwrap();
         }
         assert_eq!(provider.availability(), at_construction);
@@ -629,7 +736,7 @@ mod tests {
         // to read as still-to-fetch rather than installed.
         let asset_dir = unique_test_dir("row-missing-bytes");
         std::fs::create_dir_all(&asset_dir).unwrap();
-        let installed = &PARAKEET_ASSETS[0];
+        let installed = &PARAKEET_FILES.assets[0];
         std::fs::write(
             asset_dir.join(installed.filename),
             vec![0u8; installed.bytes as usize],
@@ -641,7 +748,7 @@ mod tests {
         assert_eq!(row.assets.installed_bytes, Some(installed.bytes));
         assert_eq!(
             row.metadata.approximate_bytes.unwrap() - row.assets.installed_bytes.unwrap(),
-            parakeet_total_bytes() - installed.bytes,
+            PARAKEET_FILES.total_bytes() - installed.bytes,
             "the row has to let the user work out how much is left to fetch"
         );
         #[cfg(feature = "local-parakeet-runtime")]
@@ -693,7 +800,7 @@ mod tests {
         // downloaded, so the engine starts out genuinely installed.
         let asset_dir = unique_test_dir("row-remove");
         std::fs::create_dir_all(&asset_dir).unwrap();
-        for asset in &PARAKEET_ASSETS {
+        for asset in PARAKEET_FILES.assets {
             std::fs::File::create(asset_dir.join(asset.filename))
                 .unwrap()
                 .set_len(asset.bytes)
@@ -702,7 +809,7 @@ mod tests {
         let provider = ParakeetProvider::new(asset_dir.clone());
         assert_eq!(
             provider.assets().installed_bytes,
-            Some(parakeet_total_bytes())
+            Some(PARAKEET_FILES.total_bytes())
         );
         assert_eq!(provider.assets().present, Some(true));
 
@@ -710,7 +817,10 @@ mod tests {
 
         assert_eq!(provider.assets().present, Some(false));
         assert_eq!(provider.assets().installed_bytes, Some(0));
-        assert_eq!(provider.availability(), probe_availability(&asset_dir));
+        assert_eq!(
+            provider.availability(),
+            probe_availability(&PARAKEET_TDT_V2, &asset_dir)
+        );
         #[cfg(feature = "local-parakeet-runtime")]
         assert!(!provider.availability().is_available());
         std::fs::remove_dir_all(&asset_dir).ok();
@@ -733,7 +843,7 @@ mod tests {
         assert_eq!(
             error,
             AsrError::UnsupportedAudio(
-                "Parakeet transcription expects 16 kHz mono f32 samples".to_string()
+                "Parakeet TDT v2 transcription expects 16 kHz mono f32 samples".to_string()
             )
         );
     }
@@ -749,7 +859,7 @@ mod tests {
         assert_eq!(
             error,
             AsrError::UnsupportedAudio(
-                "Parakeet transcription needs at least one audio sample".to_string()
+                "Parakeet TDT v2 transcription needs at least one audio sample".to_string()
             )
         );
     }

@@ -256,6 +256,11 @@ pub trait DictationRecorder {
     /// Only backends with a live audio callback distribute levels; the default
     /// records nothing.
     fn set_level_callback(&mut self, _callback: Option<AudioLevelCallback>) {}
+
+    /// Whether to record from the built-in microphone when the default one is
+    /// Bluetooth (see [`choose_input_device`]). Read by the next `prepare` or
+    /// `start`; only backends that pick a real device act on it.
+    fn set_prefer_built_in_microphone(&mut self, _prefer: bool) {}
 }
 
 /// The microphone the Voice Activation listener drives. The listener is always
@@ -488,6 +493,80 @@ impl RealtimeCaptureBuffer {
     }
 }
 
+/// How a microphone is attached, as far as choosing one to record from cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicrophoneTransport {
+    BuiltIn,
+    Bluetooth,
+    Other,
+}
+
+/// The input device a dictation records from: the system default, unless the
+/// user prefers the built-in microphone and the default is Bluetooth.
+///
+/// A Bluetooth headset can only record by switching into its call profile.
+/// Opening it from cold took 3.4 s on the reference headset against 0.08 s for
+/// the built-in microphone, its audio drops to narrowband for as long as the
+/// microphone is open, and the user's music drops with it. The built-in
+/// microphone has none of those costs. `others` is only listed when the default
+/// is Bluetooth, so the common case pays for no device enumeration. With no
+/// built-in microphone to fall back to — a desktop Mac — the default stays.
+pub fn choose_input_device<D, I>(
+    default: D,
+    others: impl FnOnce() -> I,
+    prefer_built_in: bool,
+    transport: impl Fn(&D) -> MicrophoneTransport,
+) -> D
+where
+    I: IntoIterator<Item = D>,
+{
+    if !prefer_built_in || transport(&default) != MicrophoneTransport::Bluetooth {
+        return default;
+    }
+    others()
+        .into_iter()
+        .find(|device| transport(device) == MicrophoneTransport::BuiltIn)
+        .unwrap_or(default)
+}
+
+/// How `device` is attached, asked of the Platform Adapter. Only macOS can
+/// tell today; elsewhere every microphone is `Other`, which keeps the default.
+fn microphone_transport(device: &cpal::Device) -> MicrophoneTransport {
+    #[cfg(target_os = "macos")]
+    {
+        use cpal::traits::DeviceTrait;
+
+        device
+            .id()
+            .map(|id| crate::macos::microphone_transport(id.id()))
+            .unwrap_or(MicrophoneTransport::Other)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = device;
+        MicrophoneTransport::Other
+    }
+}
+
+/// The device to record from on this host, per [`choose_input_device`].
+fn recording_device(
+    host: &cpal::Host,
+    prefer_built_in: bool,
+) -> Result<cpal::Device, AudioCaptureError> {
+    use cpal::traits::HostTrait;
+
+    let default = host
+        .default_input_device()
+        .ok_or_else(|| AudioCaptureError::new("no default input device is available"))?;
+    Ok(choose_input_device(
+        default,
+        || host.input_devices().into_iter().flatten(),
+        prefer_built_in,
+        microphone_transport,
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InputStreamIdentity {
     device_id: Option<cpal::DeviceId>,
@@ -614,6 +693,7 @@ pub struct CpalAudioRecorder {
     sample_rate_hz: u32,
     channels: u16,
     level_callback: Option<AudioLevelCallback>,
+    prefer_built_in_microphone: bool,
 }
 
 impl CpalAudioRecorder {
@@ -759,22 +839,23 @@ impl DictationRecorder for CpalAudioRecorder {
         CpalAudioRecorder::set_level_callback(self, callback);
     }
 
+    fn set_prefer_built_in_microphone(&mut self, prefer: bool) {
+        self.prefer_built_in_microphone = prefer;
+    }
+
     /// Validate the default input device, allocate the capture ring, and build
     /// the input stream stopped while the app is idle, so the first Hotkey only
     /// pays for `play`. Never plays the stream (that is what activates the
     /// microphone) and never requests permission — see [`DictationRecorder::prepare`].
     fn prepare(&mut self) -> Result<(), AudioCaptureError> {
-        use cpal::traits::{DeviceTrait, HostTrait};
+        use cpal::traits::DeviceTrait;
 
         if !should_attempt_prepare(&self.prepare_state, self.stream.is_some()) {
             return Ok(());
         }
 
         let prepared = (|| -> Result<InputStreamIdentity, AudioCaptureError> {
-            let host = cpal::default_host();
-            let device = host
-                .default_input_device()
-                .ok_or_else(|| AudioCaptureError::new("no default input device is available"))?;
+            let device = recording_device(&cpal::default_host(), self.prefer_built_in_microphone)?;
             let supported_config = device
                 .default_input_config()
                 .map_err(|error| AudioCaptureError::new(error.to_string()))?;
@@ -804,15 +885,15 @@ impl DictationRecorder for CpalAudioRecorder {
     }
 
     fn start(&mut self) -> Result<(), AudioCaptureError> {
-        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        use cpal::traits::{DeviceTrait, StreamTrait};
 
         self.pause_active_stream();
         self.stop_level_emitter();
 
-        let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| AudioCaptureError::new("no default input device is available"))?;
+        // The chosen device is part of the stream identity below, so turning
+        // the preference on or off rebuilds the stream rather than reusing one
+        // opened on the other microphone.
+        let device = recording_device(&cpal::default_host(), self.prefer_built_in_microphone)?;
         let supported_config = device
             .default_input_config()
             .map_err(|error| AudioCaptureError::new(error.to_string()))?;
@@ -998,6 +1079,12 @@ where
     /// detector read, or clear it with `None` once the dictation has ended.
     pub fn set_level_callback(&mut self, callback: Option<AudioLevelCallback>) {
         self.recorder.set_level_callback(callback);
+    }
+
+    /// Record from the built-in microphone when the default one is Bluetooth,
+    /// from the next prepare or start on.
+    pub fn set_prefer_built_in_microphone(&mut self, prefer: bool) {
+        self.recorder.set_prefer_built_in_microphone(prefer);
     }
 
     /// Take the speech captured so far as a Dictation Segment, leaving the
@@ -1291,6 +1378,52 @@ mod tests {
                 "{format} is unsupported"
             );
         }
+    }
+
+    #[test]
+    fn a_bluetooth_default_gives_way_to_the_built_in_microphone_when_preferred() {
+        let transport = |name: &&str| match *name {
+            "headset" => MicrophoneTransport::Bluetooth,
+            "built-in" => MicrophoneTransport::BuiltIn,
+            _ => MicrophoneTransport::Other,
+        };
+        let devices = || vec!["headset", "usb", "built-in"];
+
+        assert_eq!(
+            choose_input_device("headset", devices, true, transport),
+            "built-in"
+        );
+        // The user turned the preference off: their default stands.
+        assert_eq!(
+            choose_input_device("headset", devices, false, transport),
+            "headset"
+        );
+        // A desktop Mac with no built-in microphone keeps the headset rather
+        // than recording from nothing.
+        assert_eq!(
+            choose_input_device("headset", || vec!["headset", "usb"], true, transport),
+            "headset"
+        );
+    }
+
+    #[test]
+    fn a_default_that_is_not_bluetooth_is_kept_without_listing_devices() {
+        // Listing devices costs a round trip to the audio system on every
+        // press, so only the Bluetooth case may pay for it.
+        let transport = |name: &&str| match *name {
+            "built-in" => MicrophoneTransport::BuiltIn,
+            _ => MicrophoneTransport::Other,
+        };
+        let never_listed = || -> Vec<&str> { panic!("devices were listed") };
+
+        assert_eq!(
+            choose_input_device("usb", never_listed, true, transport),
+            "usb"
+        );
+        assert_eq!(
+            choose_input_device("built-in", never_listed, true, transport),
+            "built-in"
+        );
     }
 
     #[test]

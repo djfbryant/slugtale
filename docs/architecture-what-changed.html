@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>What changed in Slugtale, and why — 27 September 2026</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+    </script>
+    <style>
+      .seam { stroke-dasharray: 4 4; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+      .card { scroll-margin-top: 1.5rem; }
+      .n { font-variant-numeric: tabular-nums; }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans">
+    <main class="max-w-5xl mx-auto px-6 py-12 space-y-12">
+
+      <header class="space-y-6">
+        <div>
+          <p class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Slugtale</p>
+          <h1 class="text-4xl font-serif mt-2">What changed, and why</h1>
+          <p class="text-slate-600 mt-3 max-w-2xl">
+            A point-in-time record of the architecture pass of 27 September 2026. Eighteen
+            pieces of architecture were reviewed. All eighteen were changed, across
+            twenty-one merged pull requests. The app is installed and running. Here is each
+            change in plain words, with the reason it was worth doing.
+          </p>
+          <p class="text-slate-500 text-sm">
+            Every number here was measured, not remembered. The "before" figures come from checking
+            out <span class="font-mono">77a44ae</span>, the commit the work started from, and
+            running the suite there.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div class="rounded-lg bg-white border border-slate-200 p-4">
+            <div class="text-3xl font-serif n">&minus;6.6%</div>
+            <div class="text-xs uppercase tracking-wider text-slate-500 mt-1">app code lines</div>
+          </div>
+          <div class="rounded-lg bg-white border border-slate-200 p-4">
+            <div class="text-3xl font-serif n">+20%</div>
+            <div class="text-xs uppercase tracking-wider text-slate-500 mt-1">test code lines</div>
+          </div>
+          <div class="rounded-lg bg-white border border-slate-200 p-4">
+            <div class="text-3xl font-serif n">+77</div>
+            <div class="text-xs uppercase tracking-wider text-slate-500 mt-1">tests, 527 to 604</div>
+          </div>
+          <div class="rounded-lg bg-white border border-slate-200 p-4">
+            <div class="text-3xl font-serif n">&minus;1,296</div>
+            <div class="text-xs uppercase tracking-wider text-slate-500 mt-1">lines deleted outright</div>
+          </div>
+        </div>
+
+        <div class="rounded-lg bg-white border border-slate-200 p-4 text-xs uppercase tracking-wider text-slate-500 flex flex-wrap gap-x-5 gap-y-2">
+          <span><span class="inline-block w-3 h-3 border border-slate-400 align-middle mr-1"></span>module</span>
+          <span><span class="inline-block w-4 h-0 border-t-2 border-dashed border-slate-500 align-middle mr-1"></span>seam</span>
+          <span><span class="inline-block w-3 h-3 bg-red-600 align-middle mr-1"></span>leakage</span>
+          <span><span class="inline-block w-3 h-3 bg-slate-800 align-middle mr-1"></span>deep module</span>
+        </div>
+      </header>
+
+      <section id="headline" class="space-y-5">
+        <h2 class="text-2xl font-serif">The headline gains</h2>
+        <p class="text-slate-600 max-w-2xl">
+          The short version: <strong>the app got smaller and the safety net got bigger.</strong> These
+          are the numbers, measured by checking out the commit the work started from and counting
+          there, not estimated.
+        </p>
+
+        <div class="rounded-lg bg-white border border-slate-200 p-5">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-4">
+            App code versus test code &mdash; measured in real lines
+          </p>
+
+          <div class="space-y-5">
+            <div>
+              <div class="flex justify-between text-sm mb-1.5">
+                <span class="text-slate-700">App code <span class="text-slate-400">(the Rust program)</span></span>
+                <span class="font-mono n text-slate-600">9,662 &rarr; <strong class="text-emerald-700">9,021</strong></span>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="h-6 bg-slate-300 rounded" style="width: 96.6%"></div>
+                <span class="text-xs text-slate-500 n whitespace-nowrap">&minus;641</span>
+              </div>
+              <div class="flex items-center gap-2 mt-1">
+                <div class="h-6 bg-emerald-600 rounded" style="width: 90.2%"></div>
+                <span class="text-xs text-emerald-700 n whitespace-nowrap">&minus;6.6%</span>
+              </div>
+            </div>
+
+            <div>
+              <div class="flex justify-between text-sm mb-1.5">
+                <span class="text-slate-700">Test code <span class="text-slate-400">(Rust and frontend checks)</span></span>
+                <span class="font-mono n text-slate-600">10,399 &rarr; <strong class="text-emerald-700">12,497</strong></span>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="h-6 bg-slate-300 rounded" style="width: 83.2%"></div>
+                <span class="text-xs text-slate-500 n whitespace-nowrap">&minus;20%</span>
+              </div>
+              <div class="flex items-center gap-2 mt-1">
+                <div class="h-6 bg-emerald-600 rounded" style="width: 100%"></div>
+                <span class="text-xs text-emerald-700 n whitespace-nowrap">+20.2%</span>
+              </div>
+            </div>
+          </div>
+
+          <p class="text-sm text-slate-600 mt-5 pt-4 border-t border-slate-100">
+            The ratio is the real headline. Test code used to be <strong>0.87&times;</strong> the size of
+            the app. It is now <strong>1.08&times;</strong> &mdash; for the first time there is more
+            check than there is program to check.
+          </p>
+        </div>
+
+        <div class="grid md:grid-cols-3 gap-4">
+          <div class="rounded-lg bg-white border border-slate-200 p-5">
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Smaller</p>
+            <ul class="text-sm space-y-2">
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">App code lines</span>
+                <span class="font-mono n text-emerald-700">&minus;641</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Lines no code could reach</span>
+                <span class="font-mono n text-emerald-700">&minus;1,296</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Names exported to the whole program for nothing</span>
+                <span class="font-mono n text-emerald-700">&minus;36</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Interfaces to learn before you can change something</span>
+                <span class="font-mono n text-emerald-700">17 &rarr; 16</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Source files</span>
+                <span class="font-mono n text-emerald-700">44 &rarr; 42</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Modules one Pause Flush passed through</span>
+                <span class="font-mono n text-emerald-700">12 &rarr; 4</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="rounded-lg bg-white border border-slate-200 p-5">
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Bigger</p>
+            <ul class="text-sm space-y-2">
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Tests, total</span>
+                <span class="font-mono n text-emerald-700">527 &rarr; 604</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Rust tests</span>
+                <span class="font-mono n text-emerald-700">416 &rarr; 452</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Frontend tests</span>
+                <span class="font-mono n text-emerald-700">111 &rarr; 152</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Test code lines</span>
+                <span class="font-mono n text-emerald-700">+2,098</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Platforms building green</span>
+                <span class="font-mono n text-emerald-700">2 &rarr; 3</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span class="text-slate-700">Bugs the old suite could not see</span>
+                <span class="font-mono n text-emerald-700">0 &rarr; 4</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="rounded-lg bg-white border border-slate-200 p-5">
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Unchanged, on purpose</p>
+            <ul class="text-sm space-y-2 text-slate-600">
+              <li class="flex justify-between gap-3">
+                <span>Commands the app exposes</span>
+                <span class="font-mono n">32 &rarr; 32</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span>Settings the user sees</span>
+                <span class="font-mono n">unchanged</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span>Window and event names on the wire</span>
+                <span class="font-mono n">unchanged</span>
+              </li>
+              <li class="flex justify-between gap-3">
+                <span>Frontend screen code</span>
+                <span class="font-mono n">+7 lines</span>
+              </li>
+            </ul>
+            <p class="text-xs text-slate-500 mt-3">
+              The point of the exercise was to make the inside easier to change, not to change what
+              the user gets. That column is the proof.
+            </p>
+          </div>
+        </div>
+
+        <div class="rounded-lg bg-white border border-slate-200 p-5">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">The three files that are simply gone</p>
+          <table class="w-full text-sm">
+            <tbody class="divide-y divide-slate-100">
+              <tr>
+                <td class="py-2 font-mono text-xs text-slate-700 pr-4">linux/portal_accelerator.rs</td>
+                <td class="py-2 text-slate-600">795 lines for a postponed feature, with no caller</td>
+                <td class="py-2 text-right font-mono n text-slate-500">&minus;795</td>
+              </tr>
+              <tr>
+                <td class="py-2 font-mono text-xs text-slate-700 pr-4">dictation_segments.rs</td>
+                <td class="py-2 text-slate-600">One job, split from the module that triggered it</td>
+                <td class="py-2 text-right font-mono n text-slate-500">&minus;432</td>
+              </tr>
+              <tr>
+                <td class="py-2 font-mono text-xs text-slate-700 pr-4">app_paths.rs</td>
+                <td class="py-2 text-slate-600">Eight of ten functions only called the next file</td>
+                <td class="py-2 text-right font-mono n text-slate-500">&minus;69</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="text-xs text-slate-500 mt-3">
+            Two files were added in their place, and both are things the program needed: a single
+            window-name type, and the shared test harness.
+          </p>
+        </div>
+      </section>
+
+      <section class="space-y-6">
+        <h2 class="text-2xl font-serif">The one idea behind all of it</h2>
+        <div class="rounded-lg bg-white border border-slate-200 p-6 space-y-4">
+          <p class="text-slate-700">
+            Most of these findings are the same mistake wearing different clothes. Somebody wrote a
+            piece of code, then wrote a <em>second</em> piece that only forwarded to the first. The
+            second piece adds a name, a file, or a hop &mdash; and nothing else. It looks like an
+            organisation. It is a cost.
+          </p>
+          <p class="text-slate-700">
+            You pay for it twice. Once when you write it, and again forever when you read it: to
+            answer "what happens when dictation stops", you open four files instead of one and
+            follow a chain of pass-throughs. And because a forwarding layer has no behaviour of its
+            own, it has nothing worth testing, so it silently rots.
+          </p>
+          <p class="text-slate-700">
+            The fix is the same every time: <strong>delete the layer, and move the knowledge to
+            where the work already happens.</strong> Not to a new place. To the place that was
+            already doing the job.
+          </p>
+        </div>
+
+        <div class="rounded-lg bg-white border border-slate-200 p-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">The shape of the whole change</p>
+          <pre class="mermaid">
+flowchart TB
+  subgraph before["BEFORE — 18 findings"]
+    direction TB
+    b1["18 places to look<br/>for one answer"]
+    b2["795 + 69 + 432 lines<br/>with no caller"]
+    b3["6 modules writing a value<br/>nobody reads"]
+    b4["a getter that quietly<br/>rewrites running state"]
+    b5["tests that certify<br/>paths production never takes"]
+  end
+  subgraph after["AFTER"]
+    direction TB
+    a1["one place per answer"]
+    a2["deleted"]
+    a3["Result&lt;(), E&gt; — the answer<br/>is did it work, yes or no"]
+    a4["a getter that is a getter"]
+    a5["tests that drive the real path"]
+  end
+  b1 --> a1
+  b2 --> a2
+  b3 --> a3
+  b4 --> a4
+  b5 --> a5
+  classDef bad fill:#fef2f2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+  classDef good fill:#f0fdf4,stroke:#16a34a,stroke-width:2px,color:#14532d
+  class b1,b2,b3,b4,b5 bad
+  class a1,a2,a3,a4,a5 good
+          </pre>
+        </div>
+      </section>
+
+      <section class="space-y-4">
+        <h2 class="text-2xl font-serif">The eighteen, in the order they were done</h2>
+        <p class="text-slate-600">
+          Ranked by how much they mattered, best first. Each one says what was wrong, what changed,
+          and what it buys you.
+        </p>
+      </section>
+
+      <!-- 1 -->
+      <article id="f1" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">1</span>
+          <h3 class="text-xl font-serif">Five copies of the same test trick</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">tests/*.test.mjs &rarr; tests/harness.mjs &middot; PR #3</p>
+        <p class="text-slate-700">
+          To run one of the app's three screens in a test, each test file had its own recipe: read
+          the HTML, pull out the <em>first</em> script block with a pattern, rewrite the last line so
+          the page would not start itself, and invent a fake set of buttons.
+        </p>
+        <p class="text-slate-700">
+          The trap: if someone later adds a second script block, the recipe silently keeps only the
+          first half. Every test still passes. The page is half-tested and nobody knows.
+        </p>
+        <div class="grid md:grid-cols-2 gap-4">
+          <div class="rounded-lg bg-red-50 border border-red-200 p-4">
+            <p class="text-xs uppercase tracking-wider text-red-700 font-semibold mb-3">Before</p>
+            <pre class="mermaid">
+flowchart TB
+  t1["settings-usage.test.mjs<br/>own fake DOM"] --> p1["index.html"]
+  t2["settings-readiness.test.mjs<br/>own fake DOM"] --> p1
+  t3["settings-app-update.test.mjs<br/>own fake DOM"] --> p1
+  t4["dictation-bar.test.mjs<br/>own fake DOM"] --> p2["dictation-bar.html"]
+  t5["typing-challenge.test.mjs<br/>own fake DOM"] --> p3["typing-challenge.html"]
+  p1 -.->|"regex takes the FIRST<br/>script block only"| x["a 2nd block is<br/>silently ignored"]
+  classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+  class x bad
+            </pre>
+          </div>
+          <div class="rounded-lg bg-emerald-50 border border-emerald-200 p-4">
+            <p class="text-xs uppercase tracking-wider text-emerald-700 font-semibold mb-3">After</p>
+            <pre class="mermaid">
+flowchart TB
+  t1["settings-usage"] --> h
+  t2["settings-readiness"] --> h
+  t3["app-update"] --> h
+  t4["dictation-bar"] --> h
+  t5["typing-challenge"] --> h
+  h["harness.mjs<br/>one recipe, one fake DOM<br/>built from the page's own markup"] --> p["all three pages"]
+  h -.->|"a missing id, a src= script,<br/>or a selector it cannot answer<br/>is a loud error"| x["never a quiet wrong answer"]
+  classDef good fill:#dcfce7,stroke:#16a34a,color:#14532d
+  class h,x good
+            </pre>
+          </div>
+        </div>
+        <div class="rounded-lg bg-white border border-slate-200 p-4">
+          <p class="font-semibold text-sm">What you get</p>
+          <ul class="mt-2 text-sm text-slate-700 space-y-1 list-disc list-inside">
+            <li>A misspelled element id now <em>fails a test</em> instead of quietly inventing a button.</li>
+            <li>The fake browser behaves like a real one: class names, <code>textContent</code>, focus, and styles all agree with each other.</li>
+            <li>23 tests that check the harness itself. Each one was proved to fail when the thing it names is removed.</li>
+          </ul>
+        </div>
+        <p class="text-sm text-slate-600"><strong>Note:</strong> this one went round twice. The first version's fake browser lied in nine ways. A second review found them all.</p>
+      </article>
+
+      <!-- 2 -->
+      <article id="f2" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">2</span>
+          <h3 class="text-xl font-serif">795 lines nobody could reach</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">src-tauri/src/linux/portal_accelerator.rs &middot; PR #7</p>
+        <p class="text-slate-700">
+          Half the file was tests. All of it was for a Wayland feature the project had deliberately
+          postponed, and the app could not reach any of it. Worse, the module was re-exported, so the
+          Linux code <em>looked</em> like it had Wayland hotkeys. It does not.
+        </p>
+        <div class="rounded-lg bg-white border border-slate-200 p-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / After</p>
+          <div class="grid md:grid-cols-2 gap-4 items-center">
+            <div class="rounded border border-red-300 bg-red-50 p-4 text-center">
+              <div class="text-xs uppercase tracking-wider text-red-700">Before</div>
+              <div class="mt-3 inline-block">
+                <div class="px-3 py-1.5 bg-white border border-slate-400 text-xs font-mono">linux.rs</div>
+                <div class="text-red-600 text-xs my-1">&#9660;</div>
+                <div class="px-3 py-1.5 bg-white border border-slate-400 text-xs font-mono">portal_accelerator</div>
+                <div class="text-red-600 text-xs my-1">&#9660; 0 callers</div>
+                <div class="px-3 py-1.5 bg-red-200 border border-red-400 text-xs font-mono">795 lines + 429 test lines</div>
+              </div>
+            </div>
+            <div class="rounded border border-emerald-300 bg-emerald-50 p-4 text-center">
+              <div class="text-xs uppercase tracking-wider text-emerald-700">After</div>
+              <div class="mt-3 inline-block">
+                <div class="px-3 py-1.5 bg-slate-800 text-white text-xs font-mono">linux.rs</div>
+                <div class="text-emerald-600 text-xs my-1">&#9660;</div>
+                <div class="px-3 py-1.5 bg-emerald-200 border border-emerald-400 text-xs font-mono">gone</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="text-sm text-slate-700">
+          The only thing worth keeping was a table of keyboard shortcut spellings. That moved into
+          the project tracker, next to the ticket that will actually use it, with the five rules the
+          parser enforced written down beside it.
+        </p>
+      </article>
+
+      <!-- 3 -->
+      <article id="f3" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">3</span>
+          <h3 class="text-xl font-serif">Asking a question changed the answer</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">engine_catalogue.rs &middot; asr.rs &middot; voice_activation.rs &middot; PR #16</p>
+        <p class="text-slate-700">
+          <code>whisper_runtime()</code> sounds like a getter. It is not. Inside, it reached into the
+          one shared copy of the speech model and rewrote its decoding speed, based on whoever asked
+          last.
+        </p>
+        <p class="text-slate-700">
+          So the very act of asking "can this engine run?" changed how the running engine decoded.
+          The wake-word listener asked with a fast setting, won the race, and never put it back.
+          Dictation still worked &mdash; but only by accident, because it happened to rebuild its
+          model stack before every dictation.
+        </p>
+        <div class="rounded-lg bg-white border border-slate-200 p-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / After</p>
+          <pre class="mermaid">
+sequenceDiagram
+  participant W as Wake listener
+  participant C as Engine catalogue
+  participant M as Shared Whisper model
+  Note over C,M: Before — the getter writes
+  W->>C: runtime(settings: Fast)
+  C->>M: set_speed_profile(Fast)
+  Note right of M: now fast,<br/>for everyone
+  W->>C: transcribe
+  Note over M: dictation inherits Fast
+  Note over W,M: After — the value travels with the request
+  W->>C: provider(settings: Fast)
+  C->>W: a provider that carries Fast
+  W->>M: transcribe(Fast)
+  Note right of M: still Balanced<br/>until someone asks
+          </pre>
+        </div>
+        <p class="text-sm text-slate-700">
+          The wake-listener and settings code needed <strong>no changes at all</strong> &mdash; they
+          were already doing the right thing. The bug was that nothing let them.
+        </p>
+      </article>
+
+      <!-- 4 -->
+      <article id="f4" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">4</span>
+          <h3 class="text-xl font-serif">"Is your model downloaded?" had three answers</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">local_model.rs &middot; readiness.rs &middot; engine_catalogue.rs &middot; PR #17</p>
+        <p class="text-slate-700">This one was a <strong>real user-facing bug</strong>, not just untidy code.</p>
+        <p class="text-slate-700">
+          If you pointed Slugtale at your own model file, the settings window would say
+          <em>"Local model: missing"</em> &mdash; while the engine said that same file was fine and
+          ready. Dictation readiness also used that wrong answer to decide whether to warm the model
+          up, so it skipped the download check it should have done.
+        </p>
+        <p class="text-slate-700">
+          Worse: two tests were named for exactly this case. They passed &mdash; by asserting the
+          wrong behaviour. One was named "uses the default model when your choice is stale", and
+          asserting that is precisely the bug.
+        </p>
+        <div class="rounded-lg bg-white border border-slate-200 p-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / After</p>
+          <pre class="mermaid">
+flowchart LR
+  subgraph b["Before — three answers"]
+    direction TB
+    s1["Settings says<br/>model = /mine/model.bin"]
+    r1["readiness.rs<br/>looks at the DEFAULT path"] --> w1["says: missing"]
+    r2["main.rs<br/>checks your setting only<br/>if that lookup FAILED"] --> w2["says: missing"]
+    r3["asr.rs<br/>asks the catalogue"] --> w3["says: available"]
+  end
+  subgraph a["After — one answer"]
+    direction TB
+    r0["LocalModelRef<br/>your setting, else the default"]
+    r0 --> w0["readiness: present / missing"]
+    r0 --> w0b["engine: available / not"]
+  end
+  classDef bad fill:#fef2f2,stroke:#dc2626,color:#7f1d1d
+  classDef good fill:#f0fdf4,stroke:#16a34a,color:#14532d
+  class w1,w2,w3 bad
+  class w0,w0b good
+          </pre>
+        </div>
+        <p class="text-sm text-slate-700">
+          One test was renamed, because its old name described the bug. Two new tests cover every
+          combination of "your setting" and "what is on disk". Both were proved to fail when the old
+          behaviour is put back.
+        </p>
+      </article>
+
+      <!-- 5 -->
+      <article id="f5" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">5</span>
+          <h3 class="text-xl font-serif">The tests were checking the wrong method</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">audio_capture.rs &middot; dictation_host.rs &middot; PR #10</p>
+        <p class="text-slate-700">
+          Recording audio had two methods that did the same job. One was the one the app actually
+          called. The other had <strong>six tests and no callers at all</strong>.
+        </p>
+        <p class="text-slate-700">
+          So the app's real path was untested, and six tests were quietly reassuring everyone about a
+          path nobody walks. Two of those tests were the only thing protecting a rule that stops a
+          dictation from failing when you pause and then stop talking.
+        </p>
+        <div class="rounded-lg bg-white border border-slate-200 p-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / After</p>
+          <pre class="mermaid">
+flowchart TB
+  subgraph b["Before"]
+    direction TB
+    app["the app calls<br/>flush_segment_through"] --> live["flush_segment_through<br/>0 tests"]
+    dead["flush_segment<br/>6 tests"] -.->|"nothing calls this"| x["the real path<br/>had no coverage"]
+  end
+  subgraph a["After"]
+    direction TB
+    app2["the app calls"] --> cut["cut_segment(cut)<br/>tested"]
+  end
+  classDef bad fill:#fef2f2,stroke:#dc2626,color:#7f1d1d
+  classDef good fill:#f0fdf4,stroke:#16a34a,color:#14532d
+  class dead,x bad
+  class cut good
+          </pre>
+        </div>
+        <p class="text-sm text-slate-700">
+          Also closed two "escape hatches" that let code reach past the recorder into the raw
+          hardware object. That removed a real risk: a callback firing while one lock was held
+          reached for a second lock. The module's own comment promised this could not happen. It
+          could. It cannot now.
+        </p>
+        <p class="text-sm text-slate-600"><strong>Note:</strong> review caught that the rename broke four example programs, and that one lock comment had been widened into a promise the code did not keep.</p>
+      </article>
+
+      <!-- 6 -->
+      <article id="f6" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">6</span>
+          <h3 class="text-xl font-serif">One sentence, written in five places</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">readiness.rs &middot; main.rs &middot; index.html &middot; PRs #14, #18</p>
+        <p class="text-slate-700">
+          The settings window needs to know what is blocking dictation. The app decided this with
+          <strong>five near-identical functions, four of which nothing called</strong>. About 200
+          lines of tests existed only to keep those four dead paths honest.
+        </p>
+        <p class="text-slate-700">
+          Each blocking item was also identified by a bare piece of text, used as a secret handshake
+          in five places at once. Rename it, and nothing breaks at compile time &mdash; the row
+          quietly loses its explanation, its fix-it button, its badge, and its model warm-up. The
+          tests did not notice, because they only ever built the same strings.
+        </p>
+        <div class="rounded-lg bg-white border border-slate-200 p-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / After</p>
+          <pre class="mermaid">
+flowchart TB
+  subgraph b["Before — five functions, one real"]
+    direction TB
+    d1["dictation_ready<br/>0 callers"]
+    d2["dictation_ready_checked<br/>0 callers"]
+    d3["settings_readiness_report<br/>0 callers"]
+    d4["settings_readiness_report_checked<br/>0 callers"]
+    live5["..._for_input<br/>1 caller"]
+    t["~200 test lines<br/>keeping 4 dead paths honest"]
+  end
+  subgraph a["After — one function"]
+    direction TB
+    one["readiness_snapshot"] --> r["one answer"]
+  end
+  classDef bad fill:#fef2f2,stroke:#dc2626,color:#7f1d1d
+  classDef good fill:#f0fdf4,stroke:#16a34a,color:#14532d
+  class d1,d2,d3,d4,t bad
+  class one,r good
+          </pre>
+        </div>
+        <p class="text-sm text-slate-700">
+          The blocking items are now a proper list of choices. The label and which settings page it
+          lives on are <em>worked out from the choice</em>, so they cannot drift apart. A new test
+          reads the list out of the app and out of the settings window and compares them.
+        </p>
+        <p class="text-sm text-slate-700">
+          227 lines deleted. The test count went <em>down</em>, because twelve tests were testing
+          functions that no longer exist.
+        </p>
+      </article>
+
+      <!-- 7 -->
+      <article id="f7" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">7</span>
+          <h3 class="text-xl font-serif">A promise the code could break</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">dictation_runtime.rs &middot; dictation_segments.rs &middot; PR #11</p>
+        <p class="text-slate-700">
+          When a dictation is long, Slugtale cuts it into pieces and inserts each as you speak. The
+          promise is that pieces arrive in the order you said them, and that if one fails to insert,
+          the ones after it wait so they do not bury your rescue text.
+        </p>
+        <p class="text-slate-700">
+          That promise was spread across twelve files and eight traits, with two traits declaring the
+          same two methods and a small bridge passing calls between them. Then review deleted the
+          one line that actually enforces the promise &mdash; and <strong>all 426 tests still
+          passed</strong>.
+        </p>
+        <div class="rounded-lg bg-white border border-slate-200 p-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / After</p>
+          <pre class="mermaid">
+flowchart LR
+  subgraph b["Before — 12 modules, 8 traits"]
+    direction TB
+    x1["level arrives"] --> x2["is it a pause?"] --> x3["queue it"] --> x4["worker wakes"]
+    x4 --> x5["order it"] --> x6["cut the audio"] --> x7["transcribe"]
+    x7 --> x8["insert"] --> x9["count it"]
+    x3 -.->|"the SAME rule,<br/>written twice"| x4
+    br["a 24-line bridge<br/>whose job was 3 delegations"]
+  end
+  subgraph a["After — one module, one rule"]
+    direction TB
+    y1["level arrives"] --> y2["is it a pause,<br/>and is a rescue waiting?"] --> y3["queue"]
+    y3 --> y4["worker asks the same<br/>named question again"] --> y5["order, cut, transcribe,<br/>insert, count — one file"]
+  end
+  classDef bad fill:#fef2f2,stroke:#dc2626,color:#7f1d1d
+  classDef good fill:#f0fdf4,stroke:#16a34a,color:#14532d
+  class x1,x2,x3,x4,x5,x6,x7,x8,x9,br bad
+  class y1,y2,y3,y4,y5 good
+          </pre>
+        </div>
+        <p class="text-sm text-slate-700">
+          The two checks are not duplicates, and the comment now says why: the queue is unbounded,
+          so a piece queued <em>before</em> the rescue can still arrive after it. Both sides now call
+          one named question. Three tests pin it, and deleting the rule fails two of them
+          every time.
+        </p>
+        <p class="text-sm text-slate-700">
+          This also deleted a test that had been passing by luck &mdash; it caught the bug about 40%
+          of the time. It is gone, and the real rescue path is covered where it actually lives.
+        </p>
+      </article>
+
+      <!-- 8 -->
+      <article id="f8" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">8</span>
+          <h3 class="text-xl font-serif">Six modules answered a question nobody asked</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">text_insertion.rs &middot; macos.rs &middot; linux.rs &middot; windows.rs &middot; PR #8</p>
+        <p class="text-slate-700">
+          After typing a word into your editor, Slugtale either typed it directly or put it on the
+          clipboard and pasted. That distinction is important enough that the project gives it a
+          name. But all six places that insert text returned a value saying which one happened
+          &mdash; and the one caller threw the value away.
+        </p>
+        <p class="text-slate-700">
+          So if you ever said "it pasted instead of typing", the app had no way to tell you. It
+          never recorded it anywhere.
+        </p>
+        <div class="rounded-lg bg-white border border-slate-200 p-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / After</p>
+          <pre class="mermaid">
+flowchart LR
+  subgraph b["Before"]
+    direction TB
+    m["macOS"] --> v1["which one?<br/>ClipboardFree or Fallback"]
+    l["Linux"] --> v1
+    w["Windows"] --> v1
+    d["log decorator"] --> v1
+    r["rescue"] --> v1
+    v1 --> call["caller does<br/>.is_err() and drops it"]
+    call -.->|"the answer stops here"| gone["no log line ever<br/>says which path ran"]
+  end
+  subgraph a["After"]
+    direction TB
+    v2["Result&lt;(), Error&gt;<br/>did the text land?"] --> call2["one caller, no discarded value"]
+  end
+  classDef bad fill:#fef2f2,stroke:#dc2626,color:#7f1d1d
+  classDef good fill:#f0fdf4,stroke:#16a34a,color:#14532d
+  class v1,call,gone bad
+  class v2,call2 good
+          </pre>
+        </div>
+        <p class="text-sm text-slate-700">
+          Three assertions were removed, and no coverage was lost: each one sat directly above a
+          check on the recorded effects, which already proved which path ran.
+        </p>
+      </article>
+
+      <!-- 9-18 compact -->
+      <article id="f9" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">9</span>
+          <h3 class="text-xl font-serif">A file that only forwarded</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">app_paths.rs &rarr; app_files.rs &middot; PR #20</p>
+        <p class="text-slate-700">
+          A 69-line file where eight of ten functions just called the function in the next file. It
+          lived in a different part of the program from the one it forwarded to, and its own
+          documentation described the <em>other</em> file.
+        </p>
+        <p class="text-slate-700">
+          The reason it existed: the settings file was re-read from disk on every access, 33 times,
+          all funnelling through one global lock. The original author had added a comment explaining
+          that caching was unsafe, because exactly one writer was bypassing the store. One line of
+          policy, turned into a whole-program restriction.
+        </p>
+        <div class="rounded-lg bg-white border border-slate-200 p-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / After</p>
+          <pre class="mermaid">
+flowchart LR
+  subgraph b["Before"]
+    direction TB
+    c1["33 call sites"] --> ap["app_paths.rs<br/>69 lines, mostly forwarding"]
+    ap --> af["app_files.rs<br/>the real store"]
+    lm["Local Model Manager"] -.->|"writes behind<br/>the store's back"| af
+    af --> disk["reads settings.json<br/>from disk, every time"]
+    w["usage writer"] -.->|"re-implements 5 of 8 steps"| af
+  end
+  subgraph a["After"]
+    direction TB
+    c2["33 call sites"] --> s["app_files.rs<br/>one store, both halves"]
+    lm2["Local Model Manager"] --> s
+    s --> mem["settings held in memory,<br/>written through the store"]
+  end
+  classDef bad fill:#fef2f2,stroke:#dc2626,color:#7f1d1d
+  classDef good fill:#f0fdf4,stroke:#16a34a,color:#14532d
+  class ap,lm,disk,w bad
+  class s,mem good
+          </pre>
+        </div>
+        <p class="text-sm text-slate-600"><strong>One honest difference:</strong> if you hand-edit the settings file in a text editor, the app now notices at its next save or restart, not immediately. Every write in the app goes through the store, so nothing else moved.</p>
+      </article>
+
+      <article id="f10" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">10</span>
+          <h3 class="text-xl font-serif">What counts as "voice", in three places</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">segmentation.rs &middot; audio_capture.rs &middot; wake_word.rs &middot; PR #19</p>
+        <p class="text-slate-700">
+          The number that decides "the user stopped talking" lived in the segment-pause code. But
+          the real-time audio callback used it too &mdash; reaching across the program for a constant
+          from a module that knows nothing about pausing.
+        </p>
+        <p class="text-slate-700">
+          The same "is this silence?" rule was also written twice, with no shared name. A mutation
+          report had already recorded that swapping <code>&amp;&amp;</code> for <code>||</code> in one
+          copy <strong>survived the test suite</strong>.
+        </p>
+        <p class="text-sm text-slate-700">
+          Now the number sits beside the code that produces the level, the silence rule exists once,
+          and a test reads the number out of both the app and the settings window and fails if they
+          ever differ. A comment stops being a promise and becomes a check.
+        </p>
+        <p class="text-sm text-slate-600"><strong>Left open on purpose:</strong> the Dictation Bar holds "voice" on screen for 700 ms after you stop, while the detector moves on immediately. Closing that gap means deciding what the bar should show between words &mdash; a product decision, not a refactor. Tracked as slugtale-hdef.12.</p>
+      </article>
+
+      <article id="f11" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">11</span>
+          <h3 class="text-xl font-serif">Window names were typing homework</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">main.rs &rarr; window_label.rs &middot; PR #12</p>
+        <p class="text-slate-700">
+          Window names were typed out in eleven places across three files. One of the three already
+          had a constant; the other two did not. A typo in the Dictation Bar's name is a silent
+          no-op: the bar just stops appearing, and nothing fails.
+        </p>
+        <p class="text-sm text-slate-700">
+          The tray menu also used the word <code>"settings"</code> for its own item, the same string
+          the settings window answers to, with nothing to say they were different things. A test now
+          proves the two namespaces cannot collide.
+        </p>
+      </article>
+
+      <article id="f12" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">12</span>
+          <h3 class="text-xl font-serif">The tray was a list of pairs and a lookup table</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">app_shell.rs &middot; scripts/ &middot; PR #13</p>
+        <p class="text-slate-700">
+          The menu existed as a list of identifier-and-label pairs, plus a separate function that
+          read those identifiers back. Adding an item meant editing both. There were five tests for
+          two items.
+        </p>
+        <p class="text-sm text-slate-700">
+          Three Rust tests were also reading the developer scripts and searching their source text
+          for the word "codesign". They moved to the test tier that owns those files, and the scripts
+          now export what they do so the tests call them. A test can no longer pass because of a
+          comment.
+        </p>
+        <p class="text-sm text-slate-600"><strong>Caught in CI:</strong> one of the new tests built its expected command with a path that is wrong on Windows. The script was right; the test was not. Fixed.</p>
+      </article>
+
+      <article id="f13" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">13</span>
+          <h3 class="text-xl font-serif">Names that nothing outside could read</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">lib.rs and every module &middot; PR #6</p>
+        <p class="text-slate-700">
+          Every module re-exported itself into one flat namespace, so about twenty names with no
+          reader outside their own file were available to anything. Among them: the Parakeet licence
+          and attribution text, and the Apple Speech platform list.
+        </p>
+        <p class="text-slate-700">
+          Licence text should only be reachable from the code that has to display it. Those twenty
+          names are now private to the module that owns them. A test module still sees them, so
+          <strong>no test changed</strong>.
+        </p>
+      </article>
+
+      <article id="f14" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">14</span>
+          <h3 class="text-xl font-serif">Three loggers that only forwarded</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">diagnostics.rs &middot; dictation_host.rs &middot; PR #15</p>
+        <p class="text-slate-700">
+          Three small wrappers, thirty lines each, each holding two fields and recording one line.
+          One was built by the code it wrapped, two by the caller &mdash; for the same job, in two
+          different places. 155 lines gone; logging now happens where the work happens.
+        </p>
+      </article>
+
+      <article id="f15" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">15</span>
+          <h3 class="text-xl font-serif">The settings window spoke for the backend</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">main.rs &rarr; transcription_engine.rs &middot; PR #21</p>
+        <p class="text-slate-700">
+          <code>main.rs</code> matched on which engine it was dealing with, three times, in three
+          different styles, because the engine interface did not offer the four things the settings
+          window needs. A fourth engine would have meant three edits in the file that knows least
+          about engines.
+        </p>
+        <p class="text-sm text-slate-700">
+          Each engine now answers for its own files. The one refusal that had no business being where
+          it was &mdash; "these files belong to macOS, Slugtale cannot remove them" &mdash; moved to
+          Apple's own code, next to the engine that owns those bytes. <strong>Verified byte for
+          byte.</strong> A test holds the exact sentence so it cannot drift.
+        </p>
+        <p class="text-sm text-slate-700">
+          The payoff: that settings row used to be impossible to test, because it needed a running
+          app. It is now an ordinary unit test. 17 new tests, 14 mutations tried, 14 caught.
+        </p>
+      </article>
+
+      <article id="f16" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">16</span>
+          <h3 class="text-xl font-serif">The second-opinion knobs were decoration</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">second_opinion.rs &middot; PR #9</p>
+        <p class="text-slate-700">
+          Four thresholds that decide when to ask a second speech engine were published as a struct
+          with four public fields, described as "fixed and inspectable". Nothing could change them.
+          The only field anyone ever set was a timeout.
+        </p>
+        <p class="text-sm text-slate-700">
+          They are now private, and a new test shows a threshold working at a value other than the
+          default &mdash; so "inspectable" became true rather than decorative.
+        </p>
+      </article>
+
+      <article id="f17" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">17</span>
+          <h3 class="text-xl font-serif">The build was broken on Linux</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">linux.rs &rarr; PR #4</p>
+        <p class="text-slate-700">
+          Not architecture, but it was blocking every other change. A method returned a borrowed
+          value where the signature asked for an owned one. The Linux job had been failing since a
+          commit three weeks earlier; the Mac and Windows jobs never build that file, so nothing
+          local noticed.
+        </p>
+        <p class="text-sm text-slate-700">
+          Fixed, and proved by compiling both the old and new form rather than by reading them. Then
+          a second failure surfaced behind it: a test asserted something that is only true on a
+          machine with a screen. The Linux runner has no screen. The test now says what is actually
+          true in each case.
+        </p>
+      </article>
+
+      <article id="f18" class="card space-y-4">
+        <div class="flex items-baseline gap-3">
+          <span class="text-3xl font-serif text-emerald-700 n">18</span>
+          <h3 class="text-xl font-serif">Two directions were being checked, then one</h3>
+        </div>
+        <p class="text-sm text-slate-500 font-mono">frontend-seam.test.mjs &middot; PR #5</p>
+        <p class="text-slate-700">
+          The frontend and the backend talk by bare text. A test checked that every name the frontend
+          sends exists on the backend &mdash; but only the names written as plain text. Four places
+          send the name as a value instead, and were invisible. A typo there does nothing at a user's
+          desk and nothing in the test suite.
+        </p>
+        <p class="text-sm text-slate-700">
+          The other direction was not checked at all, so a command no screen could reach &mdash;
+          which reads in the source as a feature &mdash; went unnoticed. Both directions are checked
+          now, and the one known-unreachable command is on a list that empties itself the moment it
+          becomes reachable.
+        </p>
+      </article>
+
+      <section class="space-y-6">
+        <h2 class="text-2xl font-serif">The numbers, in full</h2>
+        <div class="grid sm:grid-cols-2 gap-4">
+          <div class="rounded-lg bg-white border border-slate-200 p-5">
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">The raw diff</p>
+            <table class="w-full text-sm">
+              <tbody class="divide-y divide-slate-100">
+                <tr><td class="py-1.5 text-slate-600">Whole change</td><td class="text-right n font-mono">+6885 / &minus;4259</td></tr>
+                <tr><td class="py-1.5 text-slate-600">Files touched</td><td class="text-right n font-mono">53</td></tr>
+                <tr><td class="py-1.5 text-slate-600">Deleted outright</td><td class="text-right n font-mono">1296</td></tr>
+                <tr><td class="py-1.5 text-slate-600">main.rs</td><td class="text-right n font-mono">&minus;177</td></tr>
+                <tr><td class="py-1.5 text-slate-600">readiness.rs</td><td class="text-right n font-mono">net &minus;207 after the fix</td></tr>
+                <tr><td class="py-1.5 text-slate-600">diagnostics.rs</td><td class="text-right n font-mono">&minus;151</td></tr>
+                <tr><td class="py-1.5 text-slate-600">app_shell.rs</td><td class="text-right n font-mono">&minus;54</td></tr>
+              </tbody>
+            </table>
+            <p class="text-xs text-slate-500 mt-3">
+              A large addition count is not a large change. Most of what was added is the kind of code
+              that proves something rather than doing it.
+            </p>
+          </div>
+          <div class="rounded-lg bg-white border border-slate-200 p-5">
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Tests</p>
+            <table class="w-full text-sm">
+              <tbody class="divide-y divide-slate-100">
+                <tr><td class="py-1.5 text-slate-600">Rust, before</td><td class="text-right n font-mono">416</td></tr>
+                <tr><td class="py-1.5 text-slate-600">Rust, after</td><td class="text-right n font-mono font-semibold">452</td></tr>
+                <tr><td class="py-1.5 text-slate-600">Frontend, before</td><td class="text-right n font-mono">111</td></tr>
+                <tr><td class="py-1.5 text-slate-600">Frontend, after</td><td class="text-right n font-mono font-semibold">152</td></tr>
+                <tr><td class="py-1.5 text-slate-600">Total, before</td><td class="text-right n font-mono">527</td></tr>
+                <tr><td class="py-1.5 text-slate-600">Total, after</td><td class="text-right n font-mono font-semibold">604</td></tr>
+                <tr><td class="py-1.5 text-slate-600">Failures, both</td><td class="text-right n font-mono">0</td></tr>
+              </tbody>
+            </table>
+            <p class="text-xs text-slate-500 mt-3">Also green with the Whisper and Parakeet runtimes compiled in, and on Windows and Linux.</p>
+          </div>
+        </div>
+
+        <div class="rounded-lg bg-white border border-slate-200 p-5">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Four bugs the tests used to hide</p>
+          <p class="text-sm text-slate-600 mb-3">
+            Each of these could be introduced again and every test would still pass. Each is now
+            pinned by a test proved to fail when the bug is put back.
+          </p>
+          <pre class="mermaid">
+flowchart LR
+  subgraph was["Before — bug is invisible"]
+    direction TB
+    w1["delete the rescue rule"] --> w1r["0 of 426 tests fail"]
+    w2["change the voice threshold<br/>in only one language"] --> w2r["no test notices"]
+    w3["swap &amp;&amp; for ||<br/>in the silence rule"] --> w3r["survives — recorded<br/>in the mutation report"]
+    w4["ignore the user's<br/>model setting"] --> w4r["2 tests named for it<br/>assert the bug"]
+  end
+  subgraph now["After"]
+    direction TB
+    n1["2 tests fail"] --> n2["1 test fails, both directions"]
+    n3["1 test fails"] --> n4["tests renamed and rewritten"]
+  end
+  classDef bad fill:#fef2f2,stroke:#dc2626,color:#7f1d1d
+  classDef good fill:#f0fdf4,stroke:#16a34a,color:#14532d
+  class w1r,w2r,w3r,w4r bad
+  class n1,n2,n3,n4 good
+          </pre>
+        </div>
+      </section>
+
+      <section class="space-y-4">
+        <h2 class="text-2xl font-serif">What this cost, and what it bought</h2>
+        <div class="grid sm:grid-cols-2 gap-4">
+          <div class="rounded-lg bg-amber-50 border border-amber-200 p-5">
+            <p class="text-xs uppercase tracking-wider text-amber-800 font-semibold mb-2">Cost</p>
+            <ul class="text-sm text-slate-700 space-y-1.5 list-disc list-inside">
+              <li>Every change was checked twice, against the repo rules and against what it claimed. Five pull requests went round a second time.</li>
+              <li>Three sub-agents and two temporary worktrees, cleaned up afterwards.</li>
+              <li>One behaviour change worth naming: hand-editing the settings file is noticed at the next save rather than instantly.</li>
+              <li>Your in-progress work was moved off <code>main</code> onto its own branch, <code>wip-configurable-segment-pause</code>, so the pull could not land on top of it.</li>
+            </ul>
+          </div>
+          <div class="rounded-lg bg-emerald-50 border border-emerald-200 p-5">
+            <p class="text-xs uppercase tracking-wider text-emerald-800 font-semibold mb-2">Bought</p>
+            <ul class="text-sm text-slate-700 space-y-1.5 list-disc list-inside">
+              <li><strong>641 fewer lines of app code</strong> (&minus;6.6%), and 2,098 more lines of test code (+20%). There is now more check than program.</li>
+              <li><strong>Two real user-facing bugs fixed:</strong> the custom-model readiness lie, and a getter that quietly rewrote running state.</li>
+              <li><strong>A Linux build that had been broken for three weeks</strong>, now green &mdash; so three platforms build instead of two.</li>
+              <li><strong>Four bugs the old suite was blind to</strong>, each now pinned by a test proved to fail when the bug is put back.</li>
+              <li><strong>1,296 lines of code nothing could reach</strong>, and 36 names exported to the whole program for no reason.</li>
+              <li><strong>One Pause Flush path from twelve modules to four</strong>, with the rule it depends on named in one place.</li>
+              <li><strong>36 fewer names to learn</strong> before you can safely change something.</li>
+            </ul>
+          </div>
+        </div>
+        <p class="text-sm text-slate-600">
+          Verification note: every figure above was measured by checking out the commit the work
+          started from and counting there, then checking out the finished tree and counting again.
+          None of it is estimated. The <span class="font-mono">+6885 / &minus;4259</span> raw diff
+          looks large only because most of the additions are tests.
+        </p>
+      </section>
+
+      <footer class="text-sm text-slate-500 border-t border-slate-200 pt-6">
+        Slugtale &middot; 21 merged pull requests &middot; 18 findings &middot;
+        <span class="n">&minus;6.6%</span> app code, <span class="n">+20%</span> test code,
+        <span class="n">+77</span> tests &middot; all checks green on macOS, Windows and Linux &middot;
+        installed and running at version 0.1.1
+      </footer>
+
+    </main>
+  </body>
+</html>

@@ -177,7 +177,7 @@ A user-configurable global setting stored in the Settings File that determines t
 _Avoid_: Quality setting, transcription mode, decode mode, per-dictation quality
 
 **Transcription Engine**:
-A local speech recognition implementation Slugtale can ask for a final transcription. Every transcription engine runs entirely on the user's device; there is no cloud engine and no remote fallback. Slugtale knows a closed set of them — Whisper, Parakeet, and Apple SpeechTranscriber — because each carries its own licence, attribution, and platform constraints the settings surface has to state accurately.
+A local speech recognition implementation Slugtale can ask for a final transcription. Every transcription engine runs entirely on the user's device; there is no cloud engine and no remote fallback. Slugtale knows a closed set of them — Whisper, Parakeet, Phonon-2, and Apple SpeechTranscriber — because each carries its own licence, attribution, and platform constraints the settings surface has to state accurately.
 _Avoid_: Backend, recognizer, ASR model
 
 **Second Opinion**:

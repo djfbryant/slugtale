@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<!--
+  PROTOTYPE — throwaway. Tracked by bd slugtale-ai3e.
+
+  Question: what should the Settings window look like, with settings grouped by
+  what the user is trying to do, and the theme following the OS light/dark mode?
+
+  Verdict so far: variant A (Sidebar + search) won over B (Dictation pipeline)
+  and C (Home tiles). B and C are removed; this file now refines A only. Everything is in-memory stub data: no Tauri, no
+  saving. Lives outside src/ so it can never ship (tests/runtime-frontend).
+
+  Run:  open prototypes/settings-menu/settings-menu-prototype.html
+  URL params: scheme=system|light|dark,
+        state=ready|fresh.
+-->
+<html lang="en" data-scheme="system">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PROTOTYPE · Slugtale Settings menu</title>
+<style>
+  /* ---------- tokens: light-dark() follows color-scheme, which follows the OS ---------- */
+  :root {
+    color-scheme: light dark;
+    --desk: light-dark(#d9dee3, #0b0d10);
+    --desk-2: light-dark(#c7d2dc, #1b2230);
+    --bg: light-dark(#eef0ef, #17191c);
+    --surface: light-dark(#ffffff, #212529);
+    --surface-2: light-dark(#f6f7f5, #1a1d20);
+    --rail: light-dark(#e9ebec, #141619);
+    --text: light-dark(#1f2933, #e9edf0);
+    --dim: light-dark(#6c757d, #9aa4ad);
+    --faint: light-dark(#8a929a, #79838c);
+    --border: light-dark(#e3e6e8, #2c3238);
+    --border-2: light-dark(#d4d9dc, #3a4148);
+    --accent: light-dark(#2674a6, #4a9fd8);
+    --accent-soft: light-dark(#eaf2f8, #1b2a35);
+    --ok: light-dark(#2f9e5f, #3fbb75);
+    --ok-text: light-dark(#1f7a44, #5ccb8b);
+    --warn: light-dark(#e08c2e, #d9a03f);
+    --warn-soft: light-dark(#fdf6ec, #2a2115);
+    --warn-text: light-dark(#946212, #e0b165);
+    --danger: light-dark(#9a3726, #e08072);
+    --shadow: light-dark(0 1px 2px rgba(24,34,44,.06), 0 1px 2px rgba(0,0,0,.4));
+    --win-shadow: light-dark(0 24px 60px rgba(20,30,40,.28), 0 24px 60px rgba(0,0,0,.6));
+    --on-fill: #fff;
+    --sw-red: #ff5a52; --sw-amber: #f5a524; --sw-green: #35c76a;
+    --sw-blue: #4c9ffe; --sw-violet: #a78bfa; --sw-graphite: #9aa4ad;
+    /* group hues for icon tiles */
+    --g-shortcut: #6366f1; --g-transcription: #0ea5e9;
+    --g-text: #a855f7; --g-bar: #f97316; --g-usage: #22a35a;
+    --g-privacy: #64748b; --g-general: #78716c;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+    color: var(--text);
+  }
+  :root[data-scheme="light"] { color-scheme: light; }
+  :root[data-scheme="dark"] { color-scheme: dark; }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    background: radial-gradient(1200px 700px at 30% 10%, var(--desk-2), var(--desk));
+    display: grid; place-items: center; padding: 40px 20px 110px;
+  }
+  button, input, select { font: inherit; color: inherit; }
+
+  /* ---------- mock window ---------- */
+  .window {
+    position: relative;
+    display: flex; flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border-2);
+    border-radius: 12px;
+    box-shadow: var(--win-shadow);
+    overflow: hidden;
+    transition: width .25s ease, height .25s ease;
+  }
+  .window.wide { width: 740px; height: 540px; }
+  .titlebar {
+    flex: 0 0 auto; height: 30px; display: flex; align-items: center; gap: 7px;
+    padding: 0 12px; background: var(--rail); border-bottom: 1px solid var(--border);
+    font-size: .76rem; font-weight: 600; color: var(--dim);
+  }
+  .titlebar i { width: 11px; height: 11px; border-radius: 99px; display: block; }
+  .titlebar i:nth-child(1) { background: #ff5f57; }
+  .titlebar i:nth-child(2) { background: #febc2e; }
+  .titlebar i:nth-child(3) { background: #28c840; }
+  .titlebar span { flex: 1; text-align: center; margin-right: 50px; }
+  .win-body { flex: 1 1 auto; min-height: 0; position: relative; }
+  .size-note { margin-top: 10px; text-align: center; color: var(--faint); font-size: .74rem; }
+
+  /* ---------- shared atoms ---------- */
+  svg.i { width: 16px; height: 16px; flex: 0 0 auto; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    min-height: 28px; padding: 3px 11px; border: 1px solid var(--border-2);
+    border-radius: 7px; background: var(--surface); font-size: .84rem; font-weight: 600; cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn svg.i { width: 14px; height: 14px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-fill); }
+  .btn.ghost { border-color: transparent; background: none; color: var(--accent); padding: 3px 6px; }
+  .btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn:focus-visible, .seg button:focus-visible, .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .seg { display: inline-flex; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+  .seg button { min-height: 24px; padding: 2px 10px; border: 0; border-radius: 6px; background: none; color: var(--dim); font-size: .8rem; font-weight: 600; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  .seg button:disabled { opacity: .45; cursor: not-allowed; }
+
+  .switch { position: relative; width: 36px; height: 21px; border-radius: 99px; border: 0; background: var(--border-2); cursor: pointer; flex: 0 0 auto; transition: background .15s; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 99px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .15s; }
+  .switch[aria-checked="true"] { background: var(--ok); }
+  .switch[aria-checked="true"]::after { transform: translateX(15px); }
+  .switch:disabled { opacity: .45; cursor: not-allowed; }
+
+  .keys { display: inline-flex; gap: 4px; }
+  .keys kbd {
+    display: grid; place-items: center; min-width: 24px; height: 24px; padding: 0 6px;
+    border: 1px solid var(--border-2); border-bottom-width: 2px; border-radius: 6px;
+    background: var(--surface); font-family: inherit; font-size: .8rem; font-weight: 650;
+  }
+  .keys.big kbd { min-width: 34px; height: 34px; font-size: 1rem; border-radius: 8px; }
+  .listening { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px; border: 1px dashed var(--accent); border-radius: 7px; color: var(--accent); font-size: .8rem; font-weight: 600; }
+  .listening::before { content: ""; width: 7px; height: 7px; border-radius: 99px; background: var(--accent); animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+
+  .swatches { display: inline-flex; gap: 7px; }
+  .swatches button { width: 22px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 99px; background: var(--sw); cursor: pointer; }
+  .swatches button[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--sw); }
+
+  select { min-height: 28px; max-width: 220px; border: 1px solid var(--border-2); border-radius: 7px; background: var(--surface); font-size: .84rem; padding: 3px 8px; }
+  input[type="number"], input[type="search"] { min-height: 28px; border: 1px solid var(--border-2); border-radius: 7px; background: var(--surface); font-size: .84rem; padding: 3px 8px; }
+  input[type="number"] { width: 72px; }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--border-2); border-radius: 99px; font-size: .76rem; font-weight: 650; white-space: nowrap; color: var(--dim); }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 99px; background: var(--faint); }
+  .pill.ok { color: var(--ok-text); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+  .pill.ok::before { background: var(--ok); }
+  .pill.warn { color: var(--warn-text); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .pill.warn::before { background: var(--warn); }
+
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 99px; background: var(--border); color: var(--dim); font-size: .7rem; font-weight: 650; white-space: nowrap; }
+  .chip.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok-text); }
+  .chip.warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn-text); }
+  .chip.accent { background: var(--accent-soft); color: var(--accent); }
+
+  .tile-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; color: #fff; background: var(--g); flex: 0 0 auto; }
+  .tile-icon svg.i { width: 15px; height: 15px; }
+
+  /* rows */
+  .row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 14px; padding: 11px 0; border-top: 1px solid var(--border); }
+  .row:first-child { border-top: 0; }
+  .row-label { font-size: .88rem; font-weight: 600; }
+  .row-sub { display: block; margin-top: 1px; color: var(--dim); font-size: .78rem; font-weight: 400; }
+  .row-control { display: inline-flex; align-items: center; gap: 8px; justify-self: end; }
+  .row.stack { grid-template-columns: 1fr; }
+  .row.stack .row-control { justify-self: start; }
+  .row[hidden] { display: none; }
+  .note { margin: 10px 0 0; color: var(--dim); font-size: .78rem; }
+
+  /* engines */
+  .engines { display: grid; gap: 8px; }
+  .engine { border: 1px solid var(--border); border-radius: 10px; padding: 10px 11px; background: var(--surface-2); cursor: pointer; }
+  .engine[data-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface-2)); }
+  .engine[data-usable="false"] { cursor: default; }
+  .engine-head { display: grid; grid-template-columns: 16px minmax(0,1fr) auto; gap: 9px; align-items: center; }
+  .radio { width: 16px; height: 16px; border-radius: 99px; border: 1.5px solid var(--border-2); background: var(--surface); }
+  .engine[data-selected="true"] .radio { border: 5px solid var(--accent); }
+  .engine[data-usable="false"] .radio { opacity: .4; }
+  .engine-name { font-size: .87rem; font-weight: 650; }
+  .engine-desc { margin: 3px 0 0 25px; color: var(--dim); font-size: .77rem; }
+  .engine-foot { margin: 7px 0 0 25px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .progress { height: 5px; flex: 1 1 120px; border-radius: 99px; background: var(--border); overflow: hidden; }
+  .progress > div { height: 100%; background: var(--accent); border-radius: inherit; transition: width .15s; }
+
+  /* cleanup example */
+  .example { display: grid; gap: 6px; margin-top: 8px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-size: .82rem; }
+  .example .lbl { font-size: .68rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
+  .example .said { color: var(--dim); }
+  .example .said s { text-decoration-color: var(--danger); color: var(--faint); }
+  .example .typed { white-space: pre-line; font-weight: 550; }
+
+  /* dictation bar preview */
+  .screen { position: relative; height: 92px; border-radius: 9px; border: 1px solid var(--border-2); overflow: hidden;
+    background: linear-gradient(160deg, light-dark(#b9cde0,#24324a), light-dark(#e9d6c4,#3a2a3a)); }
+  .screen::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 9px; background: light-dark(rgba(255,255,255,.6), rgba(0,0,0,.35)); }
+  .screen .fakewin { position: absolute; left: 18%; top: 20px; width: 50%; height: 44px; border-radius: 5px; background: light-dark(rgba(255,255,255,.75), rgba(30,34,40,.75)); }
+  .mini-bar { position: absolute; bottom: 8px; display: flex; align-items: center; gap: 6px; height: 20px; padding: 0 9px 0 6px; border-radius: 99px;
+    background: rgba(20,22,26,.86); box-shadow: 0 3px 10px rgba(0,0,0,.3); }
+  .mini-bar.bottom-center { left: 50%; transform: translateX(-50%); }
+  .mini-bar.bottom-left { left: 10px; }
+  .mini-bar.bottom-right { right: 10px; }
+  .mini-bar .orb { width: 10px; height: 10px; border-radius: 99px; background: var(--acc); box-shadow: 0 0 8px var(--acc); }
+  .mini-bar .wave { display: flex; align-items: center; gap: 2px; height: 12px; }
+  .mini-bar .wave i { display: block; width: 2px; height: 4px; border-radius: 2px; background: var(--acc); animation: wave 1s ease-in-out infinite; }
+  .mini-bar .wave i:nth-child(2) { animation-delay: .1s } .mini-bar .wave i:nth-child(3) { animation-delay: .25s }
+  .mini-bar .wave i:nth-child(4) { animation-delay: .4s } .mini-bar .wave i:nth-child(5) { animation-delay: .15s }
+  .mini-bar .wave i:nth-child(6) { animation-delay: .3s } .mini-bar .wave i:nth-child(7) { animation-delay: .05s }
+  @keyframes wave { 50% { height: 12px; } }
+
+  /* usage */
+  .hero { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); text-align: center; }
+  .hero .lbl { margin: 0; color: var(--dim); font-size: .72rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+  .hero .val { margin: 3px 0 0; font-size: 1.8rem; font-weight: 750; letter-spacing: -.02em; line-height: 1.15; }
+  .hero .val.none { color: var(--faint); }
+  .hero .sub { margin: 5px 0 0; color: var(--dim); font-size: .78rem; }
+  .spans { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; margin-top: 10px; }
+  .span { padding: 11px 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-2); }
+  .span p { margin: 0; }
+  .span-label { color: var(--dim); font-size: .72rem; font-weight: 650; }
+  .span-saved { margin-top: 2px; font-weight: 700; font-size: 1rem; }
+  .span-counts { margin-top: 1px; color: var(--dim); font-size: .74rem; }
+  .empty { margin-top: 12px; padding: 12px 14px; border: 1px dashed var(--border-2); border-radius: 10px; color: var(--dim); font-size: .8rem; }
+  .confirm { margin-top: 10px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); border-radius: 10px; background: var(--surface-2); font-size: .82rem; }
+  .confirm p { margin: 0 0 8px; }
+  .confirm div { display: flex; justify-content: flex-end; gap: 8px; }
+
+  .scheme-now { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font-size: .78rem; font-weight: 650; }
+  .scheme-now svg.i { width: 14px; height: 14px; }
+
+  .toast { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); max-width: 86%; padding: 7px 12px; border-radius: 9px;
+    background: var(--text); color: var(--surface); font-size: .78rem; font-weight: 550; box-shadow: 0 6px 18px rgba(0,0,0,.25); z-index: 20; animation: toast-in .2s ease; }
+  @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 6px); } }
+
+  .scroll { overflow: auto; scrollbar-width: thin; scrollbar-color: var(--border-2) transparent; }
+
+  /* =================== Sidebar + search =================== */
+  .a { display: grid; grid-template-columns: 214px minmax(0,1fr); height: 100%; background: var(--surface); }
+  .a-side { display: flex; flex-direction: column; gap: 10px; min-height: 0; padding: 10px; background: var(--rail); border-right: 1px solid var(--border); }
+  .a-search { position: relative; }
+  .a-search svg.i { position: absolute; left: 8px; top: 7px; width: 14px; height: 14px; color: var(--faint); }
+  .a-search input { width: 100%; padding-left: 28px; border-color: var(--border); background: var(--surface); }
+  /* Ready or not, nothing more. Where the problems are is the nav's job. */
+  .a-ready { display: flex; align-items: center; gap: 7px; padding: 0 6px; font-size: .8rem; font-weight: 650; color: var(--ok-text); }
+  .a-ready svg.i { width: 15px; height: 15px; }
+  .a-ready.warn { color: var(--warn-text); }
+  .a-nav { display: grid; gap: 1px; overflow: auto; }
+  .a-nav h6 { margin: 8px 8px 3px; color: var(--faint); font-size: .66rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+  .a-nav h6:first-child { margin-top: 0; }
+  .a-nav button { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; width: 100%; padding: 4px 8px 4px 5px; border: 0; border-radius: 7px; background: none; text-align: left; font-size: .84rem; font-weight: 550; cursor: pointer; }
+  .a-nav button .tile-icon { width: 22px; height: 22px; border-radius: 6px; }
+  .a-nav button .tile-icon svg.i { width: 13px; height: 13px; }
+  .a-nav button[data-active="true"] { background: var(--accent); color: var(--on-fill); }
+  .a-issues { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px 1px 5px; border-radius: 99px; background: var(--warn-soft); color: var(--warn-text); font-size: .72rem; font-weight: 750; }
+  .a-issues svg.i { width: 12px; height: 12px; }
+  .a-nav button[data-active="true"] .a-issues { background: rgba(255,255,255,.22); color: var(--on-fill); }
+  /* The setting that is the problem, marked on its own page. */
+  .row.issue .row-label::before { content: ""; display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0; border-radius: 99px; background: var(--warn); }
+  .a-main { display: flex; flex-direction: column; min-height: 0; }
+  .a-head { display: flex; align-items: center; gap: 11px; padding: 16px 22px 10px; }
+  .a-head .tile-icon { width: 32px; height: 32px; border-radius: 9px; }
+  .a-head h1 { margin: 0; font-size: 1.3rem; letter-spacing: -.02em; }
+  .a-head p { margin: 0; color: var(--dim); font-size: .8rem; }
+  .a-body { flex: 1; min-height: 0; padding: 4px 22px 22px; }
+  .a-card { margin-top: 12px; padding: 2px 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-2); }
+  .a-card.pad { padding: 12px 14px; }
+  .a-card-title { margin: 16px 2px 0; color: var(--dim); font-size: .74rem; font-weight: 700; }
+  .a-card-title:first-child { margin-top: 4px; }
+  .a-card .row { border-color: var(--border); }
+  .a-result-group { margin: 14px 2px 0; display: flex; align-items: center; gap: 7px; font-size: .78rem; font-weight: 700; color: var(--dim); }
+  .a-result-group .tile-icon { width: 18px; height: 18px; border-radius: 5px; }
+  .a-result-group .tile-icon svg.i { width: 11px; height: 11px; }
+  .a-noresult { margin-top: 40px; text-align: center; color: var(--dim); }
+  mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; border-radius: 3px; }
+
+  /* =================== prototype switcher (not part of the design) =================== */
+  .proto-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 100;
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 999px;
+    background: #111; color: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.12);
+    font: 600 12px/1 ui-sans-serif, system-ui, -apple-system, sans-serif; white-space: nowrap; color-scheme: dark; }
+  .proto-bar button { border: 0; background: rgba(255,255,255,.08); color: #fff; border-radius: 999px; padding: 6px 10px; cursor: pointer; font: inherit; }
+  .proto-bar button:hover { background: rgba(255,255,255,.18); }
+  .proto-bar button[aria-pressed="true"] { background: #fff; color: #111; }
+  .proto-bar .sep { width: 1px; height: 18px; background: rgba(255,255,255,.2); }
+  .proto-bar .grp { display: inline-flex; gap: 2px; align-items: center; }
+  .proto-bar .tag { color: #f5a524; font-weight: 800; letter-spacing: .06em; padding: 0 4px; }
+  .proto-state { position: fixed; right: 16px; bottom: 70px; z-index: 99; width: 300px; max-height: 60vh; overflow: auto; margin: 0; padding: 10px 12px;
+    border-radius: 10px; background: #111; color: #cfe3ff; font: 11px/1.4 ui-monospace, SFMono-Regular, monospace; box-shadow: 0 8px 30px rgba(0,0,0,.45); }
+</style>
+</head>
+<body>
+  <div>
+    <div id="window" class="window wide">
+      <div class="titlebar"><i></i><i></i><i></i><span>Slugtale Settings</span></div>
+      <div id="app" class="win-body"></div>
+    </div>
+    <p class="size-note">740 × 540 — wider than today's 480 × 520 window</p>
+  </div>
+  <div id="proto-bar" class="proto-bar"></div>
+  <pre id="proto-state" class="proto-state" hidden></pre>
+
+<script>
+/* ============================================================
+   Stub state (in memory only)
+   ============================================================ */
+const SCENARIOS = {
+  ready: () => ({
+    mic: true, textInsertion: true,
+    hotkey: "Alt+Space", recordingHotkey: false, activation: "toggle", voice: false,
+    speed: "balanced", cleanup: "clean-dictation", secondOpinion: "off",
+    engine: "whisper",
+    engines: {
+      whisper: { name: "Whisper base.en", mb: 148, installed: true, progress: null, license: "MIT",
+        desc: "Quick on any Mac. Good everyday accuracy.", path: "~/Library/Application Support/Slugtale/models/ggml-base.en.bin" },
+      parakeet: { name: "Parakeet TDT v2", mb: 640, installed: false, progress: null, license: "CC-BY-4.0",
+        desc: "Best English accuracy. Larger download.", path: "~/Library/Application Support/Slugtale/models/parakeet-tdt-v2/" },
+      apple: { name: "Apple SpeechTranscriber", mb: null, installed: true, system: true, progress: null, license: "Apple",
+        desc: "Built into macOS 26. macOS manages the download.", path: null }
+    },
+    display: "primary", position: "bottom-center", accent: "red",
+    storeUsage: true, wpm: 41, estimate: null, challenges: 3,
+    usage: {
+      today: { d: 14, w: 512, saved: "About 8 min" },
+      week: { d: 61, w: 2240, saved: "About 34 min" },
+      all: { d: 412, w: 15880, saved: "About 4 h 10 min" }
+    },
+    launchAtLogin: true, update: "idle", version: "0.1.1"
+  }),
+  fresh: () => {
+    const s = SCENARIOS.ready();
+    Object.assign(s, {
+      mic: false, textInsertion: false, hotkey: null, cleanup: "basic",
+      storeUsage: false, wpm: null, challenges: 0, launchAtLogin: false,
+      usage: { today: { d: 0, w: 0, saved: null }, week: { d: 0, w: 0, saved: null }, all: { d: 0, w: 0, saved: null } }
+    });
+    s.engines.whisper.installed = false;
+    return s;
+  }
+};
+
+const params = new URLSearchParams(location.search);
+let S = SCENARIOS[params.get("state") === "fresh" ? "fresh" : "ready"]();
+const UI = {
+  scheme: ["light", "dark"].includes(params.get("scheme")) ? params.get("scheme") : "system",
+  scenario: params.get("state") === "fresh" ? "fresh" : "ready",
+  pageA: null, query: "",
+  confirm: null, toast: null, showState: false
+};
+
+/* ============================================================
+   Icons (Lucide, ISC) — same approach as src/index.html
+   ============================================================ */
+const LUCIDE = {
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  alert: '<path d="M12 9v4"/><path d="M12 17h.01"/>',
+  warn: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  keyboard: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>',
+  cpu: '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/>',
+  gauge: '<path d="M12 14v-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/><circle cx="12" cy="14" r="2"/>',
+  sliders: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  right: '<path d="m9 18 6-6-6-6"/>',
+  left: '<path d="m15 18-6-6 6-6"/>',
+  mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  wand: '<path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/>',
+  panel: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 15h18"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2m-7.07-14.07 1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+  moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  cursor: '<path d="M5 4h1a3 3 0 0 1 3 3 3 3 0 0 1 3-3h1"/><path d="M13 20h-1a3 3 0 0 1-3-3 3 3 0 0 1-3 3H5"/><path d="M5 16H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h1"/><path d="M13 8h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-7"/><path d="M9 7v10"/>',
+  lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
+  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'
+};
+const icon = (name) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${LUCIDE[name] || ""}</svg>`;
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/* ============================================================
+   Logical groups
+   ============================================================ */
+const GROUPS = {
+  shortcut:      { title: "Shortcut",           icon: "keyboard", sub: "How you start and stop dictating." },
+  transcription: { title: "Transcription",      icon: "cpu",      sub: "Which on-device engine turns speech into text." },
+  text:          { title: "Text & cleanup",     icon: "wand",     sub: "What the words look like when they land." },
+  bar:           { title: "Dictation Bar",      icon: "panel",    sub: "The small bar you see while you speak." },
+  usage:         { title: "Usage",              icon: "gauge",    sub: "Counts only, and only if you ask." },
+  privacy:       { title: "Privacy & access",   icon: "shield",   sub: "What Slugtale may use on this Mac." },
+  general:       { title: "General",            icon: "sliders",  sub: "How Slugtale behaves in the background." }
+};
+const tileIcon = (g) => `<span class="tile-icon" style="--g: var(--g-${g})">${icon(GROUPS[g].icon)}</span>`;
+
+/* ============================================================
+   Derived facts
+   ============================================================ */
+function readiness() {
+  const eng = S.engines[S.engine];
+  return [
+    { id: "mic", label: "Microphone access", ready: S.mic, group: "privacy",
+      detail: "Allow Slugtale to hear you in macOS Privacy & Security.", fix: "grant-mic", fixLabel: "Open Privacy" },
+    { id: "text", label: "Text insertion", ready: S.textInsertion, group: "privacy",
+      detail: "Allow Slugtale to type into other apps (Accessibility).", fix: "grant-text", fixLabel: "Open Accessibility" },
+    { id: "hotkey", label: "Shortcut", ready: Boolean(S.hotkey), group: "shortcut",
+      detail: "Choose the keys that start dictation.", fix: "record-hotkey", fixLabel: "Set shortcut" },
+    { id: "engine", label: "Transcription engine", ready: eng.installed, group: "transcription",
+      detail: `Download ${eng.name} (${eng.mb} MB) to transcribe on this Mac.`, fix: "install", arg: S.engine, fixLabel: "Download" }
+  ];
+}
+const blockers = () => readiness().filter((r) => !r.ready);
+const issuesIn = (g) => blockers().filter((b) => b.group === g).length;
+// Open on the first page with a problem, so the fix is one look away.
+const firstPage = () => blockers()[0]?.group || "shortcut";
+const systemDark = () => matchMedia("(prefers-color-scheme: dark)").matches;
+const effectiveScheme = () => (UI.scheme === "system" ? (systemDark() ? "dark" : "light") : UI.scheme);
+const installedCount = () => Object.values(S.engines).filter((e) => e.installed).length;
+const hasBaseline = () => S.wpm !== null || S.estimate !== null;
+
+/* ============================================================
+   Controls
+   ============================================================ */
+const GLYPHS = { Cmd: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧" };
+const keycaps = (hk, big) => hk ? `<span class="keys${big ? " big" : ""}">${hk.split("+").map((k) => `<kbd>${GLYPHS[k] || k}</kbd>`).join("")}</span>` : "";
+function seg(key, options, disabled) {
+  return `<span class="seg" role="group">${options.map(([v, l]) =>
+    `<button type="button" data-set="${key}" data-value="${v}" aria-pressed="${S[key] === v}" ${disabled ? "disabled" : ""}>${l}</button>`).join("")}</span>`;
+}
+const toggle = (key, on, disabled) =>
+  `<button type="button" class="switch" role="switch" aria-checked="${on}" data-toggle="${key}" ${disabled ? "disabled" : ""}></button>`;
+const ACCENTS = ["red", "amber", "green", "blue", "violet", "graphite"];
+const swatches = () => `<span class="swatches" role="group" aria-label="Accent colour">${ACCENTS.map((a) =>
+  `<button type="button" data-set="accent" data-value="${a}" aria-pressed="${S.accent === a}" aria-label="${a}" title="${a}" style="--sw: var(--sw-${a})"></button>`).join("")}</span>`;
+function row(label, sub, control, opts = {}) {
+  return `<div class="row${opts.stack ? " stack" : ""}${opts.issue ? " issue" : ""}" data-search="${esc((label + " " + (sub || "") + " " + (opts.kw || "")).toLowerCase())}">
+    <span class="row-label">${label}${sub ? `<span class="row-sub">${sub}</span>` : ""}</span>
+    ${control ? `<span class="row-control">${control}</span>` : ""}</div>`;
+}
+function hotkeyControl() {
+  if (S.recordingHotkey) return `<span class="listening">Press your keys… Esc cancels</span>`;
+  return S.hotkey
+    ? `${keycaps(S.hotkey)}<button class="btn ghost" data-act="record-hotkey">Change</button><button class="btn ghost" data-act="clear-hotkey">Clear</button>`
+    : `<button class="btn primary" data-act="record-hotkey">Record shortcut</button>`;
+}
+const barPreview = () => `<div class="screen"><div class="fakewin"></div>
+  <div class="mini-bar ${S.position}" style="--acc: var(--sw-${S.accent})"><span class="orb"></span><span class="wave">${"<i></i>".repeat(7)}</span></div></div>`;
+const SPEED_HINT = { fast: "Quickest. May miss the odd word.", balanced: "A good mix for most dictation.", accurate: "Slowest. Best for long, careful dictation." };
+const ACTIVATION_HINT = { toggle: "Press once to start, again to stop.", hold: "Hold the keys while you speak. Let go to stop." };
+const CLEANUP = {
+  basic:  { name: "Basic", typed: "Um, so I think we should, uh, ship the beta on Friday. Then collect feedback." },
+  "clean-dictation": { name: "Clean", typed: "So I think we should ship the beta on Friday. Then collect feedback." },
+  "clean-dictation-with-pause-breaks": { name: "Pause breaks", typed: "So I think we should ship the beta on Friday.\nThen collect feedback." }
+};
+function cleanupExample() {
+  const said = S.cleanup === "basic"
+    ? "“Um, so I think we should, uh, ship the beta on Friday… [pause] then collect feedback.”"
+    : "“<s>Um,</s> so I think we should, <s>uh,</s> ship the beta on Friday… [pause] then collect feedback.”";
+  return `<div class="example"><span class="lbl">You say</span><span class="said">${said}</span>
+    <span class="lbl">Slugtale types</span><span class="typed">${CLEANUP[S.cleanup].typed}</span></div>`;
+}
+function schemeNow() {
+  const s = effectiveScheme();
+  return `<span class="scheme-now">${icon(s === "dark" ? "moon" : "sun")}Now ${s === "dark" ? "dark" : "light"}</span>`;
+}
+function engineCards() {
+  return `<div class="engines">${Object.entries(S.engines).map(([id, e]) => {
+    const usable = e.installed;
+    let foot = "";
+    if (e.progress !== null) foot = `<div class="progress"><div style="width:${e.progress}%"></div></div><span class="chip accent">${e.progress}%</span>`;
+    else if (e.system) foot = `<span class="chip ok">Managed by macOS</span><span class="chip">${e.license}</span>`;
+    else if (e.installed) foot = `<span class="chip ok">Installed · ${e.mb} MB</span><span class="chip">${e.license}</span>
+      <button class="btn ghost" data-act="reveal" data-arg="${id}">${icon("folder")}Show</button>
+      <button class="btn ghost" data-act="remove" data-arg="${id}" style="color:var(--danger)">Remove</button>`;
+    else foot = `<span class="chip">${e.mb} MB</span><span class="chip">${e.license}</span>
+      <button class="btn" data-act="install" data-arg="${id}">${icon("download")}Download</button>`;
+    return `<div class="engine" data-act="pick-engine" data-arg="${id}" data-selected="${S.engine === id}" data-usable="${usable}">
+      <div class="engine-head"><span class="radio"></span><span class="engine-name">${e.name}</span>
+        ${S.engine === id ? `<span class="chip ${usable ? "accent" : "warn"}">${usable ? "In use" : "Needs download"}</span>` : ""}</div>
+      <p class="engine-desc">${e.desc}</p><div class="engine-foot">${foot}</div></div>`;
+  }).join("")}</div>`;
+}
+
+/* --- row sets per group  --- */
+const rowsShortcut = () => [
+  row("Shortcut", S.hotkey ? "Starts dictation from any app." : "Not set. Dictation cannot start without one.", hotkeyControl(), { kw: "hotkey keys keyboard record", issue: !S.hotkey }),
+  row("Activation", ACTIVATION_HINT[S.activation], seg("activation", [["toggle", "Toggle"], ["hold", "Hold"]]), { kw: "hold toggle push to talk" }),
+  row("Voice activation", "Coming soon. Use your shortcut for now.", toggle("voice", false, true), { kw: "wake word hands free" })
+];
+const rowsSpeed = () => [
+  row("Speed vs. accuracy", SPEED_HINT[S.speed], seg("speed", [["fast", "Fast"], ["balanced", "Balanced"], ["accurate", "Accurate"]]), { kw: "beam quality profile" }),
+  row("Second opinion", installedCount() < 2 ? "Install a second engine to use this." : "Runs a second engine only when the first result looks unsure.",
+    seg("secondOpinion", [["off", "Off"], ["automatic", "Automatic"]], installedCount() < 2), { kw: "fallback double check" })
+];
+const rowsCleanup = () => [
+  row("Cleanup", "Runs on this Mac. Nothing leaves it.", seg("cleanup", [["basic", "Basic"], ["clean-dictation", "Clean"], ["clean-dictation-with-pause-breaks", "Pause breaks"]]), { kw: "um uh filler hesitation line break transcript" })
+];
+const rowsBar = () => [
+  row("Display", "Where the bar appears.", `<select data-select="display"><option value="primary" ${S.display === "primary" ? "selected" : ""}>Main display</option><option value="dell" ${S.display === "dell" ? "selected" : ""}>DELL U2723QE</option></select>`, { kw: "monitor screen" }),
+  row("Position", "Along the bottom of the screen.", seg("position", [["bottom-left", "Left"], ["bottom-center", "Centre"], ["bottom-right", "Right"]]), { kw: "place location" }),
+  row("Accent colour", "The orb and waveform colour.", swatches(), { kw: "color colour orb waveform" })
+];
+const rowsPrivacy = () => [
+  row("Microphone", S.mic ? "Allowed." : "Not allowed yet.", S.mic ? `<span class="chip ok">Allowed</span>` : `<button class="btn" data-act="grant-mic">${icon("external")}Open Privacy</button>`, { kw: "permission audio", issue: !S.mic }),
+  row("Text insertion", S.textInsertion ? "Allowed. Slugtale can type into other apps." : "Needed to type into other apps.", S.textInsertion ? `<span class="chip ok">Allowed</span>` : `<button class="btn" data-act="grant-text">${icon("external")}Open Accessibility</button>`, { kw: "accessibility permission typing", issue: !S.textInsertion }),
+  row("Where your audio goes", "Nowhere. Audio and text stay on this Mac. There is no cloud fallback.", `<span class="chip">${icon("lock")}</span>`, { kw: "cloud local offline" })
+];
+const rowsGeneral = () => [
+  row("Launch at login", "Start Slugtale when you sign in.", toggle("launchAtLogin", S.launchAtLogin), { kw: "startup boot" }),
+  row("Appearance", "Follows your system light and dark mode.", schemeNow(), { kw: "theme dark light mode night day" }),
+  row("App updates", S.update === "checking" ? "Checking…" : S.update === "latest" ? `You have the latest version, ${S.version}.` : `Version ${S.version}. Checks only when you ask.`,
+    `<button class="btn ghost" data-act="check-update" ${S.update === "checking" ? "disabled" : ""}>${icon("refresh")}Check now</button>`, { kw: "version upgrade release" })
+];
+// Numbers first, the two settings that feed them last. All time lives only in
+// the hero, so no number is shown twice.
+const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? "" : "s"}`;
+const countsLine = (span) => `${plural(span.d, "dictation")} · ${plural(span.w, "word")}`;
+function usageStats() {
+  if (!S.storeUsage) return `<div class="empty">Counting is off, so there is nothing to show. Turn it on below and Slugtale counts from then on.</div>`;
+  const saved = (span) => (hasBaseline() && span.saved ? span.saved : "—");
+  const all = saved(S.usage.all);
+  return `<div class="hero"><p class="lbl">Time saved, all time</p><p class="val ${all === "—" ? "none" : ""}">${all}</p>
+      <p class="sub">${hasBaseline() ? countsLine(S.usage.all) : "Measure your typing speed below to see this."}</p></div>
+    <div class="spans">${[["today", "Today"], ["week", "This week"]].map(([k, l]) =>
+      `<div class="span"><p class="span-label">${l}</p><p class="span-saved">${saved(S.usage[k])}</p><p class="span-counts">${countsLine(S.usage[k])}</p></div>`).join("")}</div>`;
+}
+const usageConfirm = () => UI.confirm === "stop-storing"
+  ? `<div class="confirm"><p>Stop counting and delete the counts already stored? Your typing speed is kept.</p>
+     <div><button class="btn" data-act="confirm-cancel">Cancel</button><button class="btn danger" data-act="confirm-stop">Delete counts</button></div></div>` : "";
+function typingSpeedControl() {
+  if (S.wpm !== null) return `<button class="btn ghost" data-act="redo">Redo</button>`;
+  const measure = S.challenges > 0 ? `Continue (${S.challenges} of 3)` : "Measure";
+  return `<input type="number" min="10" max="150" placeholder="wpm" value="${S.estimate ?? ""}" data-number="estimate" aria-label="Estimate typing speed" />
+    <button class="btn primary" data-act="measure">${measure}</button>`;
+}
+const rowsUsage = () => [
+  row("Count my dictations", "Daily counts of dictations and words. No transcripts, no audio.", toggle("storeUsage", S.storeUsage), { kw: "store statistics" }),
+  row("Typing speed", S.wpm !== null ? `${S.wpm} words per minute, measured over 3 short tests.` : S.estimate ? `${S.estimate} wpm, your guess. Measure it to be exact.` : "Type a guess, or take 3 short tests.",
+    typingSpeedControl(), { kw: "wpm baseline challenge estimate" })
+];
+
+/* ============================================================
+   Sidebar + search (System Settings style, 740×540)
+   ============================================================ */
+const A_NAV = [
+  ["Dictate", ["shortcut", "transcription", "text", "bar"]],
+  ["You", ["usage"]],
+  ["App", ["privacy", "general"]]
+];
+function aGroupBody(g) {
+  const card = (title, rows) => `${title ? `<p class="a-card-title">${title}</p>` : ""}<div class="a-card">${rows.join("")}</div>`;
+  switch (g) {
+    case "shortcut": return card("", rowsShortcut());
+    case "transcription": return `<p class="a-card-title">Engine · on this Mac only</p>${engineCards()}${card("Quality", rowsSpeed())}`;
+    case "text": return `${card("", rowsCleanup())}${cleanupExample()}`;
+    case "bar": return `<div class="a-card pad">${barPreview()}</div>${card("", rowsBar())}`;
+    case "usage": return `${usageStats()}${card("How it is counted", rowsUsage())}${usageConfirm()}`;
+    case "privacy": return card("", rowsPrivacy());
+    case "general": return card("", rowsGeneral());
+  }
+}
+function renderA() {
+  UI.pageA ||= firstPage();
+  const nb = blockers().length;
+  const nav = A_NAV.map(([h, gs]) => `<h6>${h}</h6>${gs.map((g) =>
+    `<button data-act="a-go" data-arg="${g}" data-active="${!UI.query && UI.pageA === g}">${tileIcon(g)}<span>${GROUPS[g].title}</span>${issuesIn(g) ? `<span class="a-issues" title="${issuesIn(g)} to fix">${icon("warn")}${issuesIn(g)}</span>` : ""}</button>`).join("")}`).join("");
+  let main;
+  if (UI.query) {
+    main = `<div class="a-head"><div><h1>Results</h1><p>for “${esc(UI.query)}”</p></div></div>
+      <div class="a-body scroll" data-keep="a">${Object.keys(GROUPS).map((g) =>
+        `<section data-group="${g}"><div class="a-result-group">${tileIcon(g)}${GROUPS[g].title}</div>${aGroupBody(g)}</section>`).join("")}
+        <p class="a-noresult" hidden>No setting matches.</p></div>`;
+  } else {
+    const g = UI.pageA;
+    main = `<div class="a-head">${tileIcon(g)}<div><h1>${GROUPS[g].title}</h1><p>${GROUPS[g].sub}</p></div></div>
+      <div class="a-body scroll" data-keep="a-${g}">${aGroupBody(g)}</div>`;
+  }
+  return `<div class="a">
+    <aside class="a-side">
+      <label class="a-search">${icon("search")}<input type="search" id="a-q" placeholder="Search settings" value="${esc(UI.query)}" /></label>
+      <div class="a-ready ${nb ? "warn" : ""}" role="status">${icon(nb ? "warn" : "check")}${nb ? "Not ready to dictate" : "Ready to dictate"}</div>
+      <nav class="a-nav">${nav}</nav>
+    </aside>
+    <main class="a-main">${main}</main></div>`;
+}
+function afterA() {
+  if (!UI.query) return;
+  const q = UI.query.toLowerCase().trim();
+  let any = false;
+  document.querySelectorAll(".a-body section").forEach((sec) => {
+    let hit = false;
+    sec.querySelectorAll(".row").forEach((r) => { const m = r.dataset.search.includes(q); r.hidden = !m; hit ||= m; });
+    sec.querySelectorAll(".a-card").forEach((c) => { c.hidden = c.querySelectorAll(".row:not([hidden])").length === 0; });
+    sec.querySelectorAll(".engines,.example,.hero,.spans,.empty,.confirm,.a-card.pad,.a-card-title,.note").forEach((x) => (x.hidden = true));
+    sec.hidden = !hit; any ||= hit;
+  });
+  document.querySelector(".a-noresult").hidden = any;
+}
+
+/* ============================================================
+   Prototype bar + render loop
+   ============================================================ */
+
+function syncUrl() {
+  const p = new URLSearchParams();
+  if (UI.scheme !== "system") p.set("scheme", UI.scheme);
+  if (UI.scenario !== "ready") p.set("state", UI.scenario);
+  history.replaceState(null, "", `?${p}`);
+}
+
+function render() {
+  document.documentElement.dataset.scheme = UI.scheme;
+  const app = document.getElementById("app");
+  const kept = {};
+  app.querySelectorAll("[data-keep]").forEach((el) => (kept[el.dataset.keep] = el.scrollTop));
+  const focusId = document.activeElement?.id;
+  const caret = document.activeElement?.selectionStart;
+
+  app.innerHTML = renderA() + (UI.toast ? `<div class="toast">${UI.toast}</div>` : "");
+  afterA();
+  app.querySelectorAll("[data-keep]").forEach((el) => { if (kept[el.dataset.keep]) { el.style.scrollBehavior = "auto"; el.scrollTop = kept[el.dataset.keep]; el.style.scrollBehavior = ""; } });
+  if (focusId) { const el = document.getElementById(focusId); if (el) { el.focus(); try { el.setSelectionRange(caret, caret); } catch {} } }
+
+  renderBar();
+  const st = document.getElementById("proto-state");
+  st.hidden = !UI.showState;
+  if (UI.showState) st.textContent = JSON.stringify({ scheme: { chosen: UI.scheme, effective: effectiveScheme() }, scenario: UI.scenario, readiness: readiness().map((r) => `${r.ready ? "✓" : "✗"} ${r.label}`), settings: { ...S, engines: Object.fromEntries(Object.entries(S.engines).map(([k, e]) => [k, { installed: e.installed, progress: e.progress }])) } }, null, 2);
+  syncUrl();
+}
+
+function renderBar() {
+  const b = (act, arg, label, pressed) => `<button data-proto="${act}" data-arg="${arg}" ${pressed !== undefined ? `aria-pressed="${pressed}"` : ""}>${label}</button>`;
+  document.getElementById("proto-bar").innerHTML = `<span class="tag">PROTOTYPE</span>
+    <span class="sep"></span><span class="grp">${["system", "light", "dark"].map((s) => b("scheme", s, s === "system" ? `System (${systemDark() ? "dark" : "light"})` : s[0].toUpperCase() + s.slice(1), UI.scheme === s)).join("")}</span>
+    <span class="sep"></span><span class="grp">${b("scenario", "ready", "Set up", UI.scenario === "ready")}${b("scenario", "fresh", "Fresh install", UI.scenario === "fresh")}</span>
+    <span class="sep"></span>${b("state", "", "{ }", UI.showState)}`;
+}
+
+
+let toastTimer;
+function toast(msg) {
+  UI.toast = msg; render();
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { UI.toast = null; render(); }, 2400);
+}
+
+function go(group) {
+  UI.query = ""; UI.pageA = group; render();
+}
+
+function startInstall(id) {
+  const e = S.engines[id];
+  if (e.progress !== null || e.installed) return;
+  e.progress = 0; render();
+  const t = setInterval(() => {
+    e.progress = Math.min(100, e.progress + 9 + Math.round(Math.random() * 8));
+    if (e.progress >= 100) { clearInterval(t); e.progress = null; e.installed = true; toast(`${e.name} is ready.`); }
+    else render();
+  }, 180);
+}
+
+const ACTIONS = {
+  "a-go": (g) => { UI.query = ""; UI.pageA = g; render(); },
+  "record-hotkey": (_, el) => { S.recordingHotkey = true; if (!el.closest(".row")) go("shortcut"); render(); },
+  "clear-hotkey": () => { S.hotkey = null; render(); },
+  "grant-mic": () => { S.mic = true; toast("Prototype: the app opens macOS Privacy here. Marked as allowed."); },
+  "grant-text": () => { S.textInsertion = true; toast("Prototype: the app opens Accessibility here. Marked as allowed."); },
+  install: (id, el) => { if (!el.closest(".engine")) go("transcription"); startInstall(id); },
+  remove: (id) => { S.engines[id].installed = false; if (installedCount() < 2) S.secondOpinion = "off"; toast(`${S.engines[id].name} removed.`); },
+  reveal: (id) => toast(`Prototype: opens ${S.engines[id].path} in Finder.`),
+  "pick-engine": (id) => { S.engine = id; render(); },
+  "check-update": () => { S.update = "checking"; render(); setTimeout(() => { S.update = "latest"; render(); }, 900); },
+  measure: () => { S.challenges += 1; if (S.challenges >= 3) { S.wpm = 43; S.estimate = null; toast("Measured: 43 words per minute."); } else toast(`Challenge ${S.challenges} of 3 done.`); },
+  redo: () => { S.wpm = null; S.challenges = 0; render(); },
+  "confirm-cancel": () => { UI.confirm = null; render(); },
+  "confirm-stop": () => { UI.confirm = null; S.storeUsage = false; render(); }
+};
+
+document.addEventListener("click", (ev) => {
+  const p = ev.target.closest("[data-proto]");
+  if (p) {
+    const { proto, arg } = p.dataset;
+    if (proto === "scheme") { UI.scheme = arg; render(); }
+    if (proto === "scenario") { UI.scenario = arg; S = SCENARIOS[arg](); UI.confirm = null; UI.pageA = firstPage(); render(); }
+    if (proto === "state") { UI.showState = !UI.showState; render(); }
+    return;
+  }
+  const set = ev.target.closest("[data-set]");
+  if (set && !set.disabled) { S[set.dataset.set] = set.dataset.value; render(); return; }
+  const tg = ev.target.closest("[data-toggle]");
+  if (tg && !tg.disabled) {
+    const k = tg.dataset.toggle;
+    if (k === "storeUsage" && S.storeUsage) { UI.confirm = "stop-storing"; render(); return; }
+    S[k] = !S[k]; render(); return;
+  }
+  const act = ev.target.closest("[data-act]");
+  if (act && !act.disabled) {
+    // A button inside an engine card should not also select the card.
+    if (act.dataset.act === "pick-engine" && ev.target.closest("button")) return;
+    ACTIONS[act.dataset.act]?.(act.dataset.arg, act);
+  }
+});
+
+document.addEventListener("input", (ev) => {
+  if (ev.target.id === "a-q") { UI.query = ev.target.value; render(); }
+});
+document.addEventListener("change", (ev) => {
+  if (ev.target.dataset.select) { S[ev.target.dataset.select] = ev.target.value; render(); }
+  if (ev.target.dataset.number) { const n = parseInt(ev.target.value, 10); S.estimate = n >= 10 && n <= 150 ? n : null; render(); }
+});
+
+document.addEventListener("keydown", (ev) => {
+  if (S.recordingHotkey) {
+    ev.preventDefault();
+    if (ev.key === "Escape") { S.recordingHotkey = false; render(); return; }
+    if (["Meta", "Control", "Alt", "Shift"].includes(ev.key)) return;
+    const mods = [ev.metaKey && "Cmd", ev.ctrlKey && "Ctrl", ev.altKey && "Alt", ev.shiftKey && "Shift"].filter(Boolean);
+    if (!mods.length) { toast("Add at least one modifier key, like ⌥ or ⌘."); return; }
+    const key = ev.code === "Space" ? "Space" : ev.code.startsWith("Key") ? ev.code.slice(3) : ev.code.startsWith("Digit") ? ev.code.slice(5) : ev.key;
+    S.hotkey = [...mods, key].join("+"); S.recordingHotkey = false; render(); return;
+  }
+});
+
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+render();
+</script>
+</body>
+</html>

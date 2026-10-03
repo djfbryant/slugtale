@@ -16,8 +16,8 @@
       {
         "label": "settings",
         "title": "Slugtale Settings",
-        "width": 480,
-        "height": 520,
+        "width": 740,
+        "height": 540,
         "visible": false,
         "resizable": false
       },

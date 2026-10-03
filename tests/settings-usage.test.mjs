@@ -37,9 +37,9 @@ function summary(overrides = {}) {
   };
 }
 
-test("the settings rail puts Usage between Dictation and Model", () => {
+test("the settings sidebar puts Usage between the dictation sections and the app ones", () => {
   const railOrder = [...settingsHtml.matchAll(/data-pane="([a-z-]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(railOrder, ["status", "dictation", "usage", "model", "general"]);
+  assert.deepEqual(railOrder, ["shortcut", "transcription", "text", "bar", "usage", "privacy", "general"]);
 });
 
 test("Usage shows time saved as the hero and counts under it", async () => {
