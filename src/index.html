@@ -696,6 +696,12 @@
       font-size: 0.78rem;
     }
 
+    .engine-blurb {
+      margin: 6px 0 0;
+      color: var(--text-dim);
+      font-size: 0.78rem;
+    }
+
     .engine-detail {
       margin-top: 8px;
       padding-top: 8px;
@@ -1436,6 +1442,7 @@
         metadata: {
           engine: "whisper",
           model_id: "base.en",
+          capability: "General-purpose English dictation on a modest model that runs on every platform Slugtale supports. A dependable default for quick notes, short messages, and everyday commands.",
           revision: "ggerganov/whisper.cpp@main",
           approximate_bytes: 155189248,
           source_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
@@ -2506,6 +2513,16 @@
       head.append(radio, name, pill);
       row.append(head);
 
+      // What the engine is good at, asked of the engine itself rather than
+      // retyped here — so a fifth engine brings its own copy without a
+      // JavaScript change.
+      if (engine.metadata.capability) {
+        const blurb = document.createElement("p");
+        blurb.className = "engine-blurb";
+        blurb.textContent = engine.metadata.capability;
+        row.append(blurb);
+      }
+
       if (engine.unavailable_reason) {
         const reason = document.createElement("p");
         reason.className = "engine-reason";
@@ -2570,7 +2587,21 @@
       const list = document.getElementById("engine-list");
       const messageEl = document.getElementById("engine-message");
 
-      list.replaceChildren(...engines.map(buildEngineItem));
+      // So the user reads in one glance what they would otherwise hunt for:
+      // the selected engine first, then the engines they can switch to with
+      // another click of the radio (alphabetically by the name they show),
+      // then any engine that cannot run right now. Sorting rather than
+      // reordering at the source keeps a new engine usable without touching
+      // `TranscriptionEngine::ALL`, whose order the Settings File relies on.
+      const sorted = [...engines].sort((a, b) => {
+        if (a.is_primary !== b.is_primary) return a.is_primary ? -1 : 1;
+        if (Boolean(a.unavailable_reason) !== Boolean(b.unavailable_reason)) {
+          return a.unavailable_reason ? 1 : -1;
+        }
+        return a.display_name.localeCompare(b.display_name);
+      });
+
+      list.replaceChildren(...sorted.map(buildEngineItem));
 
       messageEl.classList.toggle("error", isError);
       messageEl.textContent =

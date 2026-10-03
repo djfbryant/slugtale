@@ -277,6 +277,11 @@ pub struct EngineMetadata {
     pub engine: TranscriptionEngine,
     /// The upstream model identifier, e.g. `nvidia/parakeet-tdt-0.6b-v2`.
     pub model_id: &'static str,
+    /// What this engine is good at and when to choose it, worded for the user.
+    /// Settings renders it as the row's description, so it is a fact about the
+    /// engine asked of the engine itself rather than copy retyped in the
+    /// frontend — the same discipline that keeps the licence wording honest.
+    pub capability: &'static str,
     /// The pinned upstream revision. Installation must not float to `main`.
     pub revision: &'static str,
     /// Roughly how much disk the installed assets take, for the Settings copy.
@@ -603,6 +608,7 @@ mod tests {
             EngineMetadata {
                 engine: self.engine,
                 model_id: "test",
+                capability: "test",
                 revision: "test",
                 approximate_bytes: None,
                 source_url: None,

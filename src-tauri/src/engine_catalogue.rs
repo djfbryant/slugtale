@@ -436,6 +436,7 @@ mod tests {
             EngineMetadata {
                 engine: self.0,
                 model_id: "test",
+                capability: "test",
                 revision: "test",
                 approximate_bytes: None,
                 source_url: None,

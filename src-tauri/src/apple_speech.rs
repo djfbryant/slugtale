@@ -216,6 +216,9 @@ impl TranscriptionProvider for AppleSpeechProvider {
     fn metadata(&self) -> EngineMetadata {
         EngineMetadata {
             engine: APPLE_SPEECH_ENGINE,
+            capability: "The speech recognition built into macOS, installed, updated, \
+                         and managed by the system itself. Nothing to download, no extra \
+                         disk space used beyond what macOS already provides.",
             model_id: "com.apple.speech.SpeechTranscriber",
             // There is no revision for Slugtale to pin. macOS chooses, installs,
             // and updates these assets; saying "system-managed" is the honest

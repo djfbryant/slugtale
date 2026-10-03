@@ -1118,6 +1118,7 @@ mod tests {
             EngineMetadata {
                 engine: self.engine,
                 model_id: "fake",
+                capability: "test",
                 revision: "fake",
                 approximate_bytes: None,
                 source_url: None,

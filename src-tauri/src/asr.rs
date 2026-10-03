@@ -510,6 +510,9 @@ impl crate::TranscriptionProvider for WhisperTranscriptionProvider {
         crate::EngineMetadata {
             engine: crate::TranscriptionEngine::Whisper,
             model_id: crate::DEFAULT_MODEL_ID,
+            capability: "General-purpose English dictation on a modest model that runs on \
+                         every platform Slugtale supports. A dependable default for quick \
+                         notes, short messages, and everyday commands.",
             revision: "ggerganov/whisper.cpp@main",
             approximate_bytes: Some(148 * 1024 * 1024),
             source_url: Some(crate::DEFAULT_MODEL_DOWNLOAD_URL),

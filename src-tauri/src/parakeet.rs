@@ -82,6 +82,10 @@ pub struct TdtModel {
     attribution: &'static str,
     /// The CC BY 4.0 "indicate if changes were made" clause.
     modifications: &'static str,
+    /// What this model is good at and when to choose it — the one-sentence
+    /// description Settings renders for the row. Carried per model because the
+    /// two TDT models are not interchangeable in the user's eyes.
+    capability: &'static str,
     files: TdtModelFiles,
 }
 
@@ -95,6 +99,7 @@ impl TdtModel {
     fn name(&self) -> &'static str {
         self.engine.display_name()
     }
+
 }
 
 /// Both models are released under CC BY 4.0, which is an attribution licence:
@@ -119,6 +124,9 @@ pub const PARAKEET_TDT_V2: TdtModel = TdtModel {
         "(istupakov/parakeet-tdt-0.6b-v2-onnx). Slugtale installs those artefacts unmodified ",
         "and does not train, fine-tune, or otherwise alter the weights."
     ),
+    capability: "NVIDIA's fast, accurate English transcriber. Best for longer dictations \
+                 — paragraphs, emails, documents — where punctuation quality matters \
+                 as much as speed.",
     files: PARAKEET_FILES,
 };
 
@@ -140,6 +148,9 @@ pub const PHONON_2: TdtModel = TdtModel {
         "Slugtale installs those artefacts unmodified and does not train, fine-tune, or otherwise ",
         "alter the weights."
     ),
+    capability: "A newer-generation model in the Parakeet family, derived from NVIDIA \
+                 Parakeet TDT v3 by Fermion Research. An alternative transcription voice \
+                 to Parakeet TDT v2 — try it if it suits you better.",
     files: PHONON_FILES,
 };
 
@@ -286,6 +297,7 @@ impl TranscriptionProvider for ParakeetProvider {
         EngineMetadata {
             engine: self.model.engine,
             model_id: self.model.model_id,
+            capability: self.model.capability,
             revision: self.model.revision,
             approximate_bytes: Some(self.model.files.total_bytes()),
             source_url: Some(self.model.source_url),

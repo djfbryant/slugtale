@@ -652,6 +652,7 @@ mod tests {
             EngineMetadata {
                 engine: crate::TranscriptionEngine::Whisper,
                 model_id: "test",
+                capability: "test",
                 revision: "test",
                 approximate_bytes: None,
                 source_url: None,
