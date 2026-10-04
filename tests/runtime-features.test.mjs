@@ -9,7 +9,7 @@ const { resolveRuntimeFeatures } = require("../scripts/run-tauri.js");
 test("macOS builds get Whisper, Metal, and Voice Activation by default", () => {
   assert.equal(
     resolveRuntimeFeatures({ platform: "darwin", environment: {} }),
-    "local-whisper-runtime,local-whisper-runtime-metal,voice-activation",
+    "local-whisper-runtime,local-whisper-runtime-metal,voice-activation,local-phonon-mlx",
   );
 });
 
@@ -29,7 +29,7 @@ test("requested engine features are added on top of the Whisper baseline", () =>
           "apple-speech-runtime,local-parakeet-runtime-coreml",
       },
     }),
-    "local-whisper-runtime,local-whisper-runtime-metal,voice-activation,apple-speech-runtime,local-parakeet-runtime-coreml",
+    "local-whisper-runtime,local-whisper-runtime-metal,voice-activation,local-phonon-mlx,apple-speech-runtime,local-parakeet-runtime-coreml",
   );
 });
 
@@ -53,7 +53,7 @@ test("a request that repeats the baseline does not duplicate it", () => {
         SLUGTALE_ENGINE_FEATURES: "local-whisper-runtime,apple-speech-runtime",
       },
     }),
-    "local-whisper-runtime,local-whisper-runtime-metal,voice-activation,apple-speech-runtime",
+    "local-whisper-runtime,local-whisper-runtime-metal,voice-activation,local-phonon-mlx,apple-speech-runtime",
   );
 });
 

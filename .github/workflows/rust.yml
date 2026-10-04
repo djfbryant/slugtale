@@ -92,5 +92,8 @@ jobs:
       run: npm install
     - name: Run project checks
       run: npm test
+    - name: Check the Phonon MLX provider
+      # No model download: exercise feature selection, offline IPC, and lifecycle.
+      run: npm run test:phonon-mlx
     - name: Compile and test Voice Activation
       run: npm run test:voice-activation

@@ -7,7 +7,7 @@
 use crate::{
     engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticEvent, DiagnosticSink,
     EngineAvailability, LocalModelManager, LocalModelRef, LocalWhisperRuntime, ParakeetProvider,
-    SecondOpinionCoordinator, SecondOpinionMode, SecondOpinionRouter, Settings,
+    PhononProvider, SecondOpinionCoordinator, SecondOpinionMode, SecondOpinionRouter, Settings,
     SharedDiagnosticLog, TranscriptionEngine, TranscriptionProvider, WhisperRuntimeCache,
     WhisperTranscriptionProvider,
 };
@@ -23,7 +23,7 @@ pub struct TranscriptionEngineCatalogue {
     model_manager: Mutex<Option<LocalModelManager>>,
     whisper: WhisperRuntimeCache,
     parakeet: Mutex<Option<Arc<ParakeetProvider>>>,
-    phonon: Mutex<Option<Arc<ParakeetProvider>>>,
+    phonon: Mutex<Option<Arc<PhononProvider>>>,
     apple: Arc<AppleSpeechProvider>,
     /// Bumped every time a warm-up is requested, so a slow warm-up started by
     /// an older Settings state can recognise that it was superseded and stand
@@ -67,19 +67,18 @@ impl TranscriptionEngineCatalogue {
             .model_dir
             .lock()
             .expect("engine catalogue model directory mutex poisoned") = Some(model_dir.clone());
-        for (slot, model) in [
-            (&self.parakeet, &crate::PARAKEET_TDT_V2),
-            (&self.phonon, &crate::PHONON_2),
-        ] {
-            let mut provider = slot
-                .lock()
-                .expect("engine catalogue TDT provider mutex poisoned");
-            if provider.is_none() {
-                *provider = Some(Arc::new(ParakeetProvider::for_model(
-                    model,
-                    model.asset_dir(&model_dir),
-                )));
-            }
+        let mut parakeet = self
+            .parakeet
+            .lock()
+            .expect("Parakeet provider mutex poisoned");
+        if parakeet.is_none() {
+            *parakeet = Some(Arc::new(ParakeetProvider::new(
+                crate::PARAKEET_TDT_V2.asset_dir(&model_dir),
+            )));
+        }
+        let mut phonon = self.phonon.lock().expect("Phonon provider mutex poisoned");
+        if phonon.is_none() {
+            *phonon = Some(Arc::new(PhononProvider::new(&model_dir)));
         }
     }
 
@@ -201,7 +200,7 @@ impl TranscriptionEngineCatalogue {
             .and_then(|provider| provider.clone())
     }
 
-    fn phonon_provider(&self) -> Option<Arc<ParakeetProvider>> {
+    fn phonon_provider(&self) -> Option<Arc<PhononProvider>> {
         self.phonon
             .lock()
             .ok()

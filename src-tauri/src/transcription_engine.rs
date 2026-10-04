@@ -38,8 +38,8 @@ pub enum TranscriptionEngine {
     Whisper,
     /// NVIDIA Parakeet TDT v2 0.6B through ONNX Runtime (slugtale-vjs.1).
     Parakeet,
-    /// Fermion Research's Phonon-2, a Parakeet TDT v3 derivative, through the
-    /// same ONNX Runtime path as Parakeet (slugtale-c7vx).
+    /// Fermion Research's Phonon-2: MLX on supported Apple silicon Macs,
+    /// portable ONNX on other platforms and builds.
     Phonon,
     /// Apple SpeechTranscriber, system-managed and Apple-only (slugtale-vjs.2).
     AppleSpeech,

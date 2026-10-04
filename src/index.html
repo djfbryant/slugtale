@@ -2570,7 +2570,15 @@
       const list = document.getElementById("engine-list");
       const messageEl = document.getElementById("engine-message");
 
-      list.replaceChildren(...engines.map(buildEngineItem));
+      const sorted = [...engines].sort((a, b) => {
+        if (a.is_primary !== b.is_primary) return a.is_primary ? -1 : 1;
+        if (Boolean(a.unavailable_reason) !== Boolean(b.unavailable_reason)) {
+          return a.unavailable_reason ? 1 : -1;
+        }
+        return a.display_name.localeCompare(b.display_name);
+      });
+
+      list.replaceChildren(...sorted.map(buildEngineItem));
 
       messageEl.classList.toggle("error", isError);
       messageEl.textContent =

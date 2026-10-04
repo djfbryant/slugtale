@@ -1,0 +1,754 @@
+use crate::{
+    AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssets, EngineAvailability,
+    EngineMetadata, EngineTranscription, EngineUnavailable, FinalTranscription,
+    HttpModelDownloader, ModelDownloader, TranscriptionEngine, TranscriptionProvider,
+};
+use sha2::{Digest, Sha256};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::OwnedFd;
+use std::os::unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex, MutexGuard,
+};
+use std::time::{Duration, Instant};
+
+const WORKER: &str = include_str!("../../phonon/worker.py");
+const SETUP: &str = include_str!("../../phonon/setup.py");
+const REQUIREMENTS: &str = include_str!("../../phonon/requirements.lock");
+const REVISION: &str = "ca1bef26bcd8ef4a7e16d0636d8a77bb25e298ee";
+const SOURCE: &str =
+    "https://huggingface.co/FermionResearch/Phonon-2/tree/ca1bef26bcd8ef4a7e16d0636d8a77bb25e298ee";
+const SANDBOX: &str = "(version 1)(allow default)(deny network*)";
+const START_TIMEOUT: Duration = Duration::from_secs(180);
+const MAX_SAMPLES: usize = 16_000 * 60 * 30;
+const MAX_RESPONSE: u64 = 1_048_576;
+const PYTHON_URL: &str = "https://github.com/astral-sh/python-build-standalone/releases/download/20261001/cpython-3.12.15%2B20261001-aarch64-apple-darwin-install_only.tar.gz";
+
+pub(super) fn supported_os() -> bool {
+    Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|version| version.trim().split('.').next()?.parse::<u32>().ok())
+        .is_some_and(|major| major >= 14)
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn runtime_error() -> AsrError {
+    AsrError::Runtime("Phonon-2 MLX stopped or took too long. Try again. If this repeats, reinstall it from Settings.".into())
+}
+
+fn install_stamp() -> String {
+    let mut hash = Sha256::new();
+    hash.update(REQUIREMENTS);
+    hash.update(SETUP);
+    hash.update(WORKER);
+    hash.update(REVISION);
+    format!("{:x}", hash.finalize())
+}
+
+pub struct MlxProvider {
+    root: PathBuf,
+    worker: Mutex<Option<Worker>>,
+    availability: Mutex<EngineAvailability>,
+    shutting_down: AtomicBool,
+}
+
+impl MlxProvider {
+    pub(super) fn new(root: PathBuf) -> Self {
+        let availability = probe(&root);
+        Self {
+            root,
+            worker: Mutex::new(None),
+            availability: Mutex::new(availability),
+            shutting_down: AtomicBool::new(false),
+        }
+    }
+
+    pub fn unload(&self) {
+        lock(&self.worker).take();
+    }
+
+    pub fn shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Release);
+        self.unload();
+    }
+
+    fn with_worker<T>(
+        &self,
+        operation: impl FnOnce(&mut Worker) -> Result<T, AsrError>,
+    ) -> Result<T, AsrError> {
+        let mut slot = lock(&self.worker);
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(runtime_error());
+        }
+        if slot.is_none() {
+            let availability = probe(&self.root);
+            *lock(&self.availability) = availability.clone();
+            if let EngineAvailability::Unavailable(reason) = availability {
+                return Err(AsrError::EngineUnavailable {
+                    engine: TranscriptionEngine::Phonon,
+                    reason,
+                });
+            }
+            *slot = Some(Worker::start(&self.root)?);
+        }
+        let result = operation(slot.as_mut().expect("worker was loaded"));
+        if result.is_err() {
+            slot.take();
+        } // Kill/reap; next request can restart cleanly.
+        result
+    }
+}
+
+fn probe(root: &Path) -> EngineAvailability {
+    let complete = std::fs::read_to_string(root.join("installed"))
+        .is_ok_and(|stamp| stamp == install_stamp())
+        && root.join("python/bin/python3").is_file()
+        && root
+            .join("site/fermion/_speech/engine_phonon2.py")
+            .is_file()
+        && root.join("model/config.json").is_file()
+        && root
+            .join("model/model.fermion")
+            .metadata()
+            .is_ok_and(|m| m.len() == 177_438_361);
+    if complete {
+        EngineAvailability::Available
+    } else {
+        EngineAvailability::Unavailable(EngineUnavailable::AssetsMissing {
+            detail: "Install Phonon-2 MLX and its private runtime from Settings. Setup needs an internet connection; dictation runs offline.".into(),
+        })
+    }
+}
+
+fn directory_bytes(root: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| {
+            // Do not follow Python's symlinks or count the interpreter twice.
+            let Ok(kind) = entry.file_type() else {
+                return 0;
+            };
+            if kind.is_dir() {
+                directory_bytes(&entry.path())
+            } else if kind.is_file() {
+                entry.metadata().map(|m| m.len()).unwrap_or(0)
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+impl TranscriptionProvider for MlxProvider {
+    fn engine(&self) -> TranscriptionEngine {
+        TranscriptionEngine::Phonon
+    }
+    fn metadata(&self) -> EngineMetadata {
+        EngineMetadata {
+            engine: self.engine(), model_id: "FermionResearch/Phonon-2",
+            revision: "FermionResearch/Phonon-2@ca1bef26bcd8ef4a7e16d0636d8a77bb25e298ee; fermion-research 0.2.7 / MLX 0.31.1",
+            approximate_bytes: Some(1_200_000_000), source_url: Some(SOURCE),
+            license: "CC BY 4.0", license_url: "https://creativecommons.org/licenses/by/4.0/",
+            attribution: Some("Speech recognition by Phonon-2 (Fermion Research), derived from NVIDIA Parakeet TDT 0.6B v3 (© NVIDIA Corporation); both used under CC BY 4.0."),
+            modifications: Some("Fermion's five-value Phonon-2 weights and MLX runtime. Slugtale installs the official model unchanged, with a private Python runtime. Inference uses Fermion's tdt16,dense16 speed settings and stays on this Mac. Runtime code is Apache 2.0; dependency notices are installed with each package."),
+            system_managed: false, supported_platforms: "Apple silicon macOS 14 or later (MLX); other platforms use ONNX",
+        }
+    }
+    fn availability(&self) -> EngineAvailability {
+        lock(&self.availability).clone()
+    }
+    fn assets(&self) -> EngineAssets {
+        EngineAssets {
+            installed_bytes: Some(directory_bytes(&self.root)),
+            present: Some(probe(&self.root).is_available()),
+        }
+    }
+    fn can_install_assets(&self) -> bool {
+        true
+    }
+    fn warm_up(&self) -> Result<(), AsrError> {
+        self.with_worker(|_| Ok(()))
+    }
+    fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
+        if audio.sample_rate_hz != 16_000
+            || audio.samples.is_empty()
+            || audio.samples.len() > MAX_SAMPLES
+            || audio.samples.iter().any(|x| !x.is_finite())
+        {
+            return Err(AsrError::UnsupportedAudio(
+                "Phonon-2 needs finite 16 kHz mono samples, from one sample to 30 minutes.".into(),
+            ));
+        }
+        let start = Instant::now();
+        let transcription = self.with_worker(|worker| worker.transcribe(&audio.samples))?;
+        Ok(EngineTranscription::plain(
+            self.engine(),
+            transcription,
+            start.elapsed(),
+        ))
+    }
+    fn install_assets(
+        &self,
+        on_progress: &mut dyn FnMut(DownloadProgress),
+    ) -> Result<AssetInstall, String> {
+        // Also excludes warm-up, decode, removal, and another install.
+        let mut slot = lock(&self.worker);
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err("Phonon-2 is shutting down.".into());
+        }
+        slot.take();
+        let result = install(&self.root, &HttpModelDownloader, on_progress);
+        *lock(&self.availability) = probe(&self.root);
+        result?;
+        Ok(AssetInstall { warm_up: true })
+    }
+    fn remove_assets(&self) -> Result<(), String> {
+        let mut slot = lock(&self.worker);
+        slot.take();
+        let result = if self.root.exists() {
+            std::fs::remove_dir_all(&self.root)
+        } else {
+            Ok(())
+        };
+        *lock(&self.availability) = probe(&self.root);
+        result.map_err(|_| "Could not remove Phonon-2 MLX. Close Slugtale and try again.".into())
+    }
+}
+
+/// Owns a process group, including pip if setup times out. Always reap it.
+struct Process(Child);
+impl Drop for Process {
+    fn drop(&mut self) {
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        // try_wait may already have reaped an exited child. Never signal a
+        // PID after that: the OS can reuse it for an unrelated process.
+        if matches!(self.0.try_wait(), Ok(None)) {
+            unsafe {
+                kill(-(self.0.id() as i32), 9);
+            }
+            let _ = self.0.wait();
+        }
+    }
+}
+
+fn offline_command(root: &Path) -> Command {
+    let mut cmd = Command::new("/usr/bin/sandbox-exec");
+    cmd.args(["-p", SANDBOX])
+        .arg(root.join("python/bin/python3"))
+        .args(["-I", "-u", "-c", WORKER])
+        .arg(root);
+    cmd.env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", root)
+        .env("TMPDIR", std::env::temp_dir())
+        .env("HF_HUB_OFFLINE", "1")
+        .env("TRANSFORMERS_OFFLINE", "1")
+        .env("HF_HUB_DISABLE_TELEMETRY", "1")
+        .env("DO_NOT_TRACK", "1")
+        .env("FERMION_DEVICE", "mlx")
+        .env("FERMION_P2_FAST", "tdt16,dense16")
+        .stderr(Stdio::null())
+        .process_group(0);
+    cmd
+}
+
+struct Worker {
+    process: Process,
+    channel: BufReader<UnixStream>,
+}
+impl Worker {
+    fn start(root: &Path) -> Result<Self, AsrError> {
+        let (parent, child) = UnixStream::pair().map_err(|_| runtime_error())?;
+        parent
+            .set_read_timeout(Some(START_TIMEOUT))
+            .map_err(|_| runtime_error())?;
+        parent
+            .set_write_timeout(Some(START_TIMEOUT))
+            .map_err(|_| runtime_error())?;
+        let fd: OwnedFd = child.into();
+        let output = fd.try_clone().map_err(|_| runtime_error())?;
+        let process = offline_command(root)
+            .stdin(Stdio::from(fd))
+            .stdout(Stdio::from(output))
+            .spawn()
+            .map_err(|_| runtime_error())?;
+        let mut worker = Self {
+            process: Process(process),
+            channel: BufReader::new(parent),
+        };
+        let ready: serde_json::Value = worker.response(Instant::now() + START_TIMEOUT)?;
+        if ready.get("ready") != Some(&serde_json::Value::Bool(true)) {
+            return Err(runtime_error());
+        }
+        Ok(worker)
+    }
+    fn response<T: serde::de::DeserializeOwned>(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<T, AsrError> {
+        let mut bytes = Vec::new();
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(runtime_error)?;
+            self.channel
+                .get_ref()
+                .set_read_timeout(Some(remaining))
+                .map_err(|_| runtime_error())?;
+            let part = self.channel.fill_buf().map_err(|_| runtime_error())?;
+            if part.is_empty() {
+                return Err(runtime_error());
+            }
+            let newline = part.iter().position(|byte| *byte == b'\n');
+            let count = newline.map_or(part.len(), |index| index + 1);
+            if bytes.len() + count > MAX_RESPONSE as usize {
+                return Err(runtime_error());
+            }
+            bytes.extend_from_slice(&part[..count]);
+            self.channel.consume(count);
+            if newline.is_some() {
+                return serde_json::from_slice(&bytes).map_err(|_| runtime_error());
+            }
+        }
+    }
+    fn transcribe(&mut self, samples: &[f32]) -> Result<FinalTranscription, AsrError> {
+        if self
+            .process
+            .0
+            .try_wait()
+            .map_err(|_| runtime_error())?
+            .is_some()
+        {
+            return Err(runtime_error());
+        }
+        let deadline = Instant::now() + START_TIMEOUT;
+        let channel = self.channel.get_mut();
+        write_until(channel, &(samples.len() as u32).to_le_bytes(), deadline)?;
+        // Bounded scratch space, including long clips; no audio file on disk.
+        let mut bytes = Vec::with_capacity(64 * 1024);
+        for chunk in samples.chunks(16 * 1024) {
+            bytes.clear();
+            for sample in chunk {
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+            write_until(channel, &bytes, deadline)?;
+        }
+        self.response(deadline)
+    }
+}
+
+fn write_until(
+    channel: &mut UnixStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> Result<(), AsrError> {
+    while !bytes.is_empty() {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(runtime_error)?;
+        channel
+            .set_write_timeout(Some(remaining))
+            .map_err(|_| runtime_error())?;
+        let count = channel.write(bytes).map_err(|_| runtime_error())?;
+        if count == 0 {
+            return Err(runtime_error());
+        }
+        bytes = &bytes[count..];
+    }
+    Ok(())
+}
+
+struct Artifact {
+    name: &'static str,
+    bytes: u64,
+    sha: &'static str,
+}
+const MODEL_FILES: &[Artifact] = &[
+    Artifact {
+        name: "phonon-2.bps.tar.zst",
+        bytes: 163_515_201,
+        sha: "98125795b6dda72f5c6eee9ba33d19815df65dcb18b50a357bf9f73c9935309e",
+    },
+    Artifact {
+        name: "config.json",
+        bytes: 759,
+        sha: "422379e411f14dde97174554deead106ec1e4816e14dd78a1bf99517c6dcc663",
+    },
+    Artifact {
+        name: "packed_manifest.json",
+        bytes: 699,
+        sha: "690c6bc43bcbcae8df61cff0b2cace7299d023718b6f2aa9d67157407eadaa07",
+    },
+    Artifact {
+        name: "NOTICE",
+        bytes: 2741,
+        sha: "00624a5043e7ce74029317b024132ca5286116d6fbf3191d226374bc8273789f",
+    },
+    Artifact {
+        name: "LICENSE-CODE-Apache-2.0.txt",
+        bytes: 11358,
+        sha: "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    },
+    Artifact {
+        name: "LICENSE-WEIGHTS-CC-BY-4.0.txt",
+        bytes: 18657,
+        sha: "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411",
+    },
+];
+const PYTHON: Artifact = Artifact {
+    name: "python.tar.gz",
+    bytes: 25_160_994,
+    sha: "f1ee170bd7bb45bea526c4f9489b41f9c5d978c4cd7a08fd11809de56c39b736",
+};
+
+fn verify(path: &Path, artifact: &Artifact) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if !file.metadata().is_ok_and(|m| m.len() == artifact.bytes) {
+        return false;
+    }
+    let mut digest = Sha256::new();
+    let mut bytes = [0; 64 * 1024];
+    loop {
+        match file.read(&mut bytes) {
+            Ok(0) => break,
+            Ok(n) => digest.update(&bytes[..n]),
+            Err(_) => return false,
+        }
+    }
+    format!("{:x}", digest.finalize()) == artifact.sha
+}
+
+fn download(
+    root: &Path,
+    artifact: &Artifact,
+    url: &str,
+    downloader: &dyn ModelDownloader,
+    progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), String> {
+    let path = root.join(artifact.name);
+    if verify(&path, artifact) {
+        return Ok(());
+    }
+    let staging = path.with_extension("download");
+    let result = (|| {
+        downloader.download(url, &staging, progress).map_err(|_| {
+            "Phonon-2 setup download failed. Check your connection and try Install again."
+                .to_string()
+        })?;
+        if !verify(&staging, artifact) {
+            return Err("Phonon-2 setup checksum failed. Try Install again.".into());
+        }
+        std::fs::rename(&staging, &path).map_err(|_| "Could not save Phonon-2 setup files.".into())
+    })();
+    let _ = std::fs::remove_file(staging);
+    result
+}
+
+fn run_setup(cmd: &mut Command, timeout: Duration) -> Result<(), String> {
+    let child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|_| "Could not start Phonon-2 setup.".to_string())?;
+    let mut process = Process(child);
+    let start = Instant::now();
+    loop {
+        if let Some(status) = process
+            .0
+            .try_wait()
+            .map_err(|_| "Could not check Phonon-2 setup.".to_string())?
+        {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err("Phonon-2 setup failed. Check free disk space and your connection, then try Install again.".into())
+            };
+        }
+        if start.elapsed() > timeout {
+            return Err("Phonon-2 setup took too long. Try Install again.".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn install(
+    root: &Path,
+    downloader: &dyn ModelDownloader,
+    progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), String> {
+    if probe(root).is_available() {
+        return Ok(());
+    }
+    let io_error = |_| "Could not save Phonon-2 setup files. Check free disk space.".to_string();
+    std::fs::create_dir_all(root).map_err(io_error)?;
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).map_err(io_error)?;
+    let _ = std::fs::remove_file(root.join("installed"));
+    download(root, &PYTHON, PYTHON_URL, downloader, progress)?;
+    run_setup(
+        Command::new("/usr/bin/tar")
+            .arg("-xzf")
+            .arg(root.join(PYTHON.name))
+            .arg("-C")
+            .arg(root),
+        Duration::from_secs(60),
+    )?;
+    for file in MODEL_FILES {
+        let url = format!(
+            "https://huggingface.co/FermionResearch/Phonon-2/resolve/{REVISION}/{}",
+            file.name
+        );
+        download(root, file, &url, downloader, progress)?;
+    }
+    progress(DownloadProgress {
+        downloaded: 0,
+        total: None,
+    });
+    std::fs::write(root.join("requirements.lock"), REQUIREMENTS).map_err(io_error)?;
+    // Start fresh after any interrupted pip install; no half-ready packages.
+    if root.join("site").exists() {
+        std::fs::remove_dir_all(root.join("site")).map_err(io_error)?;
+    }
+    let mut cmd = Command::new(root.join("python/bin/python3"));
+    cmd.args(["-I", "-c", SETUP])
+        .arg(root)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", root)
+        .env("TMPDIR", std::env::temp_dir())
+        .env("HF_HUB_DISABLE_TELEMETRY", "1")
+        .env("DO_NOT_TRACK", "1");
+    run_setup(&mut cmd, Duration::from_secs(960))?;
+    // Test the actual sandboxed runtime before declaring the install ready.
+    let worker = Worker::start(root)
+        .map_err(|_| "Phonon-2 MLX could not load. Try Install again.".to_string())?;
+    drop(worker);
+    std::fs::write(root.join("installed"), install_stamp()).map_err(io_error)?;
+    for name in [PYTHON.name, "phonon-2.bps.tar.zst", "requirements.lock"] {
+        let _ = std::fs::remove_file(root.join(name));
+    }
+    progress(DownloadProgress {
+        downloaded: 1,
+        total: Some(1),
+    });
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("slugtale-mlx-{name}-{}", std::process::id()))
+    }
+
+    fn fake_worker() -> (Worker, UnixStream) {
+        let (parent, peer) = UnixStream::pair().unwrap();
+        parent
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        let process = Command::new("/bin/sleep")
+            .arg("10")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        (
+            Worker {
+                process: Process(process),
+                channel: BufReader::new(parent),
+            },
+            peer,
+        )
+    }
+
+    #[test]
+    fn missing_or_partial_setup_never_claims_to_be_ready() {
+        let root = root("partial");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("installed"), install_stamp()).unwrap();
+        let provider = MlxProvider::new(root.clone());
+        assert!(!provider.availability().is_available());
+        assert!(crate::EngineView::of(&provider, false).installable);
+        assert!(provider.warm_up().is_err());
+        assert!(lock(&provider.worker).is_none());
+        provider.remove_assets().unwrap();
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn shutdown_rejects_late_warm_up() {
+        let provider = MlxProvider::new(root("shutdown"));
+        provider.shutdown();
+        assert!(matches!(provider.warm_up(), Err(AsrError::Runtime(_))));
+        assert!(lock(&provider.worker).is_none());
+    }
+
+    #[test]
+    fn invalid_audio_fails_before_loading_any_model() {
+        let provider = MlxProvider::new(root("invalid"));
+        for audio in [
+            CapturedAudio {
+                sample_rate_hz: 8000,
+                samples: vec![0.0],
+            },
+            CapturedAudio {
+                sample_rate_hz: 16000,
+                samples: vec![],
+            },
+            CapturedAudio {
+                sample_rate_hz: 16000,
+                samples: vec![f32::NAN],
+            },
+        ] {
+            assert!(matches!(
+                provider.transcribe(&audio),
+                Err(AsrError::UnsupportedAudio(_))
+            ));
+        }
+        assert!(lock(&provider.worker).is_none());
+    }
+
+    #[test]
+    fn stalled_or_crashed_worker_returns_a_fixed_content_free_error() {
+        let (mut worker, mut peer) = fake_worker();
+        // A live process which never replies has a bounded wait.
+        assert!(worker
+            .response::<FinalTranscription>(Instant::now() + Duration::from_millis(20))
+            .is_err());
+        peer.write_all(b"{\"error\":\"private spoken words\"}\n")
+            .unwrap();
+        let error = worker
+            .response::<FinalTranscription>(Instant::now() + Duration::from_millis(20))
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("private spoken words"));
+        drop(peer);
+        assert!(worker
+            .response::<FinalTranscription>(Instant::now() + Duration::from_millis(20))
+            .is_err());
+    }
+
+    #[test]
+    fn a_worker_that_does_not_read_has_a_bounded_send() {
+        let (mut channel, _peer) = UnixStream::pair().unwrap();
+        assert!(write_until(
+            &mut channel,
+            &vec![0; 2 * 1024 * 1024],
+            Instant::now() + Duration::from_millis(20)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn response_size_is_bounded() {
+        let (mut worker, mut peer) = fake_worker();
+        let writer = std::thread::spawn(move || {
+            let _ = peer.write_all(&vec![b'x'; MAX_RESPONSE as usize + 2]);
+        });
+        assert!(worker
+            .response::<FinalTranscription>(Instant::now() + Duration::from_millis(20))
+            .is_err());
+        drop(worker);
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn a_failed_decode_releases_the_process_for_a_clean_retry() {
+        let provider = MlxProvider::new(root("failure"));
+        let (worker, _peer) = fake_worker();
+        *lock(&provider.worker) = Some(worker);
+        let answer: Result<(), _> = provider.with_worker(|_| Err(runtime_error()));
+        assert!(answer.is_err());
+        assert!(lock(&provider.worker).is_none());
+    }
+
+    #[test]
+    fn removal_waits_for_an_in_flight_operation_and_stops_the_worker() {
+        let root = root("removal");
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = Arc::new(MlxProvider::new(root.clone()));
+        let (worker, _peer) = fake_worker();
+        *lock(&provider.worker) = Some(worker);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let decoding = provider.clone();
+        let decode = std::thread::spawn(move || {
+            decoding.with_worker(|_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        entered_rx.recv().unwrap();
+        let removing = provider.clone();
+        let (removed_tx, removed_rx) = std::sync::mpsc::channel();
+        let remove = std::thread::spawn(move || {
+            removing.remove_assets().unwrap();
+            removed_tx.send(()).unwrap();
+        });
+        assert!(removed_rx.recv_timeout(Duration::from_millis(20)).is_err());
+        assert!(root.exists());
+        release_tx.send(()).unwrap();
+        decode.join().unwrap().unwrap();
+        remove.join().unwrap();
+        assert!(lock(&provider.worker).is_none());
+        assert!(!root.exists());
+        assert!(!provider.availability().is_available());
+    }
+
+    struct BrokenDownload;
+    impl ModelDownloader for BrokenDownload {
+        fn download(
+            &self,
+            _: &str,
+            destination: &Path,
+            _: &mut dyn FnMut(DownloadProgress),
+        ) -> Result<(), crate::ModelError> {
+            std::fs::write(destination, b"wrong")?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn corrupt_download_is_discarded_and_is_never_installed() {
+        let root = root("download");
+        std::fs::create_dir_all(&root).unwrap();
+        let artifact = Artifact {
+            name: "fixture",
+            bytes: 5,
+            sha: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        };
+        assert!(download(
+            &root,
+            &artifact,
+            "https://example.invalid",
+            &BrokenDownload,
+            &mut |_| {}
+        )
+        .is_err());
+        assert!(!root.join("fixture").exists());
+        assert!(!root.join("fixture.download").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
