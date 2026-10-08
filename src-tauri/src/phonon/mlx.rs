@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex, MutexGuard,
@@ -69,7 +69,8 @@ pub struct MlxProvider {
     /// start a worker from partial files.
     changing: AtomicBool,
     availability: Mutex<EngineAvailability>,
-    shutting_down: AtomicBool,
+    /// Owns the running install step. Shutdown closes it under its own lock.
+    stop: Stop,
 }
 
 impl MlxProvider {
@@ -81,7 +82,7 @@ impl MlxProvider {
             worker: Mutex::new(None),
             changing: AtomicBool::new(false),
             availability: Mutex::new(availability),
-            shutting_down: AtomicBool::new(false),
+            stop: Stop::default(),
         }
     }
 
@@ -90,7 +91,7 @@ impl MlxProvider {
     }
 
     pub fn shutdown(&self) {
-        self.shutting_down.store(true, Ordering::Release);
+        self.stop.close();
         self.unload();
     }
 
@@ -112,7 +113,7 @@ impl MlxProvider {
         operation: impl FnOnce(&mut Worker) -> Result<T, AsrError>,
     ) -> Result<T, AsrError> {
         let mut slot = lock(&self.worker);
-        if self.shutting_down.load(Ordering::Acquire) {
+        if self.stop.is_closed() {
             return Err(runtime_error());
         }
         if self.changing.load(Ordering::Acquire) {
@@ -147,9 +148,9 @@ impl MlxProvider {
         on_progress: &mut dyn FnMut(DownloadProgress),
     ) -> Result<AssetInstall, String> {
         let _gate = lock(&self.install_gate);
-        cancelled(&self.shutting_down)?;
+        cancelled(&self.stop)?;
         self.begin_change();
-        let result = install(&self.root, downloader, &self.shutting_down, on_progress);
+        let result = install(&self.root, downloader, &self.stop, on_progress);
         self.finish_change();
         result?;
         Ok(AssetInstall { warm_up: true })
@@ -285,6 +286,69 @@ impl Drop for Process {
     }
 }
 
+/// The one Python process that an install step runs. Spawn, reap, and close
+/// share a lock, so a PID is never signalled after it is reaped, and no step
+/// starts once shutdown has closed this.
+#[derive(Default)]
+struct Stop {
+    state: Mutex<StopState>,
+}
+
+#[derive(Default)]
+struct StopState {
+    closed: bool,
+    child: Option<Process>,
+}
+
+impl Stop {
+    fn is_closed(&self) -> bool {
+        lock(&self.state).closed
+    }
+
+    fn spawn(&self, command: &mut Command) -> Result<(), String> {
+        let mut state = lock(&self.state);
+        if state.closed {
+            return Err(SHUTTING_DOWN.into());
+        }
+        if state.child.is_some() {
+            return Err("Could not start Phonon-2 setup.".into());
+        }
+        let child = command
+            .spawn()
+            .map_err(|_| "Could not start Phonon-2 setup.".to_string())?;
+        state.child = Some(Process(child));
+        Ok(())
+    }
+
+    /// Reaps the step once it has exited, so its PID is never signalled later.
+    fn poll(&self) -> Result<Option<ExitStatus>, String> {
+        let mut state = lock(&self.state);
+        let Some(child) = state.child.as_mut() else {
+            return Err(SHUTTING_DOWN.into());
+        };
+        match child.0.try_wait() {
+            Ok(Some(status)) => {
+                state.child.take();
+                Ok(Some(status))
+            }
+            Ok(None) => Ok(None),
+            Err(_) => Err("Could not check Phonon-2 setup.".into()),
+        }
+    }
+
+    fn finish(&self) {
+        lock(&self.state).child.take();
+    }
+
+    /// Refuses further steps and kills and reaps the running one before it
+    /// returns. Never waits for the installer thread or its locks.
+    fn close(&self) {
+        let mut state = lock(&self.state);
+        state.closed = true;
+        state.child.take();
+    }
+}
+
 fn offline_command(root: &Path) -> Command {
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
     cmd.args(["-p", SANDBOX])
@@ -315,58 +379,24 @@ impl Worker {
         Self::spawn(offline_command(root))
     }
     fn spawn(mut command: Command) -> Result<Self, AsrError> {
-        let (parent, child) = UnixStream::pair().map_err(|_| runtime_error())?;
-        parent
-            .set_read_timeout(Some(START_TIMEOUT))
-            .map_err(|_| runtime_error())?;
-        parent
-            .set_write_timeout(Some(START_TIMEOUT))
-            .map_err(|_| runtime_error())?;
-        let fd: OwnedFd = child.into();
-        let output = fd.try_clone().map_err(|_| runtime_error())?;
+        let (channel, input, output) = socket_pair()?;
         let process = command
-            .stdin(Stdio::from(fd))
+            .stdin(Stdio::from(input))
             .stdout(Stdio::from(output))
             .spawn()
             .map_err(|_| runtime_error())?;
         let mut worker = Self {
             process: Process(process),
-            channel: BufReader::new(parent),
+            channel,
         };
-        let ready: serde_json::Value = worker.response(Instant::now() + START_TIMEOUT)?;
-        if ready.get("ready") != Some(&serde_json::Value::Bool(true)) {
-            return Err(runtime_error());
-        }
+        await_ready(&mut worker.channel)?;
         Ok(worker)
     }
     fn response<T: serde::de::DeserializeOwned>(
         &mut self,
         deadline: Instant,
     ) -> Result<T, AsrError> {
-        let mut bytes = Vec::new();
-        loop {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or_else(runtime_error)?;
-            self.channel
-                .get_ref()
-                .set_read_timeout(Some(remaining))
-                .map_err(|_| runtime_error())?;
-            let part = self.channel.fill_buf().map_err(|_| runtime_error())?;
-            if part.is_empty() {
-                return Err(runtime_error());
-            }
-            let newline = part.iter().position(|byte| *byte == b'\n');
-            let count = newline.map_or(part.len(), |index| index + 1);
-            if bytes.len() + count > MAX_RESPONSE as usize {
-                return Err(runtime_error());
-            }
-            bytes.extend_from_slice(&part[..count]);
-            self.channel.consume(count);
-            if newline.is_some() {
-                return serde_json::from_slice(&bytes).map_err(|_| runtime_error());
-            }
-        }
+        read_reply(&mut self.channel, deadline)
     }
     fn transcribe(&mut self, samples: &[f32]) -> Result<FinalTranscription, AsrError> {
         if self
@@ -392,6 +422,75 @@ impl Worker {
         }
         self.response(deadline)
     }
+}
+
+type Channel = BufReader<UnixStream>;
+
+/// Returns the parent end of a worker socket, and the child's stdin and stdout.
+fn socket_pair() -> Result<(Channel, OwnedFd, OwnedFd), AsrError> {
+    let (parent, child) = UnixStream::pair().map_err(|_| runtime_error())?;
+    parent
+        .set_read_timeout(Some(START_TIMEOUT))
+        .map_err(|_| runtime_error())?;
+    parent
+        .set_write_timeout(Some(START_TIMEOUT))
+        .map_err(|_| runtime_error())?;
+    let input: OwnedFd = child.into();
+    let output = input.try_clone().map_err(|_| runtime_error())?;
+    Ok((BufReader::new(parent), input, output))
+}
+
+fn await_ready(channel: &mut Channel) -> Result<(), AsrError> {
+    let ready: serde_json::Value = read_reply(channel, Instant::now() + START_TIMEOUT)?;
+    if ready.get("ready") == Some(&serde_json::Value::Bool(true)) {
+        Ok(())
+    } else {
+        Err(runtime_error())
+    }
+}
+
+fn read_reply<T: serde::de::DeserializeOwned>(
+    channel: &mut Channel,
+    deadline: Instant,
+) -> Result<T, AsrError> {
+    let mut bytes = Vec::new();
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(runtime_error)?;
+        channel
+            .get_ref()
+            .set_read_timeout(Some(remaining))
+            .map_err(|_| runtime_error())?;
+        let part = channel.fill_buf().map_err(|_| runtime_error())?;
+        if part.is_empty() {
+            return Err(runtime_error());
+        }
+        let newline = part.iter().position(|byte| *byte == b'\n');
+        let count = newline.map_or(part.len(), |index| index + 1);
+        if bytes.len() + count > MAX_RESPONSE as usize {
+            return Err(runtime_error());
+        }
+        bytes.extend_from_slice(&part[..count]);
+        channel.consume(count);
+        if newline.is_some() {
+            return serde_json::from_slice(&bytes).map_err(|_| runtime_error());
+        }
+    }
+}
+
+/// Starts the installed runtime once. Its process stays in `stop` during the
+/// handshake, so shutdown can stop it, and it is reaped before this returns.
+fn check_runtime(root: &Path, stop: &Stop) -> Result<(), AsrError> {
+    let (mut channel, input, output) = socket_pair()?;
+    let mut command = offline_command(root);
+    command.stdin(Stdio::from(input)).stdout(Stdio::from(output));
+    let spawned = stop.spawn(&mut command).map_err(|_| runtime_error());
+    // Drop the child's socket ends here, so a dead child gives EOF at once.
+    drop(command);
+    let ready = spawned.and_then(|()| await_ready(&mut channel));
+    stop.finish();
+    ready
 }
 
 fn write_until(
@@ -505,39 +604,31 @@ fn download(
 
 const SHUTTING_DOWN: &str = "Phonon-2 is shutting down.";
 
-fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
-    if cancel.load(Ordering::Acquire) {
+fn cancelled(stop: &Stop) -> Result<(), String> {
+    if stop.is_closed() {
         Err(SHUTTING_DOWN.into())
     } else {
         Ok(())
     }
 }
 
-fn run_setup(cmd: &mut Command, timeout: Duration, cancel: &AtomicBool) -> Result<(), String> {
-    let child = cmd
-        .stdin(Stdio::null())
+fn run_setup(cmd: &mut Command, timeout: Duration, stop: &Stop) -> Result<(), String> {
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .map_err(|_| "Could not start Phonon-2 setup.".to_string())?;
-    let mut process = Process(child);
+        .process_group(0);
+    stop.spawn(cmd)?;
     let start = Instant::now();
     loop {
-        if let Some(status) = process
-            .0
-            .try_wait()
-            .map_err(|_| "Could not check Phonon-2 setup.".to_string())?
-        {
+        if let Some(status) = stop.poll()? {
             return if status.success() {
                 Ok(())
             } else {
                 Err("Phonon-2 setup failed. Check free disk space and your connection, then try Install again.".into())
             };
         }
-        // Dropping `process` kills the whole group, so quitting leaves no pip behind.
-        cancelled(cancel)?;
         if start.elapsed() > timeout {
+            stop.finish();
             return Err("Phonon-2 setup took too long. Try Install again.".into());
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -547,7 +638,7 @@ fn run_setup(cmd: &mut Command, timeout: Duration, cancel: &AtomicBool) -> Resul
 fn install(
     root: &Path,
     downloader: &dyn ModelDownloader,
-    cancel: &AtomicBool,
+    stop: &Stop,
     progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), String> {
     if probe(root).is_available() {
@@ -557,9 +648,9 @@ fn install(
     std::fs::create_dir_all(root).map_err(io_error)?;
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).map_err(io_error)?;
     let _ = std::fs::remove_file(root.join("installed"));
-    cancelled(cancel)?;
+    cancelled(stop)?;
     download(root, &PYTHON, PYTHON_URL, downloader, progress)?;
-    cancelled(cancel)?;
+    cancelled(stop)?;
     run_setup(
         Command::new("/usr/bin/tar")
             .arg("-xzf")
@@ -567,14 +658,14 @@ fn install(
             .arg("-C")
             .arg(root),
         Duration::from_secs(60),
-        cancel,
+        stop,
     )?;
     for file in MODEL_FILES {
         let url = format!(
             "https://huggingface.co/FermionResearch/Phonon-2/resolve/{REVISION}/{}",
             file.name
         );
-        cancelled(cancel)?;
+        cancelled(stop)?;
         download(root, file, &url, downloader, progress)?;
     }
     progress(DownloadProgress {
@@ -595,13 +686,13 @@ fn install(
         .env("TMPDIR", std::env::temp_dir())
         .env("HF_HUB_DISABLE_TELEMETRY", "1")
         .env("DO_NOT_TRACK", "1");
-    cancelled(cancel)?;
-    run_setup(&mut cmd, Duration::from_secs(960), cancel)?;
+    cancelled(stop)?;
+    run_setup(&mut cmd, Duration::from_secs(960), stop)?;
     // Test the actual sandboxed runtime before declaring the install ready.
-    cancelled(cancel)?;
-    let worker = Worker::start(root)
+    cancelled(stop)?;
+    check_runtime(root, stop)
         .map_err(|_| "Phonon-2 MLX could not load. Try Install again.".to_string())?;
-    drop(worker);
+    cancelled(stop)?;
     std::fs::write(root.join("installed"), install_stamp()).map_err(io_error)?;
     for name in [PYTHON.name, "phonon-2.bps.tar.zst", "requirements.lock"] {
         let _ = std::fs::remove_file(root.join(name));
@@ -982,23 +1073,93 @@ def load(path, *, profile, backend, quiet):
         let _ = std::fs::remove_dir_all(root);
     }
 
+    fn process_running(pid: u32) -> bool {
+        let out = Command::new("/bin/ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        let state = String::from_utf8_lossy(&out.stdout);
+        let state = state.trim();
+        !state.is_empty() && !state.starts_with('Z')
+    }
+
     #[test]
-    fn shutdown_stops_a_running_setup_step() {
-        let cancel = AtomicBool::new(false);
-        let started = Instant::now();
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                std::thread::sleep(Duration::from_millis(50));
-                cancel.store(true, Ordering::Release);
-            });
-            let result = run_setup(
-                Command::new("/bin/sleep").arg("30"),
+    fn shutdown_kills_a_running_setup_step_and_its_descendants_before_returning() {
+        let root = root("shutdown-setup");
+        std::fs::create_dir_all(&root).unwrap();
+        let pid_file = root.join("descendant.pid");
+        let script = format!(
+            "sleep 30 & echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}'; wait",
+            pid_file.display()
+        );
+        let provider = Arc::new(MlxProvider::new(root.clone()));
+        let setup = provider.clone();
+        let running = std::thread::spawn(move || {
+            run_setup(
+                Command::new("/bin/sh").args(["-c", &script]),
                 Duration::from_secs(60),
-                &cancel,
-            );
-            assert_eq!(result, Err(SHUTTING_DOWN.to_string()));
+                &setup.stop,
+            )
         });
-        assert!(started.elapsed() < Duration::from_secs(5));
+        let descendant = (0..400)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(10));
+                std::fs::read_to_string(&pid_file)
+                    .ok()?
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+            })
+            .expect("setup started a descendant");
+        let started = Instant::now();
+        provider.shutdown();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!process_running(descendant));
+        assert!(lock(&provider.stop.state).child.is_none());
+        assert_eq!(running.join().unwrap(), Err(SHUTTING_DOWN.to_string()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_setup_step_started_after_shutdown_is_refused() {
+        let root = root("late-setup");
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = root.join("started");
+        let provider = MlxProvider::new(root.clone());
+        provider.shutdown();
+        let result = run_setup(
+            Command::new("/usr/bin/touch").arg(&marker),
+            Duration::from_secs(5),
+            &provider.stop,
+        );
+        assert_eq!(result, Err(SHUTTING_DOWN.to_string()));
+        assert!(!marker.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shutdown_stops_the_runtime_check_during_its_handshake() {
+        let root = root("shutdown-check");
+        let bin = root.join("python/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python3");
+        std::fs::write(&python, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let provider = Arc::new(MlxProvider::new(root.clone()));
+        let checking = provider.clone();
+        let check = std::thread::spawn(move || check_runtime(&checking.root, &checking.stop));
+        for _ in 0..400 {
+            if lock(&provider.stop.state).child.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let started = Instant::now();
+        provider.shutdown();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(check.join().unwrap().is_err());
+        assert!(lock(&provider.stop.state).child.is_none());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     struct BrokenDownload;

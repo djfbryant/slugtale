@@ -65,8 +65,9 @@ messages that cannot quote a transcript.
 Setup and removal are exclusive with each other. While either runs, warm-up
 and decode refuse to start a worker, so none starts from partial files. Neither
 holds the worker lock during downloads or package setup, so quitting or
-releasing an engine does not wait for them. A running setup step is killed on
-shutdown, and its process group takes any pip children with it. Shutdown and
+releasing an engine does not wait for them. Shutdown kills and reaps the running
+setup or runtime-check process group before it returns, so pip children go too,
+and no setup step starts after shutdown. Shutdown and
 unload wait only for a decode already in flight, which has a 180-second
 deadline. Failed or timed-out workers are killed and reaped, and the next
 request can start a fresh worker. Startup and each complete request have a
