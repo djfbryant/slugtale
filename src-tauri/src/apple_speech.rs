@@ -27,7 +27,7 @@
 //! crate cannot see them (it binds the older `SFSpeechRecognizer`, a different
 //! engine that *does* have a server path). The supported route is a small Swift
 //! library with a C ABI, which lives in `swift/SlugtaleAppleSpeech.swift` and is
-//! compiled into a static archive by `build.rs`. This module declares those five
+//! compiled into a static archive by `build.rs`. This module declares those four
 //! functions and owns every policy decision above them.
 //!
 //! **Assets are per-application, not per-machine.** Measured on macOS 26.5:
@@ -114,6 +114,12 @@ bridge_convention! {
 /// The same answer as an [`EngineUnavailable`], for the places that need the
 /// reason without its wrapper. Built through the boundary's own helper so this
 /// provider words the Linux and Windows case exactly as every other one does.
+///
+/// Exists only where something reads it: the portable half of the provider
+/// (every build other than macOS with the runtime) and the tests. On a macOS
+/// runtime build the bridge owns the availability answer and this would be
+/// dead code, which is why it is not compiled there.
+#[cfg(any(test, not(all(target_os = "macos", feature = "apple-speech-runtime"))))]
 fn unsupported_platform_reason() -> EngineUnavailable {
     match EngineAvailability::unsupported_platform(
         APPLE_SPEECH_ENGINE,

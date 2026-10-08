@@ -7,7 +7,8 @@ use std::sync::Mutex;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-use super::{begin_dictation, dictation_host, typing_challenge_is_open};
+use crate::commands::dictation::{begin_dictation, dictation_host};
+use crate::commands::usage::typing_challenge_is_open;
 
 const DICTATION_ESCAPE_KEY: &str = "Escape";
 
@@ -30,7 +31,7 @@ pub(super) enum GlobalKeyCommand {
 pub(super) fn setup_configured_hotkey(
     app: &mut tauri::App,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let settings = super::app_files(app.handle()).settings();
+    let settings = crate::commands::app_files(app.handle()).settings();
 
     let mut builder =
         tauri_plugin_global_shortcut::Builder::new().with_handler(move |app, shortcut, event| {

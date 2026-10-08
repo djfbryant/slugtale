@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { runPage } from "./harness.mjs";
+import { runPage, stylesheetOf } from "./harness.mjs";
 
 // The Dictation Bar runs as a plain script inside a transparent Tauri window.
 // These tests load that script against a fake DOM so the bar's behaviour — what
@@ -338,9 +338,11 @@ test("the voice waveform is painted with CSS so the Tauri webview can see it", (
   // WKWebView often leaves SVG `fill="url(#id)"` and `stop-color="var(--accent)"`
   // presentation attributes unpainted on a Tauri page. The halo still reacts
   // because it is an HTML background. The envelope has to take its colour from
-  // a stylesheet rule on the path itself, or speech opens an empty pill.
+  // a stylesheet rule on the path itself, or speech opens an empty pill. The
+  // rule is read from the shipped stylesheet, not from markup: the page keeps
+  // its CSS in its own file.
   const html = dictationBarMarkup();
-  const [, style] = html.match(/<style>([\s\S]*?)<\/style>/);
+  const style = stylesheetOf("dictation-bar.html");
   assert.match(
     style,
     /#envelope\s*\{[^}]*fill:\s*var\(--accent\)/,

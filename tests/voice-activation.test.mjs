@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const settingsHtml = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
+import { shippedSource } from "./harness.mjs";
+
+// The toggle lives in the page's markup; the code that keeps it off is in the
+// script it ships. Both are read, because the guarantee is about the page the user
+// gets rather than about either file alone.
+const settings = shippedSource("index.html");
+const settingsHtml = settings.all;
 const workerSource = readFileSync(
   new URL("../src-tauri/src/voice_activation.rs", import.meta.url),
   "utf8",

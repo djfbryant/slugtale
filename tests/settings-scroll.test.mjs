@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const settingsHtml = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
+import { stylesheetOf } from "./harness.mjs";
+
+// The rules a browser applies come from the stylesheet the page links, not from a
+// block inside the page. Reading the page would find nothing now that the styles
+// ship as a file, and would keep passing if the link were dropped.
+const settingsCss = stylesheetOf("index.html");
 
 function cssRule(selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = settingsHtml.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`));
+  const match = settingsCss.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`));
   assert.ok(match, `Missing CSS rule for ${selector}`);
   return match[1];
 }

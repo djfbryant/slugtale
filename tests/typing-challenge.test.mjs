@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { runPage } from "./harness.mjs";
+import { runPage, shippedSource } from "./harness.mjs";
 
-const challengeHtml = readFileSync(new URL("../src/typing-challenge.html", import.meta.url), "utf8");
+const challenge = shippedSource("typing-challenge.html");
 
 // Let every pending promise settle. The window loads its state asynchronously on
 // open and again after each score, and counting microtasks by hand is brittle.
@@ -243,8 +242,10 @@ test("a failed score leaves the run retryable instead of eating it", async () =>
 });
 
 test("the window ships its passages rather than fetching them", () => {
-  // Local-Only Processing (CONTEXT.md): nothing here reaches the network.
-  assert.doesNotMatch(challengeHtml, /\bfetch\s*\(/);
-  assert.doesNotMatch(challengeHtml, /XMLHttpRequest/);
-  assert.doesNotMatch(challengeHtml, /https?:\/\//);
+  // Local-Only Processing (CONTEXT.md): nothing here reaches the network. Read
+  // every file the page ships — markup, stylesheet and script — because the
+  // fetch would live in the script, not the markup.
+  assert.doesNotMatch(challenge.all, /\bfetch\s*\(/);
+  assert.doesNotMatch(challenge.all, /XMLHttpRequest/);
+  assert.doesNotMatch(challenge.all, /https?:\/\//);
 });

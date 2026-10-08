@@ -327,6 +327,10 @@ fn readiness_report(
                 engine_blocker.is_none(),
             )
             .with_detail(engine_blocker),
+            // Launch at Login is informational and optional (slugtale-9bx, ADR-0017):
+            // it is listed so Settings can point at it, but it is never required
+            // and never unready, because a user who chooses not to start Slugtale
+            // at sign-in still dictates normally.
             readiness_item(ReadinessItemId::LaunchAtLogin, false, true),
         ],
     }
@@ -718,6 +722,34 @@ mod tests {
             ids,
             [ReadinessItemId::Microphone, ReadinessItemId::LocalModel]
         );
+    }
+
+    #[test]
+    fn launch_at_login_is_informational_and_never_blocks_dictation() {
+        // slugtale-9bx decision (ADR-0017): Launch at Login is an optional
+        // convenience, not a Dictation Readiness requirement. The row exists so
+        // Settings can point at it, and a user who leaves it off still dictates.
+        let mut settings = configured_settings();
+        settings.launch_at_login = false;
+        let probes = FakeProbes {
+            settings,
+            ..FakeProbes::all_ready()
+        };
+
+        let activation = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
+
+        assert!(
+            activation.dictation_available(),
+            "a disabled Launch at Login preference must not block dictation"
+        );
+        let item = activation
+            .report
+            .items
+            .iter()
+            .find(|item| item.id == ReadinessItemId::LaunchAtLogin)
+            .expect("the report still names Launch at login");
+        assert!(!item.required, "Launch at login is never a requirement");
+        assert!(item.ready, "a disabled preference is not a problem to fix");
     }
 
     #[test]

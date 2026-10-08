@@ -31,7 +31,7 @@ pub(super) fn save_settings(
         return Err("Voice activation is not available in this version of Slugtale.".to_string());
     }
 
-    super::app_files(app).update_settings_and_apply(
+    crate::commands::app_files(app).update_settings_and_apply(
         |settings| slugtale_lib::apply_voice_activation_settings(settings, enabled),
         // Validation rides the side-effect step: the worker must not start
         // without an engine that can run the wake checks.
@@ -117,7 +117,7 @@ fn listening_channel() -> Result<
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 fn whisper_ready(app: &tauri::AppHandle) -> bool {
-    let settings = super::app_files(app).settings();
+    let settings = crate::commands::app_files(app).settings();
     app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
         .whisper_provider(&settings)
         .is_some()
@@ -207,7 +207,7 @@ impl slugtale_lib::WakeListener for AppWakeListener {
     }
 
     fn microphone_granted(&self) -> bool {
-        CurrentPlatform::new().microphone_granted()
+        crate::commands::platform::CurrentPlatform::new().microphone_granted()
     }
 
     fn capture_is_open(&self) -> bool {
@@ -237,7 +237,7 @@ impl slugtale_lib::WakeListener for AppWakeListener {
         let audio = slugtale_lib::CapturedAudio::mono_16khz(samples);
         // Wake checks always use greedy decoding. The user's wider beam is
         // useful for dictation text, but wasteful for a two-word phrase.
-        let mut settings = super::app_files(&self.app).settings();
+        let mut settings = crate::commands::app_files(&self.app).settings();
         settings.speed_profile = slugtale_lib::SpeedProfile::Fast;
         let Some(provider) = self
             .app
@@ -270,10 +270,12 @@ fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceAc
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 fn report_voice_activation_microphone_problem(app: &tauri::AppHandle) {
-    let activation =
-        build_activation_snapshot_for(app, slugtale_lib::DictationInput::VoiceActivation);
+    let activation = crate::commands::settings::build_activation_snapshot_for(
+        app,
+        slugtale_lib::DictationInput::VoiceActivation,
+    );
     if !activation.dictation_available() {
-        report_not_ready(app, &activation.report);
+        crate::commands::settings::report_not_ready(app, &activation.report);
         return;
     }
 
@@ -306,10 +308,10 @@ fn trigger_start(app: &tauri::AppHandle) {
             .0
             .lock()
             .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
-        request_escape_registration(&registration, should_register)
+        crate::hotkey_registration::request_escape_registration(&registration, should_register)
     };
 
-    if let Err(error) = begin_dictation(
+    if let Err(error) = crate::commands::dictation::begin_dictation(
         app,
         slugtale_lib::DictationInput::VoiceActivation,
         &mut set_escape,
