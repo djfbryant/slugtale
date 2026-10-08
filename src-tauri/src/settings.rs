@@ -28,6 +28,20 @@ impl Default for SpeedProfile {
     }
 }
 
+/// The Segment Pause length, in seconds, that a Settings File written before
+/// the setting existed keeps (CONTEXT.md).
+pub const DEFAULT_SEGMENT_PAUSE_SECS: i64 = 5;
+/// Below this, a pause inserts half-spoken thoughts; above it, the wait between
+/// insertions stops feeling live. Saves outside the range are rejected.
+pub const MIN_SEGMENT_PAUSE_SECS: i64 = 2;
+pub const MAX_SEGMENT_PAUSE_SECS: i64 = 10;
+
+/// The serde default for [`Settings::segment_pause_secs`]: a numeric field
+/// without this would fall back to zero seconds, which would flush mid-sentence.
+fn default_segment_pause_secs() -> i64 {
+    DEFAULT_SEGMENT_PAUSE_SECS
+}
+
 /// Where the Dictation Bar sits on the active display. All three options ride
 /// the bottom edge; the orb is small enough that a corner no longer covers the
 /// line being dictated into (slugtale-z7a).
@@ -97,6 +111,12 @@ pub struct Settings {
     /// Older Settings Files predate this field, so it defaults to Balanced.
     #[serde(default)]
     pub speed_profile: SpeedProfile,
+    /// How many seconds of quiet end one Dictation Segment and start the next.
+    /// Stored signed so a hand-edited negative value still loads; the value is
+    /// clamped to the accepted range by [`segment_pause_duration`] at use, and
+    /// older Settings Files keep the five seconds they always had.
+    #[serde(default = "default_segment_pause_secs")]
+    pub segment_pause_secs: i64,
     /// Where the Dictation Bar appears. Older Settings Files predate this field.
     #[serde(default)]
     pub bar_position: BarPosition,
@@ -161,6 +181,7 @@ impl Default for Settings {
             diagnostic_logging: false,
             model: None,
             speed_profile: SpeedProfile::default(),
+            segment_pause_secs: DEFAULT_SEGMENT_PAUSE_SECS,
             bar_position: BarPosition::default(),
             accent_color: AccentColor::default(),
             bar_display: BarDisplay::default(),
@@ -254,6 +275,55 @@ pub fn apply_hotkey_settings(
 /// restarts, applying to all future transcriptions (CONTEXT.md).
 pub fn apply_transcription_settings(settings: &mut Settings, speed_profile: SpeedProfile) {
     settings.speed_profile = speed_profile;
+}
+
+/// Update the Segment Pause length stored in the Settings File. A value outside
+/// the accepted range is an error rather than a silent clamp, so the user sees
+/// that the choice was not saved and nothing is written.
+pub fn apply_segment_pause_settings(
+    settings: &mut Settings,
+    segment_pause_secs: i64,
+) -> Result<(), String> {
+    if !(MIN_SEGMENT_PAUSE_SECS..=MAX_SEGMENT_PAUSE_SECS).contains(&segment_pause_secs) {
+        return Err(format!(
+            "Segment pause must be between {MIN_SEGMENT_PAUSE_SECS} and {MAX_SEGMENT_PAUSE_SECS} seconds."
+        ));
+    }
+    settings.segment_pause_secs = segment_pause_secs;
+    Ok(())
+}
+
+/// The Segment Pause the stored setting yields, clamped into the accepted range.
+/// The clamp covers Settings Files edited by hand; a value saved through the app
+/// is already in range. Opening silence never flushes a segment at any length.
+pub fn segment_pause_duration(settings: &Settings) -> std::time::Duration {
+    let secs = settings
+        .segment_pause_secs
+        .clamp(MIN_SEGMENT_PAUSE_SECS, MAX_SEGMENT_PAUSE_SECS);
+    std::time::Duration::from_secs(secs as u64)
+}
+
+/// The one Segment Pause save: validate first so a rejected value touches
+/// neither the Settings File nor the running runtime, then hand the runtime the
+/// new length and persist. When persisting fails, the runtime is handed the
+/// previous length back, so the file and the runtime never disagree.
+pub fn save_segment_pause(
+    current: &Settings,
+    segment_pause_secs: i64,
+    adopt_pause: impl Fn(std::time::Duration),
+    persist: impl FnOnce(&Settings) -> Result<(), String>,
+) -> Result<Settings, String> {
+    let mut proposed = current.clone();
+    apply_segment_pause_settings(&mut proposed, segment_pause_secs)?;
+    apply_and_persist(
+        current,
+        |settings| settings.segment_pause_secs = proposed.segment_pause_secs,
+        |settings| {
+            adopt_pause(segment_pause_duration(settings));
+            Ok(())
+        },
+        persist,
+    )
 }
 
 /// Update the Transcript Cleanup mode stored in the Settings File (slugtale-kyc).
@@ -414,6 +484,196 @@ mod tests {
 
         assert_eq!(settings.typing_baseline.effective_wpm(), Some(48));
     }
+
+    fn temp_settings_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "slugtale-settings-{name}-{}.json",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn segment_pause_defaults_to_five_seconds() {
+        assert_eq!(DEFAULT_SEGMENT_PAUSE_SECS, 5);
+        assert_eq!(Settings::default().segment_pause_secs, 5);
+    }
+
+    #[test]
+    fn a_settings_file_written_before_segment_pause_loads_as_five_seconds() {
+        let path = temp_settings_path("legacy-segment-pause");
+        std::fs::write(
+            &path,
+            r#"{"hotkey":null,"activation_mode":"toggle","launch_at_login":false,"diagnostic_logging":false,"model":null,"speed_profile":"balanced"}"#,
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        assert_eq!(loaded.segment_pause_secs, DEFAULT_SEGMENT_PAUSE_SECS);
+        assert_eq!(
+            segment_pause_duration(&loaded),
+            std::time::Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn apply_segment_pause_settings_accepts_every_length_in_the_range() {
+        let mut settings = Settings::default();
+
+        for secs in MIN_SEGMENT_PAUSE_SECS..=MAX_SEGMENT_PAUSE_SECS {
+            apply_segment_pause_settings(&mut settings, secs).unwrap();
+            assert_eq!(settings.segment_pause_secs, secs);
+        }
+    }
+
+    #[test]
+    fn apply_segment_pause_settings_rejects_lengths_outside_the_range_and_keeps_the_saved_one() {
+        let mut settings = Settings::default();
+        apply_segment_pause_settings(&mut settings, 8).unwrap();
+
+        for secs in [-1, 0, 1, 11, 60] {
+            let result = apply_segment_pause_settings(&mut settings, secs);
+            assert!(result.is_err(), "{secs} should be rejected");
+            assert_eq!(settings.segment_pause_secs, 8);
+        }
+    }
+
+    #[test]
+    fn segment_pause_duration_clamps_a_hand_edited_value_into_the_range() {
+        let mut settings = Settings::default();
+
+        settings.segment_pause_secs = -1;
+        assert_eq!(
+            segment_pause_duration(&settings),
+            std::time::Duration::from_secs(2)
+        );
+
+        settings.segment_pause_secs = 0;
+        assert_eq!(
+            segment_pause_duration(&settings),
+            std::time::Duration::from_secs(2)
+        );
+
+        settings.segment_pause_secs = 600;
+        assert_eq!(
+            segment_pause_duration(&settings),
+            std::time::Duration::from_secs(10)
+        );
+
+        settings.segment_pause_secs = 7;
+        assert_eq!(
+            segment_pause_duration(&settings),
+            std::time::Duration::from_secs(7)
+        );
+    }
+
+    #[test]
+    fn segment_pause_persists_as_a_plain_number_of_seconds() {
+        let path = temp_settings_path("segment-pause-roundtrip");
+        let mut settings = Settings::default();
+        apply_segment_pause_settings(&mut settings, 8).unwrap();
+
+        save_settings(&path, &settings).unwrap();
+        let json = std::fs::read_to_string(&path).unwrap();
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        assert!(json.contains("\"segment_pause_secs\": 8"), "got: {json}");
+        assert_eq!(loaded.segment_pause_secs, 8);
+    }
+
+    #[test]
+    fn a_hand_edited_negative_pause_loads_without_resetting_the_rest_of_the_file() {
+        let path = temp_settings_path("negative-segment-pause");
+        std::fs::write(
+            &path,
+            r#"{"hotkey":null,"activation_mode":"toggle","launch_at_login":false,"diagnostic_logging":false,"model":null,"speed_profile":"accurate","segment_pause_secs":-1}"#,
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        // A file that failed to parse would load as defaults, so the kept
+        // speed profile is what proves the rest of the file survived.
+        assert_eq!(loaded.speed_profile, SpeedProfile::Accurate);
+        assert_eq!(loaded.segment_pause_secs, -1);
+        assert_eq!(
+            segment_pause_duration(&loaded),
+            std::time::Duration::from_secs(2)
+        );
+    }
+
+    #[test]
+    fn saving_a_segment_pause_persists_it_and_hands_the_runtime_the_new_length() {
+        let path = temp_settings_path("segment-pause-save");
+        let adopted = std::cell::RefCell::new(Vec::new());
+
+        let saved = save_segment_pause(
+            &Settings::default(),
+            8,
+            |pause| adopted.borrow_mut().push(pause),
+            |settings| save_settings(&path, settings).map_err(|error| error.to_string()),
+        )
+        .unwrap();
+
+        let loaded = load_settings(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(saved.segment_pause_secs, 8);
+        assert_eq!(loaded.segment_pause_secs, 8);
+        assert_eq!(*adopted.borrow(), [std::time::Duration::from_secs(8)]);
+    }
+
+    #[test]
+    fn a_rejected_segment_pause_touches_neither_the_file_nor_the_runtime() {
+        let current = Settings::default();
+        let adopted = std::cell::RefCell::new(Vec::new());
+        let persisted = std::cell::Cell::new(false);
+
+        for secs in [-1, 1, 11] {
+            let result = save_segment_pause(
+                &current,
+                secs,
+                |pause| adopted.borrow_mut().push(pause),
+                |_| {
+                    persisted.set(true);
+                    Ok(())
+                },
+            );
+
+            assert!(result.is_err(), "{secs} should be rejected");
+        }
+
+        assert!(!persisted.get());
+        assert!(adopted.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_failed_segment_pause_write_hands_the_runtime_its_previous_length_back() {
+        let current = Settings {
+            segment_pause_secs: 3,
+            ..Settings::default()
+        };
+        let adopted = std::cell::RefCell::new(Vec::new());
+
+        let result = save_segment_pause(
+            &current,
+            8,
+            |pause| adopted.borrow_mut().push(pause),
+            |_| Err("disk full".to_string()),
+        );
+
+        assert_eq!(result.unwrap_err(), "disk full");
+        assert_eq!(
+            *adopted.borrow(),
+            [
+                std::time::Duration::from_secs(8),
+                std::time::Duration::from_secs(3)
+            ]
+        );
+    }
+
     #[test]
     fn settings_round_trip_through_saved_file() {
         let path =
@@ -425,6 +685,7 @@ mod tests {
             diagnostic_logging: true,
             model: Some("whisper-base.en".to_string()),
             speed_profile: SpeedProfile::Accurate,
+            segment_pause_secs: 8,
             bar_position: BarPosition::BottomLeft,
             accent_color: AccentColor::Green,
             bar_display: BarDisplay::Monitor("Studio Display".to_string()),

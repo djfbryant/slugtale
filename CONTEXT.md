@@ -25,7 +25,7 @@ A span of a dictation's speech that Slugtale transcribes and inserts on its own.
 _Avoid_: Chunk, part, utterance, block
 
 **Segment Pause**:
-Roughly five seconds during which the user stays at or below the voice level the Dictation Bar treats as speech. It ends the current Dictation Segment while recording carries on. The length is fixed, and the pause only counts once the user has actually said something, so a dictation that opens with silence never flushes an empty segment.
+The user's chosen number of seconds, from 2 to 10 and five by default, during which the user stays at or below the voice level the Dictation Bar treats as speech. It ends the current Dictation Segment while recording carries on. A change applies to the next dictation; one in progress keeps its length. The pause only counts once the user has actually said something, so a dictation that opens with silence never flushes an empty segment.
 _Avoid_: Silence timeout, VAD gap, endpointing
 
 **Pause Flush**:

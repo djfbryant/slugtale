@@ -194,9 +194,11 @@ hold the hotkey while you speak and release it to stop. Press Escape or select
 the cancel button to discard speech that Slugtale has not inserted.
 
 During a long dictation, the silence timer ends the current part. The default is
-five seconds. Slugtale transcribes and inserts that part while the microphone
-stays on. New speech starts the next part. Escape does not remove text that
-Slugtale already inserted.
+five seconds. You can change it under **Settings > Transcription > Insert after
+quiet**, between 2 and 10 seconds. A change applies to your next dictation; a
+dictation already running keeps the length it started with. Slugtale transcribes
+and inserts that part while the microphone stays on. New speech starts the next
+part. Escape does not remove text that Slugtale already inserted.
 
 ## Choose transcript cleanup
 

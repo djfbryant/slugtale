@@ -14,15 +14,6 @@
 
 use crate::audio_capture::is_voice_level;
 
-/// How long the user must stay below [`crate::audio_capture::VOICE_LEVEL`] before
-/// the speech so far becomes its own Dictation Segment.
-///
-/// Fixed rather than configurable for now: five seconds is long enough that
-/// ordinary between-sentence breathing does not trigger it, and short enough
-/// that a paragraph lands while the user is still thinking about the next one.
-/// A setting can follow once the behaviour has been lived with.
-pub const SEGMENT_PAUSE: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// Watches the dictation's voice level and decides when a Segment Pause has
 /// elapsed.
 ///
@@ -40,8 +31,9 @@ pub struct SegmentPauseDetector {
 }
 
 impl SegmentPauseDetector {
-    /// A detector with a non-default pause. Tests use this to exercise the rule
-    /// without waiting five real seconds; production passes [`SEGMENT_PAUSE`].
+    /// A detector that measures the given pause. Tests use this to exercise the
+    /// rule without waiting real seconds; production passes the length the user
+    /// chose in settings.
     pub fn with_pause(pause: std::time::Duration) -> Self {
         Self {
             pause,
@@ -49,11 +41,18 @@ impl SegmentPauseDetector {
         }
     }
 
+    /// Set the pause the next measurement uses. The Dictation Runtime calls this
+    /// only at a dictation's start, right before [`Self::rearm`], so a dictation
+    /// already in progress keeps the pause it began with.
+    pub fn set_pause(&mut self, pause: std::time::Duration) {
+        self.pause = pause;
+    }
+
     /// Forget the speech heard so far, so the detector cannot fire until the
     /// user speaks again. This is what a new dictation needs from a detector it
     /// is keeping: only the remembered last word has to go, and rebuilding the
-    /// whole object to drop one field made the five-second pause a second place
-    /// the default could be written.
+    /// whole object to drop one field would make the pause a second place it
+    /// could be written.
     pub fn rearm(&mut self) {
         self.last_voice = None;
     }
@@ -217,14 +216,15 @@ mod tests {
     }
 
     #[test]
-    fn the_default_pause_is_five_seconds() {
-        assert_eq!(SEGMENT_PAUSE, Duration::from_secs(5));
-
-        let mut detector = SegmentPauseDetector::with_pause(SEGMENT_PAUSE);
+    fn a_new_pause_measures_from_the_next_rearm_onward() {
         let start = std::time::Instant::now();
+        let mut detector = SegmentPauseDetector::with_pause(TEST_PAUSE);
+
+        detector.set_pause(TEST_PAUSE * 2);
+        detector.rearm();
         detector.on_level(speaking(), start);
 
-        assert!(!detector.on_level(quiet(), start + Duration::from_secs(4)));
-        assert!(detector.on_level(quiet(), start + Duration::from_secs(5)));
+        assert!(!detector.on_level(quiet(), start + TEST_PAUSE));
+        assert!(detector.on_level(quiet(), start + TEST_PAUSE * 2));
     }
 }
