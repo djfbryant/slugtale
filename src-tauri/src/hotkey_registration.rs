@@ -7,7 +7,8 @@ use std::sync::Mutex;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-use super::{begin_dictation, dictation_host, typing_challenge_is_open};
+use crate::commands::dictation::{begin_dictation, dictation_host};
+use crate::commands::usage::typing_challenge_is_open;
 
 const DICTATION_ESCAPE_KEY: &str = "Escape";
 
@@ -30,7 +31,7 @@ pub(super) enum GlobalKeyCommand {
 pub(super) fn setup_configured_hotkey(
     app: &mut tauri::App,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let settings = super::app_files(app.handle()).settings();
+    let settings = crate::commands::app_files(app.handle()).settings();
 
     let mut builder =
         tauri_plugin_global_shortcut::Builder::new().with_handler(move |app, shortcut, event| {
@@ -226,25 +227,28 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Bring the OS registration in line with `command`, and only then let the
+/// arbiter remember the new state.
+///
+/// The order matters: `apply` records what the OS is holding only after the
+/// registration itself succeeds, so a refusal leaves the arbiter armed-free and
+/// the next Arm tries again instead of looking already done (slugtale-7kxk).
 fn sync_escape_registration(
     app: &tauri::AppHandle,
     arbiter: &mut slugtale_lib::EscapeArbiter,
     command: slugtale_lib::EscapeCommand,
 ) -> Result<(), String> {
-    let Some(should_register) = arbiter.resolve(command) else {
-        return Ok(());
-    };
-
-    if should_register {
-        app.global_shortcut()
-            .register(DICTATION_ESCAPE_KEY)
-            .map_err(|error| error.to_string())?;
-    } else {
-        app.global_shortcut()
-            .unregister(DICTATION_ESCAPE_KEY)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
+    arbiter.apply(command, |should_register| {
+        if should_register {
+            app.global_shortcut()
+                .register(DICTATION_ESCAPE_KEY)
+                .map_err(|error| error.to_string())
+        } else {
+            app.global_shortcut()
+                .unregister(DICTATION_ESCAPE_KEY)
+                .map_err(|error| error.to_string())
+        }
+    })
 }
 
 fn set_hotkey_registration_state(

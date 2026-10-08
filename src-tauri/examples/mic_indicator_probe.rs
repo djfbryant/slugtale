@@ -9,17 +9,40 @@
 //!
 //! Usage:
 //!   cargo run --example mic_indicator_probe
+//!
+//! The probe reads macOS-only CoreAudio state, so on other platforms it
+//! compiles but refuses to run: there is no macOS audio HAL to measure, and a
+//! silent pass would not be evidence.
 
+#[cfg(target_os = "macos")]
 use objc2_core_audio::{
     AudioObjectGetPropertyData, AudioObjectPropertyAddress,
     kAudioDevicePropertyDeviceIsRunningSomewhere,
     kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyElementMain,
     kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
 };
+#[cfg(target_os = "macos")]
 use slugtale_lib::{CpalAudioRecorder, DictationRecorder};
+#[cfg(target_os = "macos")]
 use std::ptr::NonNull;
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
+/// The probe needs the macOS audio HAL; off macOS there is nothing to measure
+/// and no evidence to report. `cargo check --examples` still has to compile
+/// this example on every platform, so this main keeps the build honest and
+/// fails loudly if someone runs it expecting proof.
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!(
+        "mic_indicator_probe requires macOS: it reads CoreAudio's \
+         kAudioDevicePropertyDeviceIsRunningSomewhere property. Run it on macOS \
+         to produce evidence; this build has no macOS audio HAL to probe."
+    );
+    std::process::exit(2);
+}
+
+#[cfg(target_os = "macos")]
 fn main() {
     let device_id = default_input_device_id().expect("no default input device");
 
@@ -62,6 +85,7 @@ fn main() {
 
 /// The default input device's `AudioObjectID`, read straight from the HAL so
 /// the property query below targets exactly the device cpal will use.
+#[cfg(target_os = "macos")]
 fn default_input_device_id() -> Option<u32> {
     let address = AudioObjectPropertyAddress {
         mSelector: kAudioHardwarePropertyDefaultInputDevice,
@@ -84,6 +108,7 @@ fn default_input_device_id() -> Option<u32> {
     (status == 0 && device_id != 0).then_some(device_id)
 }
 
+#[cfg(target_os = "macos")]
 fn device_is_running_somewhere(device_id: u32) -> bool {
     let address = AudioObjectPropertyAddress {
         mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,

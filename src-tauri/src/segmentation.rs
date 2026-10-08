@@ -42,10 +42,17 @@ impl SegmentPauseDetector {
     }
 
     /// Set the pause the next measurement uses. The Dictation Runtime calls this
-    /// only at a dictation's start, right before [`Self::rearm`], so a dictation
+    /// at a dictation's start, right before [`Self::rearm`], so a dictation
     /// already in progress keeps the pause it began with.
     pub fn set_pause(&mut self, pause: std::time::Duration) {
         self.pause = pause;
+    }
+
+    /// The pause the next measurement uses. The Dictation Runtime observes it
+    /// from its tests to prove which length a dictation armed with.
+    #[cfg(test)]
+    pub(crate) fn pause(&self) -> std::time::Duration {
+        self.pause
     }
 
     /// Forget the speech heard so far, so the detector cannot fire until the

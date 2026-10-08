@@ -6,6 +6,12 @@
 src-tauri/target/
 node_modules/
 
+# Transient tool output: cargo-mutants reports and coverage data are regenerated
+# per run, and the results worth keeping live in docs/research or Beads — not as
+# thousands of tracked files (slugtale review finding 10).
+src-tauri/mutants-report/
+src-tauri/lcov.info
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

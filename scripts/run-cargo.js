@@ -2,12 +2,11 @@
 
 const { accessSync, constants } = require("node:fs");
 const { delimiter, join } = require("node:path");
-const { spawn, spawnSync } = require("node:child_process");
+const { spawnSync: defaultSpawnSync } = require("node:child_process");
+const { runChildWithTimeout } = require("./process-tree.js");
 
 const root = join(__dirname, "..");
 const rustCrate = join(root, "src-tauri");
-const args = process.argv.slice(2);
-const cargoName = process.platform === "win32" ? "cargo.exe" : "cargo";
 
 function isExecutable(file) {
   try {
@@ -29,81 +28,87 @@ function pathCandidates(command, pathValue) {
     .map((entry) => join(entry, command));
 }
 
-function resolveCargo() {
-  const explicitCargo = process.env.CARGO;
+function resolveCargo(environment = process.env) {
+  const explicitCargo = environment.CARGO;
   if (explicitCargo && isExecutable(explicitCargo)) {
     return explicitCargo;
   }
 
   const pathWithRustup = [
-    process.env.PATH,
-    process.env.HOME ? join(process.env.HOME, ".cargo", "bin") : null,
+    environment.PATH,
+    environment.HOME ? join(environment.HOME, ".cargo", "bin") : null,
   ]
     .filter(Boolean)
     .join(delimiter);
 
-  return pathCandidates(cargoName, pathWithRustup).find(isExecutable);
+  return pathCandidates(
+    process.platform === "win32" ? "cargo.exe" : "cargo",
+    pathWithRustup,
+  ).find(isExecutable);
 }
 
-const cargo = resolveCargo();
-
-if (!cargo) {
-  console.error("Cargo was not found.");
-  console.error("");
-  console.error("Slugtale's Rust crate lives in src-tauri and requires Rust stable.");
-  console.error("Install Rust with rustup: https://rustup.rs/");
-  console.error("");
-  console.error(
+function missingCargo() {
+  return [
+    "Cargo was not found.",
+    "",
+    "Slugtale's Rust crate lives in src-tauri and requires Rust stable.",
+    "Install Rust with rustup: https://rustup.rs/",
+    "",
     "If Cargo is already installed somewhere else, set CARGO=/path/to/cargo or add it to PATH.",
-  );
-  process.exit(1);
+  ].join("\n");
 }
 
 // Wall-clock cap on any cargo invocation. A hung test or build must never be
-// able to eat the machine: when the cap fires, the whole cargo process group
+// able to eat the machine: when the cap fires, the whole cargo process tree
 // (cargo plus every rustc it spawned) is killed, not just the parent.
 // Override per run with SLUGTALE_CARGO_TIMEOUT=<seconds>, or 0 to disable.
-const timeoutSeconds = Number(process.env.SLUGTALE_CARGO_TIMEOUT ?? 600);
+//
+// The cap, the process group and the tree kill live in ./process-tree.js,
+// shared with run-node-tests.js. This runner used to send the POSIX group
+// signal on every platform, which cannot work on Windows.
+const DEFAULT_TIMEOUT_SECONDS = 600;
 
-if (timeoutSeconds > 0 && args.length > 0) {
-  const child = spawn(cargo, args, {
-    cwd: rustCrate,
-    stdio: "inherit",
-    shell: false,
-    detached: process.platform !== "win32",
-  });
+/**
+ * @param {object} [options] injection seam for tests.
+ * @param {string[]} options.args cargo arguments.
+ * @param {object} [options.environment]
+ * @returns {Promise<number>} the exit code for the process.
+ */
+async function runCargo({
+  args = process.argv.slice(2),
+  environment = process.env,
+  log = console.error,
+  ...system
+} = {}) {
+  const cargo = resolveCargo(environment);
 
-  const timer = setTimeout(() => {
-    console.error("");
-    console.error(
-      `Cargo timed out after ${timeoutSeconds}s. Killing the cargo process tree.`,
+  if (!cargo) {
+    log(missingCargo());
+    return 1;
+  }
+
+  const timeoutSeconds = Number(
+    environment.SLUGTALE_CARGO_TIMEOUT ?? DEFAULT_TIMEOUT_SECONDS,
+  );
+
+  if (timeoutSeconds > 0 && args.length > 0) {
+    const { exitCode } = await runChildWithTimeout(
+      {
+        command: cargo,
+        args,
+        options: { cwd: rustCrate, stdio: "inherit" },
+        timeoutSeconds,
+        label: "Cargo",
+      },
+      { ...system, log },
     );
-    console.error("(Set SLUGTALE_CARGO_TIMEOUT=<seconds> to change the cap.)");
-    try {
-      // Negative pid kills the detached child's whole process group, so the
-      // rustc workers die with it instead of being orphaned.
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The child already exited.
-    }
-  }, timeoutSeconds * 1000);
-  timer.unref();
 
-  child.on("error", (error) => {
-    clearTimeout(timer);
-    console.error(error.message);
-    process.exit(1);
-  });
+    return exitCode;
+  }
 
-  child.on("exit", (code, signal) => {
-    clearTimeout(timer);
-    if (signal) {
-      console.error(`Cargo was terminated by ${signal} (timeout?).`);
-      process.exit(124); // conventional "timed out" exit code
-    }
-    process.exit(code ?? 1);
-  });
-} else {
+  // No cap requested: nothing to spawn in a group or kill later, so the
+  // blocking call is enough and keeps the runner's own timeout out of it.
+  const spawnSync = system.spawnSync ?? defaultSpawnSync;
   const result = spawnSync(cargo, args, {
     cwd: rustCrate,
     stdio: "inherit",
@@ -111,9 +116,23 @@ if (timeoutSeconds > 0 && args.length > 0) {
   });
 
   if (result.error) {
-    console.error(result.error.message);
-    process.exit(1);
+    log(result.error.message);
+    return 1;
   }
 
-  process.exit(result.status ?? 1);
+  return result.status ?? 1;
 }
+
+if (require.main === module) {
+  runCargo().then(
+    (exitCode) => {
+      process.exit(exitCode);
+    },
+    (error) => {
+      console.error(error.message);
+      process.exit(1);
+    },
+  );
+}
+
+module.exports = { runCargo, resolveCargo, missingCargo, rustCrate };

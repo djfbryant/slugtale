@@ -8,7 +8,10 @@
       "category": "short-command",
       "recording_condition": "clean-close-microphone",
       "wav_path": "clips/001-command-clean.wav",
-      "proper_terms": ["Slugtale"]
+      "proper_terms": ["Slugtale"],
+      "provenance": "human",
+      "speaker": "voice-1",
+      "probes": []
     },
     {
       "id": "002-dictation-clean",
@@ -16,7 +19,10 @@
       "category": "long-dictation",
       "recording_condition": "clean-close-microphone",
       "wav_path": "clips/002-dictation-clean.wav",
-      "proper_terms": []
+      "proper_terms": [],
+      "provenance": "human",
+      "speaker": "voice-1",
+      "probes": []
     },
     {
       "id": "003-hesitation-clean",
@@ -24,7 +30,10 @@
       "category": "hesitation-self-correction",
       "recording_condition": "clean-close-microphone",
       "wav_path": "clips/003-hesitation-clean.wav",
-      "proper_terms": []
+      "proper_terms": [],
+      "provenance": "human",
+      "speaker": "voice-1",
+      "probes": []
     },
     {
       "id": "004-numbers-clean",
@@ -32,7 +41,10 @@
       "category": "numbers-punctuation",
       "recording_condition": "clean-close-microphone",
       "wav_path": "clips/004-numbers-clean.wav",
-      "proper_terms": []
+      "proper_terms": [],
+      "provenance": "human",
+      "speaker": "voice-1",
+      "probes": []
     },
     {
       "id": "005-jargon-clean",
@@ -40,7 +52,10 @@
       "category": "names-jargon",
       "recording_condition": "clean-close-microphone",
       "wav_path": "clips/005-jargon-clean.wav",
-      "proper_terms": ["Whisper", "Parakeet", "Apple SpeechTranscriber"]
+      "proper_terms": ["Whisper", "Parakeet", "Apple SpeechTranscriber"],
+      "provenance": "human",
+      "speaker": "voice-1",
+      "probes": []
     },
     {
       "id": "006-command-noisy",
@@ -48,7 +63,10 @@
       "category": "short-command",
       "recording_condition": "keyboard-noise",
       "wav_path": "clips/006-command-noisy.wav",
-      "proper_terms": []
+      "proper_terms": [],
+      "provenance": "human",
+      "speaker": "voice-1",
+      "probes": ["noise"]
     },
     {
       "id": "007-dictation-distance",
@@ -56,7 +74,10 @@
       "category": "long-dictation",
       "recording_condition": "distant-microphone",
       "wav_path": "clips/007-dictation-distance.wav",
-      "proper_terms": []
+      "proper_terms": [],
+      "provenance": "human",
+      "speaker": "voice-1",
+      "probes": []
     },
     {
       "id": "008-silence-clean",
@@ -64,7 +85,10 @@
       "category": "silence-non-speech",
       "recording_condition": "clean-room-tone",
       "wav_path": "clips/008-silence-clean.wav",
-      "proper_terms": []
+      "proper_terms": [],
+      "provenance": "human",
+      "speaker": "voice-1",
+      "probes": ["leading-segment-edge", "trailing-segment-edge"]
     }
   ]
 }

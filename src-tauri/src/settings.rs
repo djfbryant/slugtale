@@ -303,11 +303,15 @@ pub fn segment_pause_duration(settings: &Settings) -> std::time::Duration {
     std::time::Duration::from_secs(secs as u64)
 }
 
-/// The one Segment Pause save: validate a copy first so a rejected value touches
-/// neither the Settings File nor the running runtime, then persist the copy and
-/// only after that hand the runtime its new length. Until the write succeeds the
-/// runtime keeps the saved length, so a dictation begun during the write arms
-/// with it, and a failed write leaves both the file and the runtime unchanged.
+/// The Segment Pause save as an ordered pair of steps, for tests: validate a
+/// copy first so a rejected value touches neither the file nor the follow-up,
+/// then persist the copy, and only after the write succeeds run `adopt_pause`
+/// with the saved length. Production does not use this shape any more — the
+/// shipped save is the Settings store's one transaction and never touches the
+/// Dictation Runtime, because each dictation derives its pause from the
+/// Settings snapshot it pins at Start — but the ordering rule still has to
+/// hold wherever a pause save is composed, so the tests keep it pinned here.
+#[cfg(test)]
 pub fn save_segment_pause(
     current: &Settings,
     segment_pause_secs: i64,
@@ -601,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_a_segment_pause_persists_it_and_hands_the_runtime_the_new_length() {
+    fn saving_a_segment_pause_persists_it_and_reports_the_new_length() {
         let path = temp_settings_path("segment-pause-save");
         let adopted = std::cell::RefCell::new(Vec::new());
 
@@ -621,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_segment_pause_touches_neither_the_file_nor_the_runtime() {
+    fn a_rejected_segment_pause_touches_neither_the_file_nor_the_follow_up() {
         let current = Settings::default();
         let adopted = std::cell::RefCell::new(Vec::new());
         let persisted = std::cell::Cell::new(false);
@@ -645,36 +649,37 @@ mod tests {
     }
 
     #[test]
-    fn the_runtime_keeps_the_saved_pause_until_the_write_succeeds() {
+    fn the_saved_pause_stands_until_the_write_succeeds() {
         let current = Settings {
             segment_pause_secs: 3,
             ..Settings::default()
         };
-        let runtime = std::cell::Cell::new(std::time::Duration::from_secs(3));
+        let adopted_pause = std::cell::Cell::new(std::time::Duration::from_secs(3));
         let seen_while_writing = std::cell::Cell::new(None);
 
         let saved = save_segment_pause(
             &current,
             8,
-            |pause| runtime.set(pause),
+            |pause| adopted_pause.set(pause),
             |_| {
-                seen_while_writing.set(Some(runtime.get()));
+                seen_while_writing.set(Some(adopted_pause.get()));
                 Ok(())
             },
         )
         .unwrap();
 
-        // A dictation that begins during the write arms with the saved 3 seconds.
+        // While the write is in flight the follow-up still sees the saved
+        // 3 seconds; it only runs once the write has succeeded.
         assert_eq!(saved.segment_pause_secs, 8);
         assert_eq!(
             seen_while_writing.get(),
             Some(std::time::Duration::from_secs(3))
         );
-        assert_eq!(runtime.get(), std::time::Duration::from_secs(8));
+        assert_eq!(adopted_pause.get(), std::time::Duration::from_secs(8));
     }
 
     #[test]
-    fn a_failed_segment_pause_write_keeps_the_saved_file_and_runtime() {
+    fn a_failed_segment_pause_write_keeps_the_saved_file_and_value() {
         let path = std::env::temp_dir().join(format!(
             "slugtale-settings-failed-segment-pause-{}-{}.json",
             std::process::id(),
@@ -697,15 +702,15 @@ mod tests {
 
         // Block the atomic writer before it can replace the saved Settings File.
         std::fs::create_dir(&blocked_temp_path).unwrap();
-        let runtime = std::cell::Cell::new(std::time::Duration::from_secs(3));
+        let adopted_pause = std::cell::Cell::new(std::time::Duration::from_secs(3));
         let seen_while_writing = std::cell::Cell::new(None);
 
         let result = save_segment_pause(
             &current,
             8,
-            |pause| runtime.set(pause),
+            |pause| adopted_pause.set(pause),
             |settings| {
-                seen_while_writing.set(Some(runtime.get()));
+                seen_while_writing.set(Some(adopted_pause.get()));
                 save_settings(&path, settings).map_err(|error| error.to_string())
             },
         );
@@ -715,7 +720,7 @@ mod tests {
             seen_while_writing.get(),
             Some(std::time::Duration::from_secs(3))
         );
-        assert_eq!(runtime.get(), std::time::Duration::from_secs(3));
+        assert_eq!(adopted_pause.get(), std::time::Duration::from_secs(3));
         assert_eq!(std::fs::read(&path).unwrap(), saved_file);
         assert_eq!(load_settings(&path).segment_pause_secs, 3);
 
