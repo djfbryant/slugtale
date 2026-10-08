@@ -1,3 +1,10 @@
+#[cfg(all(
+    target_os = "macos",
+    target_arch = "aarch64",
+    feature = "local-phonon-mlx"
+))]
+pub(crate) mod phonon_mlx;
+
 use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
     InsertionRescueError, InsertionRescueSystem, MicrophonePermissionSetup, MicrophoneTransport,

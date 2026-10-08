@@ -27,7 +27,7 @@ const MAX_SAMPLES: usize = 16_000 * 60 * 30;
 const MAX_RESPONSE: u64 = 1_048_576;
 const PYTHON_URL: &str = "https://github.com/astral-sh/python-build-standalone/releases/download/20261001/cpython-3.12.15%2B20261001-aarch64-apple-darwin-install_only.tar.gz";
 
-pub(super) fn supported_os() -> bool {
+pub(crate) fn supported_os() -> bool {
     Command::new("/usr/bin/sw_vers")
         .arg("-productVersion")
         .output()
@@ -57,7 +57,7 @@ fn install_stamp() -> String {
     format!("{:x}", hash.finalize())
 }
 
-pub struct MlxProvider {
+pub(crate) struct MlxProvider {
     root: PathBuf,
     /// Serialises install and removal. It is held across downloads and setup,
     /// so `shutdown` and `unload` never take it.
@@ -74,7 +74,7 @@ pub struct MlxProvider {
 }
 
 impl MlxProvider {
-    pub(super) fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: PathBuf) -> Self {
         let availability = probe(&root);
         Self {
             root,

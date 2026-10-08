@@ -11,7 +11,7 @@ use std::path::Path;
     target_arch = "aarch64",
     feature = "local-phonon-mlx"
 ))]
-mod mlx;
+use crate::macos::phonon_mlx as mlx;
 
 pub enum PhononProvider {
     Onnx(ParakeetProvider),
