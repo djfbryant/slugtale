@@ -1,5 +1,6 @@
 use crate::DictationEvent;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapturedAudio {
@@ -245,12 +246,17 @@ pub trait DictationRecorder {
     /// segment is decoding belongs to the next one.
     fn cut_segment(&mut self, cut: u64) -> Result<CapturedAudio, AudioCaptureError>;
 
-    /// The ring position of the most recent voiced sample — the watermark a
-    /// queued Pause Flush should carry as its cut. `0` when nothing voiced has
-    /// been captured since the ring was cleared.
-    fn voice_watermark(&self) -> u64 {
-        0
-    }
+    /// The cell holding the ring position of the most recent voiced sample —
+    /// the watermark a queued Pause Flush should carry as its cut. `0` when
+    /// nothing voiced has been captured since the ring was cleared.
+    ///
+    /// A shared cell rather than a locked read, because the level-emitter thread
+    /// asks for it while Stop or Cancel may hold this recorder's lock and be
+    /// joining that very thread: a locked read there leaves two threads waiting
+    /// for each other, and the app freezes at a pause boundary (slugtale-xqzs).
+    /// The cell belongs to the recorder for its whole life, so a caller may hold
+    /// it and read the watermark without touching the recorder at all.
+    fn voice_watermark_cell(&self) -> Arc<std::sync::atomic::AtomicU64>;
 
     /// Install the real-time-safe level publisher (see [`AudioLevelCallback`]).
     /// Only backends with a live audio callback distribute levels; the default
@@ -349,13 +355,17 @@ struct RealtimeCaptureBuffer {
     overflowed: std::sync::atomic::AtomicBool,
     /// Ring position of the most recent sample that arrived while the voice
     /// level was above the Segment threshold. Written by the real-time audio
-    /// callback (one atomic store on voiced buffers only), read when a Pause
-    /// Flush names its cut (slugtale-g1o.4).
-    last_voice_position: std::sync::atomic::AtomicUsize,
+    /// callback (one atomic store on voiced buffers only) and shared with
+    /// whoever asked the recorder for its watermark cell, so a Pause Flush can
+    /// name its cut without taking the recorder's lock (slugtale-xqzs).
+    last_voice_position: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl RealtimeCaptureBuffer {
-    fn for_sample_rate(sample_rate_hz: u32) -> Result<Self, AudioCaptureError> {
+    fn for_sample_rate(
+        sample_rate_hz: u32,
+        voice_watermark: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<Self, AudioCaptureError> {
         let capacity = usize::try_from(sample_rate_hz)
             .ok()
             .and_then(|rate| rate.checked_mul(MAX_RECORDING_SECONDS))
@@ -363,10 +373,13 @@ impl RealtimeCaptureBuffer {
         if capacity == 0 {
             return Err(AudioCaptureError::new("input sample rate must be non-zero"));
         }
-        Ok(Self::with_capacity(capacity))
+        Ok(Self::with_capacity(capacity, voice_watermark))
     }
 
-    fn with_capacity(capacity: usize) -> Self {
+    fn with_capacity(
+        capacity: usize,
+        voice_watermark: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Self {
         assert!(capacity > 0, "capture buffer capacity must be non-zero");
         Self {
             slots: (0..capacity)
@@ -375,7 +388,7 @@ impl RealtimeCaptureBuffer {
             write_position: std::sync::atomic::AtomicUsize::new(0),
             read_position: std::sync::atomic::AtomicUsize::new(0),
             overflowed: std::sync::atomic::AtomicBool::new(false),
-            last_voice_position: std::sync::atomic::AtomicUsize::new(0),
+            last_voice_position: voice_watermark,
         }
     }
 
@@ -404,16 +417,9 @@ impl RealtimeCaptureBuffer {
         use std::sync::atomic::Ordering;
 
         self.last_voice_position.store(
-            self.write_position.load(Ordering::Relaxed),
+            self.write_position.load(Ordering::Relaxed) as u64,
             Ordering::Relaxed,
         );
-    }
-
-    /// The ring position of the most recent voiced sample, as a stable
-    /// monotonic watermark a queued Pause Flush can cut at.
-    pub fn voice_watermark(&self) -> u64 {
-        self.last_voice_position
-            .load(std::sync::atomic::Ordering::Acquire) as u64
     }
 
     /// Called after the input stream is paused, outside the audio callback.
@@ -488,7 +494,7 @@ impl RealtimeCaptureBuffer {
         // The watermark belongs to the previous dictation; park it at the same
         // position so no stale cut can point into the next one.
         self.last_voice_position
-            .store(write_position, Ordering::Release);
+            .store(write_position as u64, Ordering::Release);
         self.overflowed.store(false, Ordering::Relaxed);
     }
 }
@@ -606,12 +612,12 @@ enum PrepareState {
 
 /// Builds the input stream for one concrete sample type; one row of
 /// [`INPUT_STREAM_BUILDERS`].
-type StreamBuilder =
-    fn(
-        &cpal::Device,
-        &cpal::StreamConfig,
-        std::sync::Arc<std::sync::atomic::AtomicU32>,
-    ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError>;
+type StreamBuilder = fn(
+    &cpal::Device,
+    &cpal::StreamConfig,
+    std::sync::Arc<std::sync::atomic::AtomicU32>,
+    Arc<std::sync::atomic::AtomicU64>,
+) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError>;
 
 /// The input sample formats the capture callback can convert, each with its
 /// concrete stream builder. The supported-format policy is this table: a
@@ -686,6 +692,11 @@ pub struct CpalAudioRecorder {
     stream_identity: Option<InputStreamIdentity>,
     stream_active: bool,
     buffer: Option<std::sync::Arc<RealtimeCaptureBuffer>>,
+    /// The voiced-sample watermark every ring this recorder builds publishes
+    /// into. Created once, for the recorder's whole life, so a caller holding
+    /// the cell keeps reading the current ring's watermark across a stream
+    /// rebuild (slugtale-xqzs).
+    voice_watermark: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// How far idle-time preparation has got; see [`PrepareState`].
     prepare_state: PrepareState,
     level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
@@ -709,6 +720,7 @@ impl CpalAudioRecorder {
         device: &cpal::Device,
         config: &cpal::StreamConfig,
         level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        voice_watermark: std::sync::Arc<std::sync::atomic::AtomicU64>,
     ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError>
     where
         T: cpal::SizedSample,
@@ -723,8 +735,10 @@ impl CpalAudioRecorder {
                 "input channel count must be non-zero",
             ));
         }
-        let buffer =
-            std::sync::Arc::new(RealtimeCaptureBuffer::for_sample_rate(config.sample_rate)?);
+        let buffer = std::sync::Arc::new(RealtimeCaptureBuffer::for_sample_rate(
+            config.sample_rate,
+            voice_watermark,
+        )?);
         let callback_buffer = buffer.clone();
         let stream = device
             .build_input_stream(
@@ -775,11 +789,12 @@ impl CpalAudioRecorder {
         config: &cpal::StreamConfig,
         sample_format: cpal::SampleFormat,
         level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        voice_watermark: std::sync::Arc<std::sync::atomic::AtomicU64>,
     ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError> {
         let builder = stream_builder_for(sample_format).ok_or_else(|| {
             AudioCaptureError::new(format!("unsupported input sample format: {sample_format}"))
         })?;
-        builder(device, config, level_bits)
+        builder(device, config, level_bits, voice_watermark)
     }
 
     /// Build a stream for `identity` and hold it with its ring, replacing any
@@ -792,13 +807,19 @@ impl CpalAudioRecorder {
         config: &cpal::StreamConfig,
         identity: &InputStreamIdentity,
     ) -> Result<(), AudioCaptureError> {
+        use std::sync::atomic::Ordering;
+
         self.stream.take();
         self.buffer = None;
+        // A new ring starts a new dictation's watermark: a cut left over from the
+        // previous one would point into audio that is not there.
+        self.voice_watermark.store(0, Ordering::Release);
         let (stream, buffer) = Self::build_stream_for_format(
             device,
             config,
             identity.sample_format,
             self.level_bits.clone(),
+            std::sync::Arc::clone(&self.voice_watermark),
         )?;
         self.stream = Some(stream);
         self.buffer = Some(buffer);
@@ -993,11 +1014,8 @@ impl DictationRecorder for CpalAudioRecorder {
         captured_audio_from_interleaved_input(self.sample_rate_hz, self.channels, &samples)
     }
 
-    fn voice_watermark(&self) -> u64 {
-        self.buffer
-            .as_ref()
-            .map(|buffer| buffer.voice_watermark())
-            .unwrap_or(0)
+    fn voice_watermark_cell(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        std::sync::Arc::clone(&self.voice_watermark)
     }
 }
 
@@ -1067,12 +1085,6 @@ where
     /// but never blocks the next dictation.
     pub fn prepare(&mut self) -> Result<(), AudioCaptureError> {
         self.recorder.prepare()
-    }
-
-    /// The capture ring's voiced-sample watermark, read when a Pause Flush is
-    /// due: the microphone half of the watermark cut (ADR-0026).
-    pub fn voice_watermark(&self) -> u64 {
-        self.recorder.voice_watermark()
     }
 
     /// Install the level publisher the Dictation Bar and the Segment Pause
@@ -1209,6 +1221,21 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use std::rc::Rc;
+
+    /// A capture ring of `capacity` samples with the watermark cell it publishes
+    /// into, which is how the recorder builds one and how its caller reads it.
+    fn a_ring(capacity: usize) -> (RealtimeCaptureBuffer, Arc<std::sync::atomic::AtomicU64>) {
+        let watermark = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        (
+            RealtimeCaptureBuffer::with_capacity(capacity, Arc::clone(&watermark)),
+            watermark,
+        )
+    }
+
+    /// The watermark a ring currently reports, read through its cell.
+    fn watermark_of(watermark: &Arc<std::sync::atomic::AtomicU64>) -> u64 {
+        watermark.load(std::sync::atomic::Ordering::Acquire)
+    }
 
     #[test]
     fn input_audio_is_normalized_to_mono_16khz_samples() {
@@ -1638,15 +1665,23 @@ mod tests {
     }
 
     #[test]
-    fn the_voice_watermark_a_pause_flush_cuts_at_is_read_off_the_recorder() {
-        let log = Rc::new(RecorderLog::default());
-        log.watermark.set(12_000);
-        let session = AudioCaptureSession::new(FakeDictationRecorder::new(
+    fn a_recorder_publishes_one_watermark_cell_for_its_whole_life() {
+        // The dictation host holds this cell for the app's whole life, so it must
+        // be the recorder's own rather than a per-read snapshot, and it starts
+        // with nothing voiced captured (slugtale-xqzs).
+        let recorder = FakeDictationRecorder::new(
             CapturedAudio::mono_16khz(vec![0.1]),
-            log,
-        ));
+            Rc::new(RecorderLog::default()),
+        );
 
-        assert_eq!(session.voice_watermark(), 12_000);
+        let first = recorder.voice_watermark_cell();
+        let second = recorder.voice_watermark_cell();
+
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "the cell must survive for the recorder's whole life, or the host would read a dead one"
+        );
+        assert_eq!(first.load(std::sync::atomic::Ordering::Acquire), 0);
     }
 
     #[test]
@@ -1728,7 +1763,7 @@ mod tests {
         // Preparation allocates the ring zero-initialised and never lets it
         // fill: nothing captured before Dictation starts may leak into the
         // first dictation.
-        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        let (ring, _) = a_ring(1024);
 
         assert_eq!(ring.drain().unwrap().len(), 0);
     }
@@ -1792,15 +1827,36 @@ mod tests {
     }
 
     #[test]
+    fn the_ring_publishes_its_watermark_into_the_cell_the_caller_already_holds() {
+        // The whole point of the cell (slugtale-xqzs): whoever asked the recorder
+        // for it reads the watermark of the live ring without going near the
+        // recorder, so the level-emitter thread can name a Pause Flush's cut
+        // while Stop or Cancel holds the recorder's lock and joins that thread.
+        let (ring, cell) = a_ring(1024);
+
+        for sample in 0..64 {
+            ring.push_sample(sample as f32);
+        }
+        ring.mark_voice();
+
+        assert_eq!(watermark_of(&cell), 64);
+
+        // A discarded dictation parks the watermark where the ring is, so no cut
+        // from it can point into the next dictation's audio.
+        ring.clear();
+        assert_eq!(watermark_of(&cell), 64);
+    }
+
+    #[test]
     fn a_pause_cut_ends_at_the_watermark_even_when_the_worker_is_slow() {
         // Queue delay must not change the segment: audio arriving after the
         // cut stays in the ring for the next segment.
-        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        let (ring, ring_watermark) = a_ring(1024);
         for sample in 0..100 {
             ring.push_sample(sample as f32);
         }
         ring.mark_voice();
-        let watermark = ring.voice_watermark();
+        let watermark = watermark_of(&ring_watermark);
         for sample in 100..300 {
             // Speech continues while the flush sits in the queue.
             ring.push_sample(sample as f32);
@@ -1820,7 +1876,7 @@ mod tests {
 
     #[test]
     fn the_quiet_tail_guard_keeps_a_documented_sliver_after_the_cut() {
-        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        let (ring, _) = a_ring(1024);
         for sample in 0..100 {
             ring.push_sample(sample as f32);
         }
@@ -1836,7 +1892,7 @@ mod tests {
 
     #[test]
     fn a_stale_cut_yields_nothing_and_never_rewinds() {
-        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        let (ring, _) = a_ring(1024);
         for sample in 0..50 {
             ring.push_sample(sample as f32);
         }
@@ -1854,7 +1910,7 @@ mod tests {
 
     #[test]
     fn a_cut_ahead_of_production_drains_what_exists_rather_than_blocking() {
-        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        let (ring, _) = a_ring(1024);
         ring.push_sample(1.0);
 
         assert_eq!(ring.drain_through(1_000, 0).unwrap(), vec![1.0]);
@@ -1862,17 +1918,17 @@ mod tests {
 
     #[test]
     fn multiple_pauses_cut_in_order_and_the_rest_reaches_stop() {
-        let ring = RealtimeCaptureBuffer::with_capacity(1024);
+        let (ring, ring_watermark) = a_ring(1024);
         for sample in 0..40 {
             ring.push_sample(sample as f32);
         }
         ring.mark_voice();
-        let first_cut = ring.voice_watermark();
+        let first_cut = watermark_of(&ring_watermark);
         for sample in 40..80 {
             ring.push_sample(sample as f32);
         }
         ring.mark_voice();
-        let second_cut = ring.voice_watermark();
+        let second_cut = watermark_of(&ring_watermark);
         for sample in 80..100 {
             ring.push_sample(sample as f32);
         }
@@ -1894,14 +1950,14 @@ mod tests {
         const SPEECH: usize = RATE / 2;
         const TAIL: usize = RATE * 9 / 2;
 
-        let ring = RealtimeCaptureBuffer::with_capacity(SPEECH + TAIL);
+        let (ring, ring_watermark) = a_ring(SPEECH + TAIL);
         for index in 0..SPEECH {
             ring.push_sample(0.4);
             if index % 160 == 0 {
                 ring.mark_voice();
             }
         }
-        let watermark = ring.voice_watermark();
+        let watermark = watermark_of(&ring_watermark);
         for _ in 0..TAIL {
             ring.push_sample(0.0);
         }
@@ -1940,7 +1996,9 @@ mod tests {
     struct RecorderLog {
         events: RefCell<Vec<&'static str>>,
         cuts: RefCell<Vec<u64>>,
-        watermark: Cell<u64>,
+        /// The recorder's watermark cell, which is how a real recorder publishes
+        /// the ring's watermark to whoever holds the cell.
+        watermark: std::sync::Arc<std::sync::atomic::AtomicU64>,
     }
 
     struct FakeDictationRecorder {
@@ -2022,8 +2080,8 @@ mod tests {
                 .unwrap_or_else(|| CapturedAudio::mono_16khz(Vec::new())))
         }
 
-        fn voice_watermark(&self) -> u64 {
-            self.log.watermark.get()
+        fn voice_watermark_cell(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+            std::sync::Arc::clone(&self.log.watermark)
         }
 
         fn set_level_callback(&mut self, callback: Option<AudioLevelCallback>) {

@@ -227,25 +227,28 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Bring the OS registration in line with `command`, and only then let the
+/// arbiter remember the new state.
+///
+/// The order matters: `apply` records what the OS is holding only after the
+/// registration itself succeeds, so a refusal leaves the arbiter armed-free and
+/// the next Arm tries again instead of looking already done (slugtale-7kxk).
 fn sync_escape_registration(
     app: &tauri::AppHandle,
     arbiter: &mut slugtale_lib::EscapeArbiter,
     command: slugtale_lib::EscapeCommand,
 ) -> Result<(), String> {
-    let Some(should_register) = arbiter.resolve(command) else {
-        return Ok(());
-    };
-
-    if should_register {
-        app.global_shortcut()
-            .register(DICTATION_ESCAPE_KEY)
-            .map_err(|error| error.to_string())?;
-    } else {
-        app.global_shortcut()
-            .unregister(DICTATION_ESCAPE_KEY)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
+    arbiter.apply(command, |should_register| {
+        if should_register {
+            app.global_shortcut()
+                .register(DICTATION_ESCAPE_KEY)
+                .map_err(|error| error.to_string())
+        } else {
+            app.global_shortcut()
+                .unregister(DICTATION_ESCAPE_KEY)
+                .map_err(|error| error.to_string())
+        }
+    })
 }
 
 fn set_hotkey_registration_state(
