@@ -5,8 +5,14 @@ Slugtale splits a dictation into Dictation Segments at each Segment Pause (about
 The workflow runs on one dedicated worker fed by an ordered channel, which gives three guarantees:
 
 1. **Spoken order.** Segments insert in the order they were spoken however long each decode takes. The worker processes jobs strictly in channel order.
-2. **Watermark cuts.** Audio handed to a Pause Flush is cut at the sample watermark recorded when the pause was detected, so a flush never loses or repeats words that straddle the boundary.
+2. **Watermark cuts.** Audio handed to a Pause Flush is cut at the sample watermark recorded when the pause was detected, so a flush never loses or repeats words that straddle the boundary. Reading that watermark must not need the capture lock, because the level thread reads it at the instant a pause elapses — which is exactly when Stop or Cancel may hold that lock and be joining the level thread. The recorder therefore publishes its watermark into a lock-free cell, so a dictation can never freeze waiting for itself.
 3. **Rescue suspends flushes.** After Insertion Rescue fires, later Segment Pauses queue but do not insert until the user resolves the failure, so rescue cannot be buried under new text.
+
+## One dictation is one session, and cancellation is checked where it lands
+
+Every job carries the session number its dictation began with, and that session owns what the job's words depend on: the text target captured at Start and the Settings the segment was queued under. Re-reading either per segment is what let a decode that outlived the user's switch land in a different app, so both are pinned at Start instead. The accepted cost is that a Settings change made part-way through a long dictation takes effect from the next dictation, not the next segment.
+
+Cancel (ADR-0014) and a newer Start both retire a session, and that retirement is checked **at each boundary where the work would reach the user**, not only before the decode started: immediately before the keystrokes, and again when the dictation's final job settles. A decode long enough for the user to cancel it or start another must not afterwards insert words, rescue them to the clipboard, count toward Usage, or hide the Dictation Bar — that bar belongs to the dictation on screen, and a cancelled dictation cleared its own the moment the user asked. The same rule keeps a rescue raised by a session the user has left from suspending the flushes of the dictation they are in now, because that suspension is the rescuing dictation's state.
 
 A dictation with no pause is one segment inserted when the user stops — exactly the ADR-0015 behaviour. Usage counts a Counted Segment only when it was inserted or rescued.
 
