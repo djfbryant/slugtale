@@ -30,3 +30,39 @@ test("Linux CI installs native Tauri build dependencies before npm test", () => 
     assert.match(workflow, new RegExp(`\\b${packageName}\\b`));
   }
 });
+
+test("every CI job compiles the examples, so a broken example cannot go unnoticed", () => {
+  // slugtale-p63q: `npm test` builds the lib and bins but never an example, so
+  // asr_eval had stopped compiling (it called a method that became private and
+  // missed a constructor argument) while every job stayed green. asr_eval is
+  // gated on local-whisper-runtime in Cargo.toml, so the check has to enable
+  // that feature or it silently skips the very example it was added for.
+  const exampleCount = (workflow.match(/npm run check:examples/g) || []).length;
+  assert.equal(
+    exampleCount,
+    3,
+    "all three jobs (Linux, Windows, macOS) must run an example compile check",
+  );
+
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+
+  for (const script of ["check:examples", "check:examples:apple"]) {
+    assert.match(packageJson.scripts[script], /run-cargo\.js check --examples/);
+    assert.match(
+      packageJson.scripts[script],
+      /local-whisper-runtime/,
+      `${script} must enable local-whisper-runtime or it skips asr_eval`,
+    );
+  }
+
+  // The Apple acceleration features cannot build off macOS, so only the macOS
+  // job may ask for them.
+  assert.match(workflow, /npm run check:examples:apple/);
+  assert.equal(
+    (workflow.match(/local-whisper-runtime-metal/g) || []).length,
+    0,
+    "the wider feature set belongs in package.json, not inline in the workflow",
+  );
+});
