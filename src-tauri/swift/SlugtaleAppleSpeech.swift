@@ -76,19 +76,6 @@ private let ALTERNATIVE_SEPARATOR = "\u{1E}"
 
 // MARK: - C ABI
 
-/// Whether Apple SpeechTranscriber could ever transcribe on this machine, as a
-/// cheap yes/no for callers that do not need a reason. Returns 1 when the OS is
-/// new enough and the hardware supports the on-device transcriber, 0 otherwise.
-/// It says nothing about locales or installed assets — use
-/// `slugtale_apple_speech_probe` for that.
-@_cdecl("slugtale_apple_speech_available")
-public func slugtale_apple_speech_available() -> Int32 {
-    if #available(macOS 26.0, *) {
-        return SpeechTranscriber.isAvailable ? 1 : 0
-    }
-    return 0
-}
-
 /// Decide whether this machine can transcribe `localeIdentifier` right now,
 /// without recording or decoding anything.
 ///

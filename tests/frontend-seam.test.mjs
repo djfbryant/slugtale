@@ -77,7 +77,11 @@ function invokedCommandNames(source) {
 
 function declaredCommandNames(source) {
   const names = new Set();
-  for (const match of source.matchAll(/#\[tauri::command\]\s*(?:async\s+)?fn\s+([a-z_]+)/g)) {
+  // The adapter may be `pub(crate) fn` (the binary's `commands` modules), so the
+  // visibility marker is allowed between the attribute and `fn`.
+  for (const match of source.matchAll(
+    /#\[tauri::command\]\s*(?:pub(?:\(crate\))?\s+)?(?:async\s+)?fn\s+([a-z_]+)/g,
+  )) {
     names.add(match[1]);
   }
   return names;
