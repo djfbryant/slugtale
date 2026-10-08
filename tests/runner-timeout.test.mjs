@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -46,6 +46,26 @@ test("a POSIX child is spawned detached, so the timeout owns a process group", (
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.detached, true);
   assert.equal(calls[0].options.shell, false);
+});
+
+test("no platform ever launches through a shell", () => {
+  // `shell: true` would be the tempting way to run a `.cmd` or `.bat` fixture,
+  // and it is exactly what must not happen here: a shell changes how arguments
+  // are parsed, so a fixture path could no longer be trusted to reach the child
+  // as one argument, and the `shell: false` launch that production uses (cargo
+  // and `node --test`) would no longer be what the tests exercise.
+  for (const platform of ["darwin", "linux", "win32"]) {
+    let seen;
+    spawnInOwnGroup("cargo", ["test"], {}, {
+      spawn(command, args, options) {
+        seen = options;
+        return new EventEmitter();
+      },
+      platform,
+    });
+
+    assert.equal(seen.shell, false, `${platform} must not launch through a shell`);
+  }
 });
 
 test("a Windows child is not detached, because the tree stop is taskkill", () => {
@@ -400,22 +420,20 @@ test("the cargo runner stops a hung cargo and the rustc it spawned", async (t) =
     ].join("\n"),
   );
 
-  const isWindows = process.platform === "win32";
-  const fakeCargo = join(sandbox.root, isWindows ? "hanging-cargo.cmd" : "hanging-cargo");
-  writeFileSync(
-    fakeCargo,
-    isWindows
-      ? `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`
-      : `#!/usr/bin/env node\nrequire(${JSON.stringify(script)});\n`,
-  );
-  chmodSync(fakeCargo, 0o755);
-
+  // `CARGO` is the real Node executable and the script is its first argument,
+  // rather than a wrapper that Node has to interpret. A `.cmd` fixture cannot be
+  // used here: scripts/process-tree.js launches with `shell: false`, which on
+  // Windows cannot execute a batch file at all, so the fixture would fail to
+  // spawn and this test would pass or fail for a reason that has nothing to do
+  // with stopping a hung process tree. Pointing CARGO straight at an executable
+  // keeps the production launch shape (`shell: false`, no wrapper) and lets the
+  // same fixture work on every platform.
   process.env.HANG_MARKER = marker;
   const started = Date.now();
   try {
     const exitCode = await runCargo({
-      args: ["test", "--lib"],
-      environment: { CARGO: fakeCargo, SLUGTALE_CARGO_TIMEOUT: "1" },
+      args: [script, "test", "--lib"],
+      environment: { CARGO: process.execPath, SLUGTALE_CARGO_TIMEOUT: "1" },
       log: quiet,
     });
     const elapsedMs = Date.now() - started;
