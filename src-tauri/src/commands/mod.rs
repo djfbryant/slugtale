@@ -17,7 +17,7 @@ pub(crate) mod usage;
 
 use tauri::Manager;
 
-use slugtale_lib::AppFiles;
+use slugtale_lib::{AppFiles, TypingChallengeOpen};
 
 /// The app's one file store. Every command, the Dictation Surface, and the
 /// readiness probes reach the Settings File, the Usage File, the Local
@@ -60,13 +60,26 @@ pub(crate) fn record_diagnostic_event(app: &tauri::AppHandle, event: slugtale_li
 pub(crate) fn warm_effective_primary_engine(app: &tauri::AppHandle) {
     let settings = load_current_settings(app);
     let catalogue = app.state::<slugtale_lib::TranscriptionEngineCatalogue>();
-    let Some(warm_up) = catalogue.prepare_primary_warm_up(&settings) else {
+    // The release-then-warm ordering is the catalogue's policy, not this
+    // adapter's: switching engines must never leave two large models resident
+    // on a memory-constrained Mac. All the adapter still owns is running the
+    // warm-up off the dictation path.
+    let Some(warm_up) = catalogue.begin_primary_warm_up(&settings) else {
         return;
     };
-    // Release before loading so switching engines never leaves two large
-    // models resident on a memory-constrained Mac.
-    catalogue.release_models_except(warm_up.engine());
     tauri::async_runtime::spawn_blocking(move || {
         let _ = warm_up.run();
     });
+}
+
+/// Whether dictation input is inert right now: while a Typing Challenge window
+/// is open the dictation hotkey does nothing at all (ADR-0025).
+///
+/// The user is typing a passage, and their hotkey is very likely inside it, so
+/// doing nothing — rather than starting a dictation, or refusing with a
+/// notification — is what keeps those thirty seconds a measurement of typing.
+/// One rule, in one place, consulted by both the begin sequence and the
+/// hotkey worker's early check, so neither can grow its own reading of it.
+pub(crate) fn dictation_input_is_inert(app: &tauri::AppHandle) -> bool {
+    app.state::<TypingChallengeOpen>().get()
 }

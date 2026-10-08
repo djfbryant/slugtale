@@ -91,29 +91,6 @@ impl DictationInput {
     }
 }
 
-/// Dictation Readiness (ADR-0013): dictation is only available once microphone
-/// permission, text insertion permission, a configured hotkey, the assets for
-/// the engine that will run, and a Transcription Engine that can actually run
-/// are all ready. This is the whole rule, in the order the terms are checked.
-///
-/// The engine check is separate from the model check on purpose. A downloaded
-/// model says only that the weights are on disk; whether anything in *this
-/// binary* can decode them is a fact about the build, and a build compiled
-/// without `local-whisper-runtime` has the file and no runtime (slugtale-bre).
-fn dictation_available(
-    settings: &Settings,
-    permissions: &Permissions,
-    local_model_present: bool,
-    engines: &[(TranscriptionEngine, EngineAvailability)],
-    input: DictationInput,
-) -> bool {
-    (!input.hotkey_required() || settings.hotkey.is_some())
-        && permissions.microphone
-        && permissions.insertion
-        && (local_model_present || !whisper_model_is_required(settings, engines))
-        && engine_that_can_run(settings.primary_engine, engines).is_some()
-}
-
 /// Which engine a dictation started right now would actually be transcribed by,
 /// falling back to the user's choice when nothing can run so the report still
 /// talks about the engine they picked.
@@ -274,14 +251,61 @@ impl ReadinessItem {
     }
 }
 
+/// Dictation Readiness's answer for one activation, and the terms it came from.
+///
+/// `dictation_available` is derived from the same table of terms as `items` —
+/// it is exactly "every required item is ready" — so the answer and the list can
+/// never contradict each other, and a consumer can never disagree with the
+/// start decision about which item is missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingsReadinessReport {
     pub dictation_available: bool,
     pub items: Vec<ReadinessItem>,
 }
 
-/// The readiness report for one activation input. Voice Activation can make a
-/// hotkey optional; every other term is the same.
+/// One readiness term: what it asks, whether it gates dictation at all, and
+/// the answer for this activation.
+///
+/// The whole report is one table of these, so `dictation_available` is derived
+/// from the same terms the Settings window draws rather than restated next to
+/// them. A term that does not gate (`required: false`) is listed for the user's
+/// benefit and cannot fail the activation.
+struct ReadinessTerm {
+    id: ReadinessItemId,
+    required: bool,
+    ready: bool,
+    detail: Option<String>,
+}
+
+impl ReadinessTerm {
+    fn new(id: ReadinessItemId, required: bool, ready: bool) -> Self {
+        Self {
+            id,
+            required,
+            ready,
+            detail: None,
+        }
+    }
+
+    fn with_detail(mut self, detail: Option<String>) -> Self {
+        self.detail = detail;
+        self
+    }
+}
+
+/// Dictation Readiness (ADR-0013): dictation is only available once microphone
+/// permission, text insertion permission, a configured hotkey, the assets for
+/// the engine that will run, and a Transcription Engine that can actually run
+/// are all ready. This is the whole rule, in the order the terms are checked.
+///
+/// The engine check is separate from the model check on purpose. A downloaded
+/// model says only that the weights are on disk; whether anything in *this
+/// binary* can decode them is a fact about the build, and a build compiled
+/// without `local-whisper-runtime` has the file and no runtime (slugtale-bre).
+///
+/// Voice Activation can make the hotkey optional; every other term is the same.
+/// The answer and the item list are two views of one table of terms, so they
+/// cannot disagree about which term failed.
 fn readiness_report(
     settings: &Settings,
     permissions: &Permissions,
@@ -292,47 +316,51 @@ fn readiness_report(
     let engine_blocker = engine_blocked_reason(settings.primary_engine, engines);
     let whisper_model_required = whisper_model_is_required(settings, engines);
 
-    SettingsReadinessReport {
-        dictation_available: dictation_available(
-            settings,
-            permissions,
-            local_model_present,
-            engines,
-            input,
+    let terms = vec![
+        ReadinessTerm::new(ReadinessItemId::Microphone, true, permissions.microphone),
+        ReadinessTerm::new(ReadinessItemId::TextInsertion, true, permissions.insertion),
+        ReadinessTerm::new(
+            ReadinessItemId::Hotkey,
+            input.hotkey_required(),
+            !input.hotkey_required() || settings.hotkey.is_some(),
         ),
-        items: vec![
-            readiness_item(ReadinessItemId::Microphone, true, permissions.microphone),
-            readiness_item(ReadinessItemId::TextInsertion, true, permissions.insertion),
-            readiness_item(
-                ReadinessItemId::Hotkey,
-                input.hotkey_required(),
-                !input.hotkey_required() || settings.hotkey.is_some(),
-            ),
-            readiness_item(
-                ReadinessItemId::LocalModel,
-                whisper_model_required,
-                local_model_present,
-            )
-            .with_detail(if whisper_model_required {
-                None
-            } else {
-                Some(format!(
-                    "Not needed: {} transcribes without the Whisper model.",
-                    engine_in_play(settings, engines).display_name()
-                ))
-            }),
-            readiness_item(
-                ReadinessItemId::TranscriptionEngine,
-                true,
-                engine_blocker.is_none(),
-            )
-            .with_detail(engine_blocker),
-            // Launch at Login is informational and optional (slugtale-9bx, ADR-0017):
-            // it is listed so Settings can point at it, but it is never required
-            // and never unready, because a user who chooses not to start Slugtale
-            // at sign-in still dictates normally.
-            readiness_item(ReadinessItemId::LaunchAtLogin, false, true),
-        ],
+        ReadinessTerm::new(
+            ReadinessItemId::LocalModel,
+            whisper_model_required,
+            local_model_present,
+        )
+        .with_detail(if whisper_model_required {
+            None
+        } else {
+            Some(format!(
+                "Not needed: {} transcribes without the Whisper model.",
+                engine_in_play(settings, engines).display_name()
+            ))
+        }),
+        ReadinessTerm::new(
+            ReadinessItemId::TranscriptionEngine,
+            true,
+            engine_blocker.is_none(),
+        )
+        .with_detail(engine_blocker),
+        // Launch at Login is informational and optional (slugtale-9bx, ADR-0017):
+        // it is listed so Settings can point at it, but it is never required
+        // and never unready, because a user who chooses not to start Slugtale
+        // at sign-in still dictates normally.
+        ReadinessTerm::new(ReadinessItemId::LaunchAtLogin, false, true),
+    ];
+
+    SettingsReadinessReport {
+        dictation_available: terms
+            .iter()
+            .filter(|term| term.required)
+            .all(|term| term.ready),
+        items: terms
+            .iter()
+            .map(|term| {
+                readiness_item(term.id, term.required, term.ready).with_detail(term.detail.clone())
+            })
+            .collect(),
     }
 }
 
@@ -533,6 +561,75 @@ mod tests {
     fn the_two_os_permissions_are_shown_on_the_privacy_pane() {
         assert_eq!(ReadinessItemId::Microphone.pane(), ReadinessPane::Privacy);
         assert_eq!(ReadinessItemId::TextInsertion.pane(), ReadinessPane::Privacy);
+    }
+
+    #[test]
+    fn the_answer_is_exactly_every_required_item_being_ready() {
+        // The two are one computation, so they can only be written as two
+        // expressions. Pinning the invariant across every term that can fail is
+        // what keeps a later change from making an unavailable dictation look
+        // ready to the Settings window — or the reverse.
+        let unready_by_term = [
+            (
+                ReadinessItemId::Microphone,
+                FakeProbes {
+                    microphone: false,
+                    ..FakeProbes::all_ready()
+                },
+            ),
+            (
+                ReadinessItemId::TextInsertion,
+                FakeProbes {
+                    insertion: false,
+                    ..FakeProbes::all_ready()
+                },
+            ),
+            (
+                ReadinessItemId::Hotkey,
+                FakeProbes {
+                    settings: Settings::default(),
+                    ..FakeProbes::all_ready()
+                },
+            ),
+            (
+                ReadinessItemId::LocalModel,
+                FakeProbes {
+                    model: Some(absent_model()),
+                    ..FakeProbes::all_ready()
+                },
+            ),
+            (
+                ReadinessItemId::TranscriptionEngine,
+                FakeProbes {
+                    engines: Vec::new(),
+                    ..FakeProbes::all_ready()
+                },
+            ),
+        ];
+
+        for (term, probes) in unready_by_term {
+            let report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
+
+            assert!(
+                !report.dictation_available,
+                "{term:?} not ready must make dictation unavailable"
+            );
+            assert!(
+                missing_required_items(&report)
+                    .iter()
+                    .any(|item| item.id == term),
+                "{term:?} must be named among the required items that are missing"
+            );
+            assert_eq!(
+                report.dictation_available,
+                report
+                    .items
+                    .iter()
+                    .filter(|item| item.required)
+                    .all(|item| item.ready),
+                "the answer and the item list must come from one computation"
+            );
+        }
     }
 
     #[test]
