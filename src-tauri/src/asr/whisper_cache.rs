@@ -13,6 +13,8 @@
 //!   globals are torn down in a determinate order (slugtale-p1u).
 
 use super::LocalWhisperRuntime;
+#[cfg(all(test, feature = "local-whisper-runtime"))]
+use crate::AsrError;
 use crate::LocalModelRef;
 use std::sync::{Arc, Mutex};
 

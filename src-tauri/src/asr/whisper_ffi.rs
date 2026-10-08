@@ -17,6 +17,7 @@
 use super::machine_probe::WhisperDecodeSettings;
 #[cfg(feature = "local-whisper-runtime")]
 use crate::AsrError;
+#[cfg(any(test, feature = "local-whisper-runtime"))]
 use crate::{FinalTranscription, TranscriptSegment};
 
 /// The loaded whisper.cpp model context. Owned by

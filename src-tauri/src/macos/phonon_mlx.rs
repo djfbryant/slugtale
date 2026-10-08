@@ -2,7 +2,6 @@ use crate::{
     AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssetLifecycle, EngineAssets,
     EngineAvailability, EngineMetadata, EngineTranscriber, EngineTranscription, EngineUnavailable,
     FinalTranscription, HttpModelDownloader, ModelDownloader, TranscriptionEngine,
-    TranscriptionProvider,
 };
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Read, Write};
