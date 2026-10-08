@@ -48,7 +48,7 @@
         downloading = false;
         hideProgress();
         setButton(button, "download", "Download");
-        renderModel(status, "base.en is ready.");
+        renderModel(status, `${status.id} is ready.`);
         await loadReadiness();
       } catch (error) {
         downloading = false;

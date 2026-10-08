@@ -157,11 +157,11 @@
         wrap.className = "progress engine-progress";
         const bar = document.createElement("div");
         bar.className = "progress-bar";
-        if (installProgress.total) {
-          const pct = Math.min(100, Math.round((installProgress.downloaded / installProgress.total) * 100));
-          bar.style.width = `${pct}%`;
-        } else {
+        const pct = progressPercent(installProgress.downloaded, installProgress.total);
+        if (pct === null) {
           wrap.classList.add("indeterminate");
+        } else {
+          bar.style.width = `${pct}%`;
         }
         wrap.append(bar);
         row.append(wrap);
@@ -175,19 +175,11 @@
       const list = document.getElementById("engine-list");
       const messageEl = document.getElementById("engine-message");
 
-      // So the user reads in one glance what they would otherwise hunt for:
-      // the selected engine first, then the engines they can switch to with
-      // another click of the radio (alphabetically by the name they show),
-      // then any engine that cannot run right now. Sorting rather than
-      // reordering at the source keeps a new engine usable without touching
-      // `TranscriptionEngine::ALL`, whose order the Settings File relies on.
-      const sorted = [...engines].sort((a, b) => {
-        if (a.is_primary !== b.is_primary) return a.is_primary ? -1 : 1;
-        if (Boolean(a.unavailable_reason) !== Boolean(b.unavailable_reason)) {
-          return a.unavailable_reason ? 1 : -1;
-        }
-        return a.display_name.localeCompare(b.display_name);
-      });
+      // So the user reads in one glance what they would otherwise hunt for — the
+      // selected engine first, then the engines they can switch to with another
+      // click of the radio, then any engine that cannot run right now. The rule
+      // lives in engine-model.js, out of this DOM builder.
+      const sorted = orderEngines(engines);
 
       list.replaceChildren(...sorted.map(buildEngineItem));
 
@@ -219,8 +211,8 @@
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };
       const previousEngines = latestEngines;
-      const nextPrimary = primaryEngine || currentSettings.primary_engine || "whisper";
-      const nextSecondOpinion = secondOpinion || currentSettings.second_opinion || "off";
+      const nextPrimary = primaryEngine || currentSettings.primary_engine;
+      const nextSecondOpinion = secondOpinion || currentSettings.second_opinion;
       const nextSettings = {
         ...currentSettings,
         primary_engine: nextPrimary,
@@ -232,13 +224,13 @@
       }));
 
       if (!invoke) {
-        renderSettings(nextSettings);
+        renderSettings(setSettings(nextSettings));
         renderEngines(optimisticEngines);
         return;
       }
 
       savingEngineSelection = true;
-      renderSettings(nextSettings);
+      renderSettings(setSettings(nextSettings));
       renderEngines(optimisticEngines, "Saving…");
 
       try {
@@ -247,7 +239,7 @@
           secondOpinion: nextSecondOpinion
         });
         savingEngineSelection = false;
-        renderSettings(saved);
+        renderSettings(setSettings(saved));
         await loadEngines(
           nextSecondOpinion === "automatic"
             ? "Saved. A second engine now runs only when the first result looks uncertain."
@@ -255,7 +247,7 @@
         );
       } catch (error) {
         savingEngineSelection = false;
-        renderSettings(previousSettings);
+        renderSettings(setSettings(previousSettings));
         renderEngines(previousEngines, String(error), true);
       }
     }

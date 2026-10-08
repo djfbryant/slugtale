@@ -1,16 +1,16 @@
     async function loadSettings() {
       const invoke = tauriInvoke();
       if (!invoke) {
-        renderSettings(fallbackSettings);
+        renderSettings(setSettings());
         return;
       }
 
       try {
         const settings = await invoke("get_settings");
-        renderSettings(settings);
+        renderSettings(setSettings(settings));
       } catch (error) {
         console.error("Could not load settings", error);
-        renderSettings(fallbackSettings, String(error), true);
+        renderSettings(setSettings(), String(error), true);
       }
     }
 
@@ -32,18 +32,18 @@
       const nextSettings = {
         ...currentSettings,
         hotkey: hotkey || null,
-        activation_mode: activationMode || currentSettings.activation_mode || "toggle"
+        activation_mode: activationMode || currentSettings.activation_mode
       };
 
       capturingHotkey = false;
 
       if (!invoke) {
-        renderSettings(nextSettings);
+        renderSettings(setSettings(nextSettings));
         return;
       }
 
       savingSettings = true;
-      renderSettings(nextSettings, "Saving…");
+      renderSettings(setSettings(nextSettings), "Saving…");
 
       try {
         const saved = await invoke("save_hotkey_settings", {
@@ -51,11 +51,11 @@
           activationMode: nextSettings.activation_mode
         });
         savingSettings = false;
-        renderSettings(saved, "Saved.");
+        renderSettings(setSettings(saved), "Saved.");
         await loadReadiness();
       } catch (error) {
         savingSettings = false;
-        renderSettings(previousSettings, String(error), true);
+        renderSettings(setSettings(previousSettings), String(error), true);
       }
     }
 
