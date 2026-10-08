@@ -135,14 +135,20 @@ impl LocalModelManager {
     /// Record `model_path` as the Local Model the Settings File names, or clear
     /// it when there is nothing installed. Public so the store's own tests can
     /// drive the bypass that used to exist without a download.
+    ///
+    /// This runs on a download thread while the user keeps changing Settings, so
+    /// it goes through the store's transaction rather than reading a copy and
+    /// saving it back: a copy read before a newer choice was saved would put the
+    /// older Settings back on disk, model path included.
     pub fn record_installed_model(
         &self,
         model_path: Option<std::path::PathBuf>,
     ) -> Result<(), ModelError> {
-        let mut settings = self.files.settings();
-        settings.model = model_path.map(|path| path.to_string_lossy().to_string());
         self.files
-            .save_settings(&settings)
+            .update_settings(|settings| {
+                settings.model = model_path.map(|path| path.to_string_lossy().to_string());
+                Ok(())
+            })
             .map_err(ModelError::Download)?;
         Ok(())
     }
