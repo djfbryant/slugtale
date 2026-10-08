@@ -1,8 +1,8 @@
 //! Select Fermion MLX on supported Apple silicon Macs; retain portable ONNX.
 use crate::{
-    AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssets, EngineAvailability,
-    EngineMetadata, EngineTranscription, ParakeetProvider, TranscriptionEngine,
-    TranscriptionProvider, PHONON_2,
+    AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssetLifecycle, EngineAssets,
+    EngineAvailability, EngineMetadata, EngineTranscriber, EngineTranscription, ParakeetProvider,
+    TranscriptionEngine, PHONON_2,
 };
 use std::path::Path;
 
@@ -39,7 +39,25 @@ impl PhononProvider {
         ))
     }
 
-    fn provider(&self) -> &dyn TranscriptionProvider {
+    /// The engine behind this selection. Both are
+    /// [`EngineTranscriber`] + [`EngineAssetLifecycle`] providers, so the two
+    /// halves below forward to whichever one this build chose.
+    fn transcriber(&self) -> &dyn EngineTranscriber {
+        match self {
+            Self::Onnx(provider) => provider,
+            #[cfg(all(
+                target_os = "macos",
+                target_arch = "aarch64",
+                feature = "local-phonon-mlx"
+            ))]
+            Self::Mlx(provider) => provider,
+        }
+    }
+
+    /// The asset lifecycle behind this selection. Read separately from
+    /// [`Self::transcriber`] so the dictation half of this provider never
+    /// reaches an install or a removal.
+    fn asset_lifecycle(&self) -> &dyn EngineAssetLifecycle {
         match self {
             Self::Onnx(provider) => provider,
             #[cfg(all(
@@ -76,18 +94,15 @@ impl PhononProvider {
     }
 }
 
-impl TranscriptionProvider for PhononProvider {
+impl EngineTranscriber for PhononProvider {
     fn engine(&self) -> TranscriptionEngine {
         TranscriptionEngine::Phonon
     }
     fn metadata(&self) -> EngineMetadata {
-        self.provider().metadata()
+        self.transcriber().metadata()
     }
     fn availability(&self) -> EngineAvailability {
-        self.provider().availability()
-    }
-    fn assets(&self) -> EngineAssets {
-        self.provider().assets()
+        self.transcriber().availability()
     }
     fn warm_up(&self) -> Result<(), AsrError> {
         match self {
@@ -101,19 +116,29 @@ impl TranscriptionProvider for PhononProvider {
         }
     }
     fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
-        self.provider().transcribe(audio)
+        self.transcriber().transcribe(audio)
+    }
+}
+
+/// Phonon-2's own bytes, whichever runtime this build selected: MLX installs a
+/// private Python runtime and the model through the engine, and ONNX downloads
+/// pinned NVIDIA files. Both are the engine's business, and neither is the
+/// dictation path's.
+impl EngineAssetLifecycle for PhononProvider {
+    fn assets(&self) -> EngineAssets {
+        self.asset_lifecycle().assets()
     }
     fn can_install_assets(&self) -> bool {
-        self.provider().can_install_assets()
+        self.asset_lifecycle().can_install_assets()
     }
     fn install_assets(
         &self,
         progress: &mut dyn FnMut(DownloadProgress),
     ) -> Result<AssetInstall, String> {
-        self.provider().install_assets(progress)
+        self.asset_lifecycle().install_assets(progress)
     }
     fn remove_assets(&self) -> Result<(), String> {
-        self.provider().remove_assets()
+        self.asset_lifecycle().remove_assets()
     }
 }
 

@@ -56,8 +56,8 @@ use assets::{
 };
 
 use crate::{
-    AsrError, CapturedAudio, EngineAssets, EngineAvailability, EngineMetadata, EngineTranscription,
-    EngineUnavailable, TranscriptionEngine, TranscriptionProvider,
+    AsrError, CapturedAudio, EngineAssetLifecycle, EngineAssets, EngineAvailability,
+    EngineMetadata, EngineTranscriber, EngineTranscription, EngineUnavailable, TranscriptionEngine,
 };
 use crate::{AssetInstall, DownloadProgress};
 #[cfg(feature = "local-parakeet-runtime")]
@@ -288,7 +288,7 @@ fn validate_captured_audio(model: &TdtModel, audio: &CapturedAudio) -> Result<()
     Ok(())
 }
 
-impl TranscriptionProvider for ParakeetProvider {
+impl EngineTranscriber for ParakeetProvider {
     fn engine(&self) -> TranscriptionEngine {
         self.model.engine
     }
@@ -318,6 +318,33 @@ impl TranscriptionProvider for ParakeetProvider {
         lock(&self.availability).clone()
     }
 
+    fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
+        validate_captured_audio(self.model, audio)?;
+        self.transcribe_validated(audio)
+    }
+
+    /// Load the TDT sessions now, ahead of the first dictation.
+    ///
+    /// This override is the whole point of the method existing here. The shared
+    /// engine interface supplies a `warm_up` that does nothing, and the Engine
+    /// Catalogue reaches every engine as a `dyn EngineTranscriber`, so
+    /// Parakeet TDT v2 and Phonon-2 both inherited the no-op and stayed cold —
+    /// the first recording after choosing one of them still paid for loading a
+    /// 622 MiB encoder. The work itself is the inherent method, which is also
+    /// what answers `RuntimeNotBuilt` on a build without the ONNX runtime and
+    /// `AssetsMissing` when the weights are not installed.
+    fn warm_up(&self) -> Result<(), AsrError> {
+        // Fully qualified so this reaches the inherent implementation rather than
+        // recursing into itself.
+        ParakeetProvider::warm_up(self)
+    }
+}
+
+/// Parakeet's assets are 631 MiB of NVIDIA weights Slugtale downloads and owns,
+/// so the whole Settings-only lifecycle — measure, install, remove — is the
+/// engine's own. Kept off [`EngineTranscriber`] so nothing that transcribes can
+/// download or delete anything.
+impl EngineAssetLifecycle for ParakeetProvider {
     fn assets(&self) -> EngineAssets {
         let status = parakeet_asset_status(&self.asset_dir, &self.model.files);
         EngineAssets {
@@ -356,27 +383,6 @@ impl TranscriptionProvider for ParakeetProvider {
             .map_err(|error| error.to_string())?;
         self.refresh_availability();
         Ok(())
-    }
-
-    fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
-        validate_captured_audio(self.model, audio)?;
-        self.transcribe_validated(audio)
-    }
-
-    /// Load the TDT sessions now, ahead of the first dictation.
-    ///
-    /// This override is the whole point of the method existing here. The shared
-    /// engine interface supplies a `warm_up` that does nothing, and the Engine
-    /// Catalogue reaches every engine as a `dyn TranscriptionProvider`, so
-    /// Parakeet TDT v2 and Phonon-2 both inherited the no-op and stayed cold —
-    /// the first recording after choosing one of them still paid for loading a
-    /// 622 MiB encoder. The work itself is the inherent method, which is also
-    /// what answers `RuntimeNotBuilt` on a build without the ONNX runtime and
-    /// `AssetsMissing` when the weights are not installed.
-    fn warm_up(&self) -> Result<(), AsrError> {
-        // Fully qualified so this reaches the inherent implementation rather than
-        // recursing into itself.
-        ParakeetProvider::warm_up(self)
     }
 }
 
@@ -588,7 +594,7 @@ impl ParakeetProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::EngineView;
+    use crate::{EngineView, TranscriptionProvider};
     use std::sync::Arc;
 
     #[test]

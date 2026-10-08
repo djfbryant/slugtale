@@ -21,6 +21,14 @@
 //!   ([`EngineMetadata`]), whether it can run ([`EngineAvailability`]), what it
 //!   has on disk ([`EngineAssets`]), and whether its assets can be installed or
 //!   removed — and the [`EngineView`] row is built from nothing else.
+//!
+//! The method set is split along the same line. What a dictation needs is
+//! [`EngineTranscriber`]; the asset lifecycle only Settings uses is
+//! [`EngineAssetLifecycle`]. An engine type implements both, and the pair makes
+//! it a [`TranscriptionProvider`] — so each consumer can hold only the half it
+//! needs (`&dyn EngineTranscriber` on the dictation path,
+//! `&dyn EngineAssetLifecycle` for Settings' asset actions) while the Settings
+//! row ([`EngineView::of`]) takes the pair it actually renders.
 
 use crate::{AsrError, CapturedAudio, DownloadProgress, FinalTranscription};
 use serde::{Deserialize, Serialize};
@@ -375,7 +383,7 @@ pub struct EngineView {
     /// ([`EngineUnavailable::is_user_resolvable`], so never an unsupported
     /// operating system or a build without the feature) *and* the engine must
     /// have a way to fetch its assets
-    /// ([`TranscriptionProvider::can_install_assets`]). A row therefore never
+    /// ([`EngineAssetLifecycle::can_install_assets`]). A row therefore never
     /// offers a button that can only refuse.
     pub installable: bool,
     pub assets: EngineAssets,
@@ -386,6 +394,10 @@ impl EngineView {
     /// File names it the primary. Answers from the same cached availability the
     /// dictation path reads, so Settings and the Dictation Runtime cannot
     /// disagree about an engine.
+    ///
+    /// Takes the whole provider, and is the one place that legitimately needs
+    /// both halves: the licence and the availability reason are the dictation
+    /// view, the asset accounting and the install path are Settings' own.
     pub fn of(provider: &dyn TranscriptionProvider, is_primary: bool) -> Self {
         let engine = provider.engine();
         let availability = provider.availability();
@@ -410,32 +422,25 @@ impl EngineView {
     }
 }
 
-/// A Transcription Engine Slugtale can ask for a complete transcription.
+/// The dictation path's view of a Transcription Engine.
 ///
-/// Providers take `&CapturedAudio` rather than owning it because a Second
-/// Opinion replays the same recording through a second engine; cloning a
-/// dictation's samples on every escalation would cost real memory on the 8 GB
-/// reference machine.
+/// This is the whole seam the Dictation Runtime, Dictation Readiness, and the
+/// Second Opinion router see: which engine it is, what it is licensed as,
+/// whether it can run right now, and how to make it transcribe. There is
+/// deliberately no asset lifecycle here, because nothing on the dictation path
+/// has any business installing or deleting a model — an engine whose weights
+/// were removed says so through [`EngineAvailability`], and the router falls
+/// back rather than reaching for a download (ADR-0010, ADR-0001).
 ///
-/// Implementations must be cheap to construct and must not load model weights
-/// until [`TranscriptionProvider::transcribe`] or an explicit warm-up runs.
-/// [`TranscriptionProvider::availability`] is called from Settings and from the
-/// router's fast path, so it must answer from cached state rather than probing
-/// the filesystem or the OS on every dictation. The asset methods below are the
-/// deliberate exception: only Settings asks them, their answer changes only when
-/// the user installs or removes something, and Settings cannot render an honest
-/// row without them.
-pub trait TranscriptionProvider: Send + Sync {
+/// Every engine type implements this half directly, so there is exactly one
+/// description of how an engine transcribes and the dictation path reads that
+/// description and nothing else.
+pub trait EngineTranscriber: Send + Sync {
     fn engine(&self) -> TranscriptionEngine;
 
     fn metadata(&self) -> EngineMetadata;
 
     fn availability(&self) -> EngineAvailability;
-
-    /// How much of this engine's assets are on disk, in bytes and in full.
-    /// An engine the operating system owns answers
-    /// [`EngineAssets::system_managed`].
-    fn assets(&self) -> EngineAssets;
 
     fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError>;
 
@@ -445,6 +450,27 @@ pub trait TranscriptionProvider: Send + Sync {
     fn warm_up(&self) -> Result<(), AsrError> {
         Ok(())
     }
+}
+
+/// The Settings-only asset lifecycle of a Transcription Engine: what it has on
+/// disk, whether Slugtale can fetch it, and how to fetch or delete it.
+///
+/// This is the other half of the boundary, and it is a separate trait because
+/// it is a separate job. Settings renders the licence, the availability reason,
+/// and the asset accounting in one row, and offers an Install or Remove action
+/// when the engine's own reason says the user can fix it. None of that belongs
+/// on the dictation path, and putting it on one trait meant every consumer of
+/// an engine — including the router that runs on every dictation — inherited
+/// four methods that could delete files.
+///
+/// Fields are asked one at a time rather than through [`TranscriptionProvider`]
+/// so a caller can take only the asset half of an engine it already holds.
+///
+/// It extends [`EngineTranscriber`] because the honest default refusal needs the
+/// engine's own name (`self.engine()`), and because an engine that can install
+/// assets is already an engine that can transcribe them.
+pub trait EngineAssetLifecycle: EngineTranscriber {
+    fn assets(&self) -> EngineAssets;
 
     /// Whether this engine has a way to fetch its own assets. False by default,
     /// because an engine that cannot install must not look installable in
@@ -472,6 +498,27 @@ pub trait TranscriptionProvider: Send + Sync {
         Err(assets_cannot_be_removed(self.engine()))
     }
 }
+
+/// The whole boundary an engine implements: both halves, one type.
+///
+/// An engine type implements [`EngineTranscriber`] and
+/// [`EngineAssetLifecycle`] and is thereby a `TranscriptionProvider` — the
+/// blanket implementation below is what turns the pair into the whole, so an
+/// engine cannot be a provider to one half of the app and not the other.
+///
+/// Providers take `&CapturedAudio` rather than owning it because a Second
+/// Opinion replays the same recording through a second engine; cloning a
+/// dictation's samples on every escalation would cost real memory on the 8 GB
+/// reference machine. Implementations must be cheap to construct and must not
+/// load model weights until [`EngineTranscriber::transcribe`] or an explicit
+/// warm-up runs.
+///
+/// The app hands each consumer the half it needs: the dictation path is given a
+/// `&dyn EngineTranscriber`, Settings a `&dyn EngineAssetLifecycle`, and
+/// Settings' row ([`EngineView::of`]) the pair together.
+pub trait TranscriptionProvider: EngineTranscriber + EngineAssetLifecycle {}
+
+impl<T: EngineTranscriber + EngineAssetLifecycle + ?Sized> TranscriptionProvider for T {}
 
 /// The refusal an engine gives when Settings asks it to fetch assets it has no
 /// way to fetch. Also the answer an engine gives that *has* a mechanism it
@@ -599,7 +646,7 @@ mod tests {
         }
     }
 
-    impl TranscriptionProvider for StatedProvider {
+    impl EngineTranscriber for StatedProvider {
         fn engine(&self) -> TranscriptionEngine {
             self.engine
         }
@@ -625,18 +672,20 @@ mod tests {
             self.availability.clone()
         }
 
+        fn transcribe(&self, _audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
+            Err(AsrError::Runtime(
+                "this provider never transcribes".to_string(),
+            ))
+        }
+    }
+
+    impl EngineAssetLifecycle for StatedProvider {
         fn assets(&self) -> EngineAssets {
             self.assets
         }
 
         fn can_install_assets(&self) -> bool {
             self.can_install
-        }
-
-        fn transcribe(&self, _audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
-            Err(AsrError::Runtime(
-                "this provider never transcribes".to_string(),
-            ))
         }
     }
 
@@ -1054,6 +1103,32 @@ mod tests {
             engine_blocked_reason(TranscriptionEngine::AppleSpeech, &[]),
             Some("Apple SpeechTranscriber cannot run in this build.".to_string())
         );
+    }
+
+    #[test]
+    fn the_two_readings_of_one_engine_answer_the_same_thing() {
+        // The dictation path reads an engine through `EngineTranscriber` and
+        // Settings through `EngineAssetLifecycle`. Both are views of the same
+        // provider, so a caller must never be able to see two answers to one
+        // question because it happened to read a different half.
+        let provider = StatedProvider::new(
+            TranscriptionEngine::Parakeet,
+            missing_assets(),
+            EngineAssets {
+                installed_bytes: Some(41),
+                present: Some(false),
+            },
+        )
+        .installable();
+
+        let transcriber: &dyn EngineTranscriber = &provider;
+        let assets: &dyn EngineAssetLifecycle = &provider;
+
+        assert_eq!(transcriber.engine(), provider.engine());
+        assert_eq!(transcriber.metadata(), provider.metadata());
+        assert_eq!(transcriber.availability(), provider.availability());
+        assert_eq!(assets.assets(), provider.assets());
+        assert_eq!(assets.can_install_assets(), provider.can_install_assets());
     }
 
     #[test]

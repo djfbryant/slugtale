@@ -1,6 +1,7 @@
 //! Local fixture harness. Never use private recordings with --show-text.
 use slugtale_lib::{
-    CapturedAudio, ParakeetProvider, PhononProvider, TranscriptionProvider, PHONON_2,
+    CapturedAudio, EngineAssetLifecycle, EngineTranscriber, ParakeetProvider, PhononProvider,
+    PHONON_2,
 };
 use std::{
     path::{Path, PathBuf},
