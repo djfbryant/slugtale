@@ -213,15 +213,20 @@ where
                 // Capture the app the user is dictating into before our own bar can
                 // take focus, so insertion can re-target it later (slugtale-squ).
                 let target_pid = self.frontmost_app();
-                // Open the dictation before capture starts: the level callback
-                // installed below stamps every Pause Flush with this session.
-                let session = self.runtime().begin();
                 // Resolved before capture: Settings choose the microphone as
-                // well as how the bar looks.
+                // well as how the bar looks, and this snapshot is the one the
+                // dictation pins below.
                 let settings = match activation.take() {
                     Some(activation) => activation.settings,
                     None => self.surface.settings(),
                 };
+                // Open the dictation before capture starts: the level callback
+                // installed below stamps every Pause Flush with this session, and
+                // the detector is armed with this dictation's own Segment Pause,
+                // from the same Settings snapshot pinned just below — so the
+                // length it flushes at and the Settings its jobs read cannot
+                // come from different points in time (slugtale-cbxb).
+                let session = self.runtime().begin(crate::segment_pause_duration(&settings));
                 // Pin everything this dictation's jobs will need, so a segment
                 // decoding a second from now cannot pick up the next dictation's
                 // target or the user's latest Settings (slugtale-cbxb).
@@ -649,7 +654,7 @@ mod tests {
         PreparedInsertion(Option<i32>),
     }
 
-    #[derive(Default, Clone)]
+    #[derive(Clone)]
     struct FakeSurface {
         calls: Arc<std::sync::Mutex<Vec<Call>>>,
         /// What the fake Transcription Engine answers with, one entry per
@@ -664,6 +669,29 @@ mod tests {
         /// Held while a segment's Transcription runs, so a test can keep a decode
         /// in flight across a Cancel and a new Start.
         decoding: Option<Arc<DecodeGate>>,
+        /// The Settings this surface answers with. Defaults to
+        /// [`TEST_SEGMENT_PAUSE_SECS`], the shortest Segment Pause the Settings
+        /// File accepts, so a Pause Flush test waits two real seconds rather
+        /// than the product default's five; a test can change it mid-dictation
+        /// to stand in for a save.
+        settings: Arc<std::sync::Mutex<crate::Settings>>,
+    }
+
+    impl Default for FakeSurface {
+        fn default() -> Self {
+            Self {
+                calls: Arc::default(),
+                transcriptions: Arc::default(),
+                inserted: Arc::default(),
+                rescued: Arc::default(),
+                insertion_fails: Arc::default(),
+                decoding: None,
+                settings: Arc::new(std::sync::Mutex::new(crate::Settings {
+                    segment_pause_secs: TEST_SEGMENT_PAUSE_SECS,
+                    ..crate::Settings::default()
+                })),
+            }
+        }
     }
 
     /// The gate a blocking Transcription waits on: `entered` is closed when the
@@ -741,6 +769,13 @@ mod tests {
             self.clone()
         }
 
+        /// Change what this surface's Settings answer with, the way a save
+        /// does: the next dictation pins the new value and the one in progress
+        /// keeps what it pinned at Start.
+        fn set_segment_pause_secs(&self, secs: i64) {
+            self.settings.lock().unwrap().segment_pause_secs = secs;
+        }
+
         /// Hold every Transcription until [`DecodeGate::release`], so a test can
         /// cancel and restart while a decode is genuinely in flight.
         fn blocking_transcription(self: &Arc<Self>) -> (Arc<Self>, Arc<DecodeGate>) {
@@ -754,7 +789,7 @@ mod tests {
     impl DictationSurface for FakeSurface {
         fn settings(&self) -> crate::Settings {
             self.record(Call::ReadSettings);
-            crate::Settings::default()
+            self.settings.lock().unwrap().clone()
         }
 
         fn record_diagnostic_event(&self, event: crate::DiagnosticEvent) {
@@ -965,11 +1000,12 @@ mod tests {
         }
 
         /// Speak, then stay quiet long enough for the Segment Pause to elapse.
-        /// The pause is a real clock the test would otherwise wait five seconds
-        /// on, so the runtime is started with a short one.
+        /// The pause is a real clock, so the fixture's Settings ask for the
+        /// shortest length the Settings File accepts and the test waits that
+        /// plus scheduler slop.
         fn speak_then_pause(&self) {
             self.voice(Self::speaking());
-            std::thread::sleep(TEST_PAUSE * 4);
+            std::thread::sleep(TEST_PAUSE + PAUSE_SLOP);
             self.voice(0.0);
         }
 
@@ -1040,7 +1076,10 @@ mod tests {
             };
             std::thread::spawn(move || {
                 callback(FakeMicrophone::speaking());
-                std::thread::sleep(TEST_PAUSE * 4);
+                // Long enough for the armed Segment Pause to elapse while Stop
+                // waits: the watermark probe at that moment is the path that
+                // used to want the same capture lock Stop held.
+                std::thread::sleep(TEST_PAUSE + PAUSE_SLOP);
                 callback(0.0);
             })
             .join()
@@ -1117,7 +1156,14 @@ mod tests {
 
     /// A Segment Pause short enough for a test to sit through. The rule under it
     /// is the one the five-second default drives.
-    const TEST_PAUSE: Duration = Duration::from_millis(30);
+    /// The shortest Segment Pause the Settings File accepts. The fixture's
+    /// Settings ask for it, so a Pause Flush test waits two real seconds rather
+    /// than the product default's five.
+    const TEST_SEGMENT_PAUSE_SECS: i64 = 2;
+    const TEST_PAUSE: Duration = Duration::from_secs(TEST_SEGMENT_PAUSE_SECS as u64);
+    /// Scheduler slop past the armed pause before the quiet level that ends a
+    /// segment, so a loaded machine cannot race the flush.
+    const PAUSE_SLOP: Duration = Duration::from_millis(300);
 
     /// The app a test dictates into, reported by the injected focus lookup
     /// rather than by whatever is in front on the machine running the tests.
@@ -1197,11 +1243,9 @@ mod tests {
             // session reported rather than a number the test made up.
             let runtime_host: Arc<dyn DictationRuntimeHost> = host.clone();
             let watermark_host = Arc::clone(&host);
-            let runtime = DictationRuntime::start_with_test_pause(
-                runtime_host,
-                Arc::new(move || watermark_host.voice_watermark()),
-                TEST_PAUSE,
-            )
+            let runtime = DictationRuntime::start(runtime_host, move || {
+                watermark_host.voice_watermark()
+            })
             .expect("test runtime starts");
             host.set_runtime(Arc::new(runtime)).unwrap();
 
@@ -1704,6 +1748,43 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Some(TEST_TARGET_PID)],
             "the segment is aimed at the app its dictation began in"
+        );
+    }
+
+    #[test]
+    fn each_dictation_arms_the_pause_its_own_settings_snapshot_holds() {
+        // The Segment Pause is part of what a dictation pins at Start: the
+        // length is derived from the same Settings snapshot its jobs read, so a
+        // save landing while it runs cannot retarget it, and the next dictation
+        // arms from the newest saved length. A save used to publish
+        // asynchronously to the runtime after persisting, where a delayed older
+        // save could overwrite a newer one and the next dictation would flush
+        // at a length the Settings File no longer held (slugtale-cbxb).
+        let surface = Arc::new(FakeSurface::default());
+        let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
+
+        // The fixture's Settings ask for the shortest accepted pause.
+        assert_eq!(
+            dictating.host.runtime().armed_pause(),
+            Duration::from_secs(TEST_SEGMENT_PAUSE_SECS as u64)
+        );
+
+        // Two overlapping saves land while this dictation runs; the newest is
+        // the one the Settings store serialised last.
+        surface.set_segment_pause_secs(5);
+        surface.set_segment_pause_secs(8);
+        assert_eq!(
+            dictating.host.runtime().armed_pause(),
+            Duration::from_secs(TEST_SEGMENT_PAUSE_SECS as u64),
+            "the dictation in progress keeps the pause it armed with at Start"
+        );
+
+        // The next dictation pins the length the Settings File now holds.
+        dictating.start_another_dictation();
+        assert_eq!(
+            dictating.host.runtime().armed_pause(),
+            Duration::from_secs(8),
+            "the next dictation arms from the Settings snapshot it pins"
         );
     }
 

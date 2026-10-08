@@ -112,5 +112,8 @@ jobs:
       # macOS, so this job uses the wider set: it covers asr_eval *and* the
       # Parakeet and Apple Speech paths that example can also drive.
       run: npm run check:examples:apple
+    - name: Check the Phonon MLX provider
+      # No model download: exercise feature selection, offline IPC, and lifecycle.
+      run: npm run test:phonon-mlx
     - name: Compile and test Voice Activation
       run: npm run test:voice-activation

@@ -981,14 +981,10 @@ mod tests {
         // the session guard across the operating-system focus work would have
         // caused (slugtale-cbxb).
         let runtime = Arc::new(
-            crate::DictationRuntime::start_with_test_pause(
-                Arc::new(UnscopedHost),
-                Arc::new(|| 0),
-                std::time::Duration::from_millis(30),
-            )
-            .expect("test runtime starts"),
+            crate::DictationRuntime::start(Arc::new(UnscopedHost), || 0)
+                .expect("test runtime starts"),
         );
-        let session = runtime.begin();
+        let session = runtime.begin(std::time::Duration::from_millis(30));
         let (focus, activation) = BlockingActivation::new();
         let typed = Arc::new(Mutex::new(Vec::new()));
 
@@ -1027,7 +1023,7 @@ mod tests {
             std::thread::spawn(move || {
                 runtime.abandon();
                 let _ = cancelled_tx.send(());
-                let newer = runtime.begin();
+                let newer = runtime.begin(std::time::Duration::from_millis(30));
                 let _ = started_tx.send(newer);
             })
         };

@@ -25,6 +25,7 @@
       diagnostic_logging: false,
       model: null,
       speed_profile: "balanced",
+      segment_pause_secs: 5,
       bar_position: "bottom-center",
       accent_color: "red",
       bar_display: "primary",

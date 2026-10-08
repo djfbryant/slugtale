@@ -27,6 +27,35 @@
       }
     }
 
+    async function saveSegmentPauseSettings(segmentPauseSecs) {
+      const invoke = tauriInvoke();
+      const previousSettings = { ...currentSettings };
+      const nextSettings = { ...currentSettings, segment_pause_secs: segmentPauseSecs };
+      const messageEl = document.getElementById("transcription-message");
+
+      if (!invoke) {
+        renderSettings(nextSettings);
+        return;
+      }
+
+      savingPause = true;
+      renderSettings(nextSettings);
+      messageEl.classList.remove("error");
+      messageEl.textContent = "Saving…";
+
+      try {
+        const saved = await invoke("save_segment_pause_settings", { segmentPauseSecs });
+        savingPause = false;
+        renderSettings(saved);
+        messageEl.textContent = "Saved. Applies to your next dictation.";
+      } catch (error) {
+        savingPause = false;
+        renderSettings(previousSettings);
+        messageEl.classList.add("error");
+        messageEl.textContent = String(error);
+      }
+    }
+
     async function saveTranscriptCleanupSettings(cleanupMode) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };

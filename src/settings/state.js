@@ -1,6 +1,7 @@
     let downloading = false;
     let savingSettings = false;
     let savingProfile = false;
+    let savingPause = false;
     let savingCleanup = false;
     let savingDictationBar = false;
     let savingLaunchAtLogin = false;

@@ -92,6 +92,8 @@ pub use asr::*;
 /// provider is compiled everywhere and only its inference is feature-gated.
 mod parakeet;
 pub use parakeet::*;
+mod phonon;
+pub use phonon::PhononProvider;
 
 /// Apple SpeechTranscriber as a Transcription Engine (slugtale-vjs.2). The
 /// provider type exists on every platform so Settings can explain why the

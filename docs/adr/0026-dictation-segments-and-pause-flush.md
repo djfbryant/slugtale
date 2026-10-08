@@ -1,6 +1,8 @@
 # Dictation Segments and Pause Flush
 
-Slugtale splits a dictation into Dictation Segments at each Segment Pause (about five seconds at or below the Dictation Bar's speech level) and runs the full Dictation Workflow once per segment: final transcription, transcript cleanup, immediate insertion, and insertion rescue if insertion fails. This is how Slugtale keeps insertion latency flat for long dictations without ever showing live partial text — every segment is a completed Final Transcription, so ADR-0005's no-live-preview promise still holds, and ADR-0015's immediate insertion happens per segment instead of once per dictation.
+Slugtale splits a dictation into Dictation Segments at each Segment Pause (at or below the Dictation Bar's speech level for the configured number of seconds) and runs the full Dictation Workflow once per segment: final transcription, transcript cleanup, immediate insertion, and insertion rescue if insertion fails. This is how Slugtale keeps insertion latency flat for long dictations without ever showing live partial text — every segment is a completed Final Transcription, so ADR-0005's no-live-preview promise still holds, and ADR-0015's immediate insertion happens per segment instead of once per dictation.
+
+The Segment Pause length is a user setting: two to ten seconds, five by default, the length v1 shipped with. It is stored in the Settings File as a plain number of seconds and rejected at the save boundary outside that range, so an invalid save changes neither the file nor the running runtime. A hand-edited value is clamped into the range when read, so it can never arm a detector with a wild length. A dictation already in progress keeps the length it started with; the next one picks up the change. The pause still counts only after the user has said something, so opening silence never flushes an empty segment.
 
 The workflow runs on one dedicated worker fed by an ordered channel, which gives three guarantees:
 

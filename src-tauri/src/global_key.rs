@@ -39,6 +39,9 @@ impl EscapeArbiter {
         Self::default()
     }
 
+    /// Whether Escape currently has an armed registration. Test-only: production
+    /// changes arming through `apply` and never asks whether it already holds.
+    #[cfg(test)]
     pub fn is_armed(&self) -> bool {
         self.armed
     }

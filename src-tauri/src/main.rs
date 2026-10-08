@@ -26,8 +26,9 @@ use commands::engines::{
 use commands::platform::{open_microphone_settings, open_text_insertion_settings};
 use commands::settings::{
     get_settings, get_settings_readiness, save_dictation_bar_settings, save_hotkey_settings,
-    save_launch_at_login, save_microphone_settings, save_transcript_cleanup_settings,
-    save_transcription_settings, save_voice_activation_settings, voice_activation_supported,
+    save_launch_at_login, save_microphone_settings, save_segment_pause_settings,
+    save_transcript_cleanup_settings, save_transcription_settings, save_voice_activation_settings,
+    voice_activation_supported,
 };
 use commands::updates::{check_for_app_update, open_app_update_release};
 use commands::usage::{
@@ -79,9 +80,10 @@ fn main() {
             // watermark cut (ADR-0026).
             let watermark_host = Arc::clone(&host);
             let runtime_host = Arc::clone(&host);
-            let runtime = slugtale_lib::DictationRuntime::start(runtime_host, move || {
-                watermark_host.voice_watermark()
-            })
+            let runtime = slugtale_lib::DictationRuntime::start(
+                runtime_host,
+                move || watermark_host.voice_watermark(),
+            )
             .map_err(std::io::Error::other)?;
             host.set_runtime(Arc::new(runtime))
                 .map_err(std::io::Error::other)?;
@@ -155,6 +157,7 @@ fn main() {
             save_hotkey_settings,
             save_transcription_settings,
             save_transcript_cleanup_settings,
+            save_segment_pause_settings,
             save_microphone_settings,
             voice_activation_supported,
             save_voice_activation_settings,

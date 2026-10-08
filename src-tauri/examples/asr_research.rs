@@ -2103,8 +2103,8 @@ mod tests {
     use super::*;
     use slugtale_lib::{
         audio_level_from_samples, captured_audio_from_interleaved_input, is_digital_silence,
-        is_voice_level, voice_level_from_rms, SegmentPauseDetector, DIGITAL_SILENCE_EPSILON,
-        SEGMENT_PAUSE, VOICE_LEVEL,
+        is_voice_level, voice_level_from_rms, SegmentPauseDetector, DEFAULT_SEGMENT_PAUSE_SECS,
+        DIGITAL_SILENCE_EPSILON, VOICE_LEVEL,
     };
     use std::time::Duration;
 
@@ -3095,6 +3095,10 @@ mod tests {
     /// seconds of real time.
     const LEVEL_WINDOW: usize = 320;
     const TICK_MS: u64 = 20;
+    /// The Segment Pause the shipped Settings File defaults to. Production
+    /// derives each dictation's pause from the Settings it pins (ADR-0026), so
+    /// the shipped default is what these detector replays measure.
+    const SEGMENT_PAUSE: Duration = Duration::from_secs(DEFAULT_SEGMENT_PAUSE_SECS as u64);
 
     /// A deterministic stand-in for random noise, so a fixture is a pure
     /// function of its parameters and no test depends on a seed or a clock.

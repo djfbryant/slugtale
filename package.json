@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/run-dev.js",
-    "dev:raw": "PATH=$HOME/.cargo/bin:$PATH tauri dev --features local-whisper-runtime",
+    "dev:raw": "node scripts/run-tauri.js dev",
     "build": "node scripts/run-tauri.js build --ci",
     "check:examples": "node scripts/run-cargo.js check --examples --features local-whisper-runtime,apple-speech-runtime,voice-activation",
     "check:examples:apple": "node scripts/run-cargo.js check --examples --features local-whisper-runtime,local-whisper-runtime-metal,local-parakeet-runtime,local-parakeet-runtime-coreml,apple-speech-runtime,voice-activation",
@@ -19,7 +19,9 @@
     "test:asr-research": "node scripts/run-cargo.js test --example asr_research",
     "asr:research": "node scripts/run-cargo.js run --example asr_research --",
     "asr:research:whisper": "node scripts/run-cargo.js run --release --example asr_research --features local-whisper-runtime --",
-    "asr:research:build": "node scripts/run-cargo.js build --release --example asr_research --features local-whisper-runtime"
+    "asr:research:build": "node scripts/run-cargo.js build --release --example asr_research --features local-whisper-runtime",
+    "test:phonon-mlx": "node scripts/run-cargo.js test --lib --features local-phonon-mlx",
+    "phonon:eval": "node scripts/run-cargo.js run --release --example phonon_eval --features local-phonon-mlx,local-parakeet-runtime --"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

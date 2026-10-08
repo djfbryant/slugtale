@@ -35,6 +35,12 @@
         button.disabled = savingProfile;
       });
 
+      SEGMENT_PAUSE_OPTIONS.forEach((option) => {
+        const button = document.getElementById(`pause-${option}`);
+        button.setAttribute("aria-pressed", String(option === currentSettings.segment_pause_secs));
+        button.disabled = savingPause;
+      });
+
       const cleanupMode = currentSettings.transcript_cleanup || "basic";
       TRANSCRIPT_CLEANUP_MODES.forEach((option) => {
         const button = document.getElementById(`cleanup-${option}`);

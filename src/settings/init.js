@@ -79,6 +79,13 @@
         });
       });
 
+      SEGMENT_PAUSE_OPTIONS.forEach((secs) => {
+        document.getElementById(`pause-${secs}`).addEventListener("click", () => {
+          if (secs === currentSettings.segment_pause_secs) return;
+          saveSegmentPauseSettings(secs);
+        });
+      });
+
       TRANSCRIPT_CLEANUP_MODES.forEach((mode) => {
         document.getElementById(`cleanup-${mode}`).addEventListener("click", () => {
           if (mode === (currentSettings.transcript_cleanup || "basic")) return;

@@ -169,6 +169,22 @@ pub(crate) fn save_transcript_cleanup_settings(
     })
 }
 
+/// Save the Segment Pause length in seconds (ADR-0026). The value is validated
+/// inside the Settings File's one transaction, so a rejected value writes
+/// nothing. No part of the save reaches the running runtime: the next dictation
+/// derives its pause from the Settings snapshot it pins at Start, so a dictation
+/// already in progress keeps the length it armed with and no save can publish a
+/// stale length to a dictation about to begin.
+#[tauri::command]
+pub(crate) fn save_segment_pause_settings(
+    app: tauri::AppHandle,
+    segment_pause_secs: i64,
+) -> Result<slugtale_lib::Settings, String> {
+    update_current_settings(&app, |settings| {
+        slugtale_lib::apply_segment_pause_settings(settings, segment_pause_secs)
+    })
+}
+
 /// Save whether dictation records from the built-in microphone when the
 /// default one is Bluetooth. The next dictation picks the new microphone up.
 #[tauri::command]
