@@ -43,6 +43,14 @@ jobs:
       # CI must go through npm scripts, not bare Cargo. cargo is preinstalled on
       # ubuntu-latest and resolved from PATH by scripts/run-cargo.js.
       run: npm test
+    - name: Compile the examples
+      # `npm test` builds the lib and the bins, never an example, so asr_eval
+      # could stop compiling against the app's public API with CI still green
+      # (slugtale-p63q: it called a method that had become private and missed a
+      # constructor argument). `check:examples` is the npm entry point for that,
+      # and it turns on local-whisper-runtime because asr_eval and
+      # decode_benchmark are gated on it.
+      run: npm run check:examples
 
   checks-windows:
     # Real-Windows coverage for the Windows Platform Adapter (PRD slugtale-5pc):
@@ -67,6 +75,13 @@ jobs:
       run: npm install
     - name: Run project checks
       run: npm test
+    - name: Compile the examples
+      # Same gap as the Linux job: an example that no longer compiles is
+      # invisible to `npm test`. This is also the only place the Windows
+      # process-tree stop in scripts/process-tree.js is exercised on real
+      # Windows, because tests/runner-timeout.test.mjs hangs a child on purpose
+      # and asserts that both it and its descendant are gone afterwards.
+      run: npm run check:examples
     - name: Build the Whisper runtime under MSVC
       # `npm test` runs with default features, so whisper.cpp had never been
       # compiled on Windows by any job (slugtale-5pc.10) even while the Windows
@@ -92,5 +107,10 @@ jobs:
       run: npm install
     - name: Run project checks
       run: npm test
+    - name: Compile the examples
+      # The Apple-only acceleration features (Metal, Core ML) cannot build off
+      # macOS, so this job uses the wider set: it covers asr_eval *and* the
+      # Parakeet and Apple Speech paths that example can also drive.
+      run: npm run check:examples:apple
     - name: Compile and test Voice Activation
       run: npm run test:voice-activation
