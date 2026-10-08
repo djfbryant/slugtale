@@ -13,11 +13,13 @@ const ADAPTER_SCHEMA_VERSION: u32 = 1;
 const RUN_SCHEMA_VERSION: u32 = 1;
 const REPORT_SCHEMA_VERSION: u32 = 1;
 
-/// The smallest corpus the parent benchmark asks for.
+/// The smallest number of human-voice clips the parent benchmark asks for.
 ///
 /// Below this, a word error rate moves more when one clip is added or dropped
 /// than when a model genuinely improves, so a smaller corpus publishes
-/// pipeline measurements and no accuracy claim at all.
+/// pipeline measurements and no accuracy claim at all. The count is of human
+/// clips, not clips in total: padding a corpus to this size with synthesized or
+/// unattributed audio leaves the voice result exactly as small as it was.
 const MINIMUM_BENCHMARK_CLIPS: usize = 100;
 
 /// Where a clip's audio came from.
@@ -194,9 +196,11 @@ struct CorpusCoverage {
     /// See [`MINIMUM_BENCHMARK_CLIPS`].
     minimum_benchmark_clips: usize,
     /// Whether this corpus can support any claim about dictation accuracy on a
-    /// human voice. Every whole-corpus accuracy field stays null unless this is
-    /// true, so a report cannot present synthetic or unattributed audio as a
-    /// voice result.
+    /// human voice: at least [`MINIMUM_BENCHMARK_CLIPS`] clips must be `human`
+    /// on their own. Every whole-corpus accuracy field stays null unless this
+    /// is true, so a report cannot present synthetic or unattributed audio as a
+    /// voice result, and a corpus padded to the benchmark size with that audio
+    /// does not open it.
     real_voice_accuracy_supported: bool,
     /// Everything that narrows what this report may be claimed to show, in
     /// order. A closed `real_voice_accuracy_supported` gate always appears
@@ -256,6 +260,12 @@ struct PairAggregate {
     first_disagreement_wer: Option<f64>,
     second_disagreement_wer: Option<f64>,
     oracle_wer: Option<f64>,
+    /// Non-content reasons the pair accuracy fields above are absent. Empty
+    /// exactly when they are present. A pair rate needs the same boundary as an
+    /// engine rate — a corpus that can support a voice claim, no other audio
+    /// mixed in — plus both engines transcribing every clip, because a rate
+    /// over the pairs that happened to succeed describes a corpus nobody chose.
+    measurement_gaps: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -570,6 +580,21 @@ const PROVENANCE_ORDER: [ClipProvenance; 3] = [
     ClipProvenance::Unknown,
 ];
 
+/// The shared start of every "this corpus is not one voice" caveat.
+///
+/// A whole-corpus rate over a corpus that mixes a person with synthesized or
+/// unattributed audio is a statement about neither, so the engine aggregates
+/// and the pair aggregates both have to say why they withhold it. The caller
+/// appends what that means for its own fields.
+fn mixed_audio_reason(human: usize, synthetic: usize, unknown: usize) -> Option<String> {
+    (synthetic > 0 || unknown > 0).then(|| {
+        format!(
+            "corpus mixes {synthetic} synthetic and {unknown} unattributed clip(s) with {human} \
+             human-voice clip(s), so a whole-corpus rate would describe neither"
+        )
+    })
+}
+
 /// Count what the corpus contains, and decide whether that is enough to talk
 /// about a voice at all.
 ///
@@ -705,12 +730,20 @@ fn coverage_of(manifest: &CorpusManifest) -> CorpusCoverage {
         },
     ];
 
-    let real_voice_accuracy_supported = human > 0 && manifest.clips.len() >= MINIMUM_BENCHMARK_CLIPS;
+    // The claim is about a human voice, so the human clips themselves have to
+    // meet the benchmark size. A corpus padded to 100 with synthesized or
+    // unattributed clips is still a pipeline check.
+    let real_voice_accuracy_supported = human >= MINIMUM_BENCHMARK_CLIPS;
     let mut gaps = Vec::new();
     if human == 0 {
         gaps.push(format!(
             "no human-voice clip ({synthetic} synthetic, {unknown} unattributed): a synthesized \
              voice measures the pipeline, not the accuracy anyone would experience"
+        ));
+    } else if human < MINIMUM_BENCHMARK_CLIPS {
+        gaps.push(format!(
+            "corpus has {human} human-voice clip(s); the parent benchmark asks for at least \
+             {MINIMUM_BENCHMARK_CLIPS} human clips"
         ));
     }
     if manifest.clips.len() < MINIMUM_BENCHMARK_CLIPS {
@@ -749,12 +782,6 @@ fn coverage_of(manifest: &CorpusManifest) -> CorpusCoverage {
 /// It says what the corpus measured and, when that is not a voice, says so
 /// before the rates rather than in a footnote underneath them.
 fn claim_scope_for(coverage: &CorpusCoverage) -> String {
-    let shortfalls = coverage
-        .gaps
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join("; ");
     if coverage.real_voice_accuracy_supported {
         let qualified = coverage
             .dimensions
@@ -763,21 +790,45 @@ fn claim_scope_for(coverage: &CorpusCoverage) -> String {
             .map(|dimension| dimension.dimension.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        if qualified.is_empty() {
+        let qualification = if qualified.is_empty() {
+            String::new()
+        } else {
+            format!(" No result here covers {qualified}.")
+        };
+        if coverage.clips_human < coverage.clips_total {
             format!(
-                "This corpus has {} clip(s) recorded from a human voice across {} labelled \
-                 voice(s), so whole-corpus accuracy describes dictation on that voice and is not a \
-                 general speech-recognition result.",
-                coverage.clips_total, coverage.distinct_human_speakers
+                "This corpus holds {} human-voice clip(s) out of {} across {} labelled voice(s); \
+                 its {} synthetic and {} unattributed clip(s) are not voice results, so \
+                 whole-corpus accuracy is withheld and only the per-provenance slices describe \
+                 the audio they name.{}",
+                coverage.clips_human,
+                coverage.clips_total,
+                coverage.distinct_human_speakers,
+                coverage.clips_synthetic,
+                coverage.clips_unknown,
+                qualification
+            )
+        } else if qualified.is_empty() {
+            format!(
+                "This corpus has {} human-voice clip(s) across {} labelled voice(s), so \
+                 whole-corpus accuracy describes dictation on that voice and is not a general \
+                 speech-recognition result.",
+                coverage.clips_human, coverage.distinct_human_speakers
             )
         } else {
             format!(
-                "This corpus has {} human-voice clip(s) across {} labelled voice(s); whole-corpus \
-                 accuracy describes that voice only, and no result here covers {}.",
-                coverage.clips_total, coverage.distinct_human_speakers, qualified
+                "This corpus has {} human-voice clip(s) across {} labelled voice(s); \
+                 whole-corpus accuracy describes that voice only, and no result here covers {}.",
+                coverage.clips_human, coverage.distinct_human_speakers, qualified
             )
         }
     } else {
+        let shortfalls = coverage
+            .gaps
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("; ");
         format!(
             "This corpus cannot support a claim about dictation accuracy on a voice ({shortfalls}). \
              Whole-corpus accuracy fields are null on purpose; the per-provenance slices describe \
@@ -806,6 +857,17 @@ fn aggregate_engine(
         measurement_gaps.push(format!(
             "corpus cannot support a real-voice accuracy claim: {}",
             coverage.gaps.join("; ")
+        ));
+    } else if let Some(reason) = mixed_audio_reason(
+        coverage.clips_human,
+        coverage.clips_synthetic,
+        coverage.clips_unknown,
+    ) {
+        // The corpus has enough human clips to be a benchmark, but it also
+        // holds audio that is not a voice. Publishing one rate over the blend
+        // would read as a voice result; the slices are the labelled numbers.
+        measurement_gaps.push(format!(
+            "{reason}; the per-provenance slices describe the audio they name"
         ));
     }
     if whole.scored < whole.clips {
@@ -880,6 +942,7 @@ fn aggregate_pair(
     manifest: &CorpusManifest,
     first: &EvaluationRun,
     second: &EvaluationRun,
+    coverage: &CorpusCoverage,
 ) -> PairAggregate {
     let first_by_id: std::collections::HashMap<&str, &AdapterResult> = first
         .results
@@ -928,18 +991,49 @@ fn aggregate_pair(
         }
     }
 
+    // The same boundary as the engine aggregates. A pair rate over a corpus
+    // that cannot support a voice claim, or that mixes other audio into it,
+    // reads exactly like the voice result the boundary exists to prevent. An
+    // incomplete pair is the survivor problem again: both engines have to have
+    // transcribed every clip, or the rate describes the clips that happened to
+    // succeed. Counts and latencies stay.
+    let mut measurement_gaps = Vec::new();
+    if !coverage.real_voice_accuracy_supported {
+        measurement_gaps.push(format!(
+            "corpus cannot support a real-voice accuracy claim: {}",
+            coverage.gaps.join("; ")
+        ));
+    } else if let Some(reason) = mixed_audio_reason(
+        coverage.clips_human,
+        coverage.clips_synthetic,
+        coverage.clips_unknown,
+    ) {
+        measurement_gaps.push(format!("{reason}; pair accuracy fields are withheld"));
+    }
+    if compared < manifest.clips.len() {
+        measurement_gaps.push(format!(
+            "{} of {} clip(s) did not produce a hypothesis from both engines, so a pair rate \
+             would describe only the clips that happened to succeed",
+            manifest.clips.len() - compared,
+            manifest.clips.len()
+        ));
+    }
+    let publishable = measurement_gaps.is_empty();
+
     PairAggregate {
         first_engine: first.engine.clone(),
         second_engine: second.engine.clone(),
         clips_compared: compared,
-        normalized_agreement_rate: (compared > 0).then(|| agreed as f64 / compared as f64),
+        normalized_agreement_rate: (publishable && compared > 0)
+            .then(|| agreed as f64 / compared as f64),
         disagreement_clips: disagreements,
-        first_disagreement_wer: (disagreement_reference_words > 0)
+        first_disagreement_wer: (publishable && disagreement_reference_words > 0)
             .then(|| first_disagreement_edits as f64 / disagreement_reference_words as f64),
-        second_disagreement_wer: (disagreement_reference_words > 0)
+        second_disagreement_wer: (publishable && disagreement_reference_words > 0)
             .then(|| second_disagreement_edits as f64 / disagreement_reference_words as f64),
-        oracle_wer: (oracle_reference_words > 0)
+        oracle_wer: (publishable && oracle_reference_words > 0)
             .then(|| oracle_edits as f64 / oracle_reference_words as f64),
+        measurement_gaps,
     }
 }
 
@@ -966,7 +1060,12 @@ fn score_runs(
     let mut pairs = Vec::new();
     for first in 0..runs.len() {
         for second in first + 1..runs.len() {
-            pairs.push(aggregate_pair(manifest, &runs[first], &runs[second]));
+            pairs.push(aggregate_pair(
+                manifest,
+                &runs[first],
+                &runs[second],
+                &coverage,
+            ));
         }
     }
     Ok(AggregateReport {
@@ -1232,9 +1331,9 @@ inside that directory. Only the `score` command writes aggregate JSON to stdout.
 Each clip carries the provenance of its audio ("human", "synthetic", or
 "unknown"), an optional pseudonym speaker label, and any noise or segment-edge
 probes it covers. A report says which of those the corpus actually holds and
-leaves whole-corpus accuracy null unless the corpus can support a real-voice
-claim; a legacy manifest without the fields loads as unattributed rather than
-failing.
+leaves whole-corpus accuracy null unless at least 100 clips are human-voice on
+their own and no other audio is mixed in; a legacy manifest without the fields
+loads as unattributed rather than failing.
 "#;
 
 #[derive(Default)]
@@ -1536,16 +1635,16 @@ fn validate_corpus_audio(
         "Manifest valid. Recordings: {valid} valid, {} missing.",
         missing.len()
     );
+    let claim_state = if !coverage.real_voice_accuracy_supported {
+        "not supported"
+    } else if coverage.clips_human < coverage.clips_total {
+        "supported for the human clips; whole-corpus rates stay null while other audio is mixed in"
+    } else {
+        "supported"
+    };
     println!(
         "Provenance: {} human, {} synthetic, {} unattributed. Real-voice accuracy claims: {}.",
-        coverage.clips_human,
-        coverage.clips_synthetic,
-        coverage.clips_unknown,
-        if coverage.real_voice_accuracy_supported {
-            "supported"
-        } else {
-            "not supported"
-        }
+        coverage.clips_human, coverage.clips_synthetic, coverage.clips_unknown, claim_state
     );
     if !coverage.real_voice_accuracy_supported {
         // Surfaced while the corpus is still being recorded, because the cheapest
@@ -2274,44 +2373,8 @@ mod tests {
             model: "base.en".into(),
             revision: None,
         };
-        let mut corpus = manifest();
-        corpus.name = "real voices".to_string();
-        corpus.clips = (0..MINIMUM_BENCHMARK_CLIPS)
-            .map(|index| {
-                let mut spec = clip(&format!("clip-{index:04}"), "Open the Slugtale settings.");
-                spec.speaker = Some(if index % 2 == 0 {
-                    "voice-1".to_string()
-                } else {
-                    "voice-2".to_string()
-                });
-                spec.proper_terms = vec!["Slugtale".to_string()];
-                if index % 5 == 0 {
-                    spec.expected_text = String::new();
-                    spec.proper_terms.clear();
-                    spec.probes = vec![CoverageProbe::Noise];
-                } else {
-                    spec.probes = vec![CoverageProbe::TrailingSegmentEdge];
-                }
-                spec
-            })
-            .collect();
-        let run = EvaluationRun {
-            schema_version: RUN_SCHEMA_VERSION,
-            run_id: "run".into(),
-            engine: engine.clone(),
-            results: corpus
-                .clips
-                .iter()
-                .map(|spec| {
-                    let hypothesis = if spec.expected_text.is_empty() {
-                        String::new()
-                    } else {
-                        spec.expected_text.clone()
-                    };
-                    result(spec.id.as_str(), &engine, &hypothesis, 0.95, 100.0)
-                })
-                .collect(),
-        };
+        let corpus = provenance_corpus(MINIMUM_BENCHMARK_CLIPS, 0, 0);
+        let run = perfect_run(&corpus, &engine, "run");
 
         let report = score_runs(&corpus, &[run]).unwrap();
         assert!(report.coverage.real_voice_accuracy_supported);
@@ -2334,6 +2397,106 @@ mod tests {
             .find(|slice| slice.provenance == ClipProvenance::Human)
             .unwrap();
         assert_eq!(human.normalized_wer, Some(0.0));
+    }
+
+    /// The benchmark gate counts human clips, not clips. A corpus padded to
+    /// 100 with synthesized or unattributed audio is the exact shape that used
+    /// to open the gate with a single human clip in it.
+    #[test]
+    fn the_human_benchmark_gate_counts_human_clips_not_corpus_size() {
+        // 100 clips, one of them a voice.
+        let padded = coverage_of(&provenance_corpus(1, 99, 0));
+        assert_eq!(padded.clips_total, MINIMUM_BENCHMARK_CLIPS);
+        assert_eq!(padded.clips_human, 1);
+        assert!(!padded.real_voice_accuracy_supported);
+        assert!(
+            padded
+                .gaps
+                .iter()
+                .any(|gap| gap.contains("1 human-voice clip(s)")),
+            "{:?}",
+            padded.gaps
+        );
+
+        // 100 clips, 99 of them voices: still one clip short.
+        let almost = coverage_of(&provenance_corpus(99, 0, 1));
+        assert_eq!(almost.clips_total, MINIMUM_BENCHMARK_CLIPS);
+        assert!(!almost.real_voice_accuracy_supported);
+        assert!(
+            almost
+                .gaps
+                .iter()
+                .any(|gap| gap.contains("99 human-voice clip(s)")),
+            "{:?}",
+            almost.gaps
+        );
+
+        // 100 human clips with no other audio: the benchmark itself.
+        let sufficient = coverage_of(&provenance_corpus(MINIMUM_BENCHMARK_CLIPS, 0, 0));
+        assert!(sufficient.real_voice_accuracy_supported);
+        assert!(sufficient.gaps.is_empty(), "{:?}", sufficient.gaps);
+
+        // 100 human clips plus synthetic audio: the human benchmark is still
+        // there, but the corpus is no longer one voice.
+        let mixed = coverage_of(&provenance_corpus(MINIMUM_BENCHMARK_CLIPS, 2, 0));
+        assert!(mixed.real_voice_accuracy_supported);
+        assert_eq!(mixed.clips_total, MINIMUM_BENCHMARK_CLIPS + 2);
+        assert!(mixed.gaps.is_empty(), "{:?}", mixed.gaps);
+    }
+
+    /// A corpus big enough for the benchmark, but not all one voice, must not
+    /// publish the blend as a voice result: the whole-corpus fields are
+    /// withheld and the labelled slices carry the numbers.
+    #[test]
+    fn a_mixed_corpus_does_not_publish_its_whole_corpus_rate() {
+        let engine = EngineIdentity {
+            engine: "whisper".into(),
+            model: "base.en".into(),
+            revision: None,
+        };
+        let corpus = provenance_corpus(MINIMUM_BENCHMARK_CLIPS, 2, 0);
+        let run = perfect_run(&corpus, &engine, "run");
+
+        let report = score_runs(&corpus, &[run]).unwrap();
+        assert!(report.coverage.real_voice_accuracy_supported);
+        assert!(
+            report.claim_scope.contains("out of 102"),
+            "the claim must say how many clips are human rather than count the whole corpus as one \
+             voice: {}",
+            report.claim_scope
+        );
+        assert!(report.claim_scope.contains("whole-corpus accuracy is withheld"));
+
+        let aggregate = &report.engines[0];
+        assert_eq!(aggregate.normalized_wer, None);
+        assert_eq!(aggregate.punctuation_accuracy, None);
+        assert_eq!(aggregate.capitalization_accuracy, None);
+        assert!(
+            aggregate
+                .measurement_gaps
+                .iter()
+                .any(|gap| gap.contains("mixes 2 synthetic")),
+            "{:?}",
+            aggregate.measurement_gaps
+        );
+        // Counts and latency are not voice claims, so they survive.
+        assert_eq!(aggregate.clips_total, MINIMUM_BENCHMARK_CLIPS + 2);
+        assert_eq!(aggregate.latency_p50_ms, Some(100.0));
+        // The honest labelled slices remain.
+        let slice = |provenance: ClipProvenance| {
+            aggregate
+                .provenance_slices
+                .iter()
+                .find(|slice| slice.provenance == provenance)
+                .unwrap()
+        };
+        assert_eq!(
+            slice(ClipProvenance::Human).clips_total,
+            MINIMUM_BENCHMARK_CLIPS
+        );
+        assert_eq!(slice(ClipProvenance::Human).normalized_wer, Some(0.0));
+        assert_eq!(slice(ClipProvenance::Synthetic).clips_total, 2);
+        assert_eq!(slice(ClipProvenance::Synthetic).normalized_wer, Some(0.0));
     }
 
     /// A run where the engine failed on some clips used to publish a rate over
@@ -2403,6 +2566,129 @@ mod tests {
             .unwrap();
         assert_eq!(human.clips_total, MINIMUM_BENCHMARK_CLIPS);
         assert_eq!(human.clips_scored, MINIMUM_BENCHMARK_CLIPS - failed);
+    }
+
+    /// The pair rates sit behind the same boundary as the engine rates: a
+    /// corpus padded to 100 clips with synthesized audio withholds them even
+    /// though it is large enough to look like a benchmark.
+    #[test]
+    fn a_pair_on_a_padded_corpus_withholds_its_rates() {
+        let first_engine = EngineIdentity {
+            engine: "first".into(),
+            model: "a".into(),
+            revision: None,
+        };
+        let second_engine = EngineIdentity {
+            engine: "second".into(),
+            model: "b".into(),
+            revision: None,
+        };
+        let corpus = provenance_corpus(1, 99, 0);
+        let runs = vec![
+            perfect_run(&corpus, &first_engine, "first-run"),
+            perfect_run(&corpus, &second_engine, "second-run"),
+        ];
+
+        let report = score_runs(&corpus, &runs).unwrap();
+        assert!(!report.coverage.real_voice_accuracy_supported);
+        let pair = &report.pairs[0];
+        assert_eq!(pair.clips_compared, MINIMUM_BENCHMARK_CLIPS);
+        assert_eq!(pair.normalized_agreement_rate, None);
+        assert_eq!(pair.first_disagreement_wer, None);
+        assert_eq!(pair.second_disagreement_wer, None);
+        assert_eq!(pair.oracle_wer, None);
+        assert!(
+            pair.measurement_gaps
+                .iter()
+                .any(|gap| gap.contains("real-voice accuracy claim")),
+            "{:?}",
+            pair.measurement_gaps
+        );
+    }
+
+    /// A pair that covers every clip on a corpus that can support the claim
+    /// publishes its rates, so the boundary does not swallow the measurements
+    /// it exists to qualify.
+    #[test]
+    fn a_sufficient_pair_publishes_its_rates() {
+        let first_engine = EngineIdentity {
+            engine: "first".into(),
+            model: "a".into(),
+            revision: None,
+        };
+        let second_engine = EngineIdentity {
+            engine: "second".into(),
+            model: "b".into(),
+            revision: None,
+        };
+        let corpus = provenance_corpus(MINIMUM_BENCHMARK_CLIPS, 0, 0);
+        let first = perfect_run(&corpus, &first_engine, "first-run");
+        let mut second = perfect_run(&corpus, &second_engine, "second-run");
+        // One clip hears "setting" instead of "settings": one disagreement, so
+        // the disagreement rates are measured rather than assumed.
+        let differing = second
+            .results
+            .iter_mut()
+            .find(|result| result.clip_id == "clip-0001")
+            .unwrap();
+        differing.hypothesis = Some("Open the Slugtale setting.".to_string());
+
+        let report = score_runs(&corpus, &[first, second]).unwrap();
+        let pair = &report.pairs[0];
+        assert!(pair.measurement_gaps.is_empty(), "{:?}", pair.measurement_gaps);
+        assert_eq!(pair.clips_compared, MINIMUM_BENCHMARK_CLIPS);
+        assert_eq!(pair.disagreement_clips, 1);
+        assert!((pair.normalized_agreement_rate.unwrap() - 0.99).abs() < 1e-9);
+        assert_eq!(pair.first_disagreement_wer, Some(0.0));
+        assert!((pair.second_disagreement_wer.unwrap() - 0.25).abs() < 1e-9);
+        assert_eq!(pair.oracle_wer, Some(0.0));
+    }
+
+    /// A pair rate over the clips both engines happened to transcribe is the
+    /// survivor problem again: the rates are withheld and the counts stay.
+    #[test]
+    fn an_incomplete_pair_withholds_its_rates_instead_of_scoring_the_survivors() {
+        let first_engine = EngineIdentity {
+            engine: "first".into(),
+            model: "a".into(),
+            revision: None,
+        };
+        let second_engine = EngineIdentity {
+            engine: "second".into(),
+            model: "b".into(),
+            revision: None,
+        };
+        let corpus = provenance_corpus(MINIMUM_BENCHMARK_CLIPS, 0, 0);
+        let first = perfect_run(&corpus, &first_engine, "first-run");
+        let mut second = perfect_run(&corpus, &second_engine, "second-run");
+        let failed = second.results.len() - 3;
+        for outcome in second.results.iter_mut().take(failed) {
+            outcome.hypothesis = None;
+            outcome.confidence = None;
+            outcome.error = Some(AdapterError {
+                code: "transcription_failed".to_string(),
+                detail: "local runtime failure".to_string(),
+            });
+        }
+
+        let report = score_runs(&corpus, &[first, second]).unwrap();
+        // Completeness is a property of each run and of the pair that joins
+        // them: the complete run still publishes its own rate.
+        assert_eq!(report.engines[0].normalized_wer, Some(0.0));
+        let pair = &report.pairs[0];
+        assert_eq!(pair.clips_compared, 3);
+        assert_eq!(pair.disagreement_clips, 0);
+        assert_eq!(pair.normalized_agreement_rate, None);
+        assert_eq!(pair.first_disagreement_wer, None);
+        assert_eq!(pair.second_disagreement_wer, None);
+        assert_eq!(pair.oracle_wer, None);
+        assert!(
+            pair.measurement_gaps
+                .iter()
+                .any(|gap| gap.contains("both engines")),
+            "{:?}",
+            pair.measurement_gaps
+        );
     }
 
     /// The dimensions the finding names — voices, names, silence, noise and
@@ -2639,6 +2925,65 @@ mod tests {
         }
     }
 
+    /// A corpus split by provenance, sized to whatever boundary a test needs.
+    ///
+    /// Every clip carries a proper term, a probe and (for humans) a speaker
+    /// label, so all five coverage dimensions are supported and a test about
+    /// provenance is not accidentally also a test about a missing dimension.
+    fn provenance_corpus(human: usize, synthetic: usize, unknown: usize) -> CorpusManifest {
+        let mut corpus = manifest();
+        corpus.name = "provenance boundary".to_string();
+        corpus.clips = Vec::new();
+        let mut index = 0usize;
+        for (provenance, count) in [
+            (ClipProvenance::Human, human),
+            (ClipProvenance::Synthetic, synthetic),
+            (ClipProvenance::Unknown, unknown),
+        ] {
+            for _ in 0..count {
+                let mut spec = clip(&format!("clip-{index:04}"), "Open the Slugtale settings.");
+                spec.provenance = provenance;
+                spec.proper_terms = vec!["Slugtale".to_string()];
+                if provenance == ClipProvenance::Human {
+                    spec.speaker = Some(if index % 2 == 0 {
+                        "voice-1".to_string()
+                    } else {
+                        "voice-2".to_string()
+                    });
+                }
+                if index % 5 == 0 {
+                    spec.expected_text = String::new();
+                    spec.proper_terms.clear();
+                    spec.probes = vec![CoverageProbe::Noise];
+                } else {
+                    spec.probes = vec![CoverageProbe::TrailingSegmentEdge];
+                }
+                corpus.clips.push(spec);
+                index += 1;
+            }
+        }
+        corpus
+    }
+
+    /// One run whose hypothesis is the reference text itself, so a test about
+    /// gating is not also a test about error rates.
+    fn perfect_run(
+        corpus: &CorpusManifest,
+        engine: &EngineIdentity,
+        run_id: &str,
+    ) -> EvaluationRun {
+        EvaluationRun {
+            schema_version: RUN_SCHEMA_VERSION,
+            run_id: run_id.to_string(),
+            engine: engine.clone(),
+            results: corpus
+                .clips
+                .iter()
+                .map(|spec| result(spec.id.as_str(), engine, &spec.expected_text, 0.95, 100.0))
+                .collect(),
+        }
+    }
+
     #[test]
     fn scorer_reports_deterministic_engine_and_pair_aggregates() {
         let mut corpus = manifest();
@@ -2712,9 +3057,23 @@ mod tests {
         assert_eq!(human.silence_hallucination_rate, Some(1.0));
 
         let pair = &report.pairs[0];
-        assert_eq!(pair.normalized_agreement_rate, Some(0.0));
+        // The pair rates sit behind the same boundary as the engine rates: a
+        // three-clip smoke corpus cannot support a voice claim, so agreement,
+        // disagreement WER and oracle WER are withheld here too. The counts
+        // still describe what was compared.
+        assert_eq!(pair.normalized_agreement_rate, None);
+        assert_eq!(pair.first_disagreement_wer, None);
+        assert_eq!(pair.second_disagreement_wer, None);
+        assert_eq!(pair.oracle_wer, None);
+        assert_eq!(pair.clips_compared, 3);
         assert_eq!(pair.disagreement_clips, 3);
-        assert_eq!(pair.oracle_wer, Some(0.0));
+        assert!(
+            pair.measurement_gaps
+                .iter()
+                .any(|gap| gap.contains("real-voice accuracy claim")),
+            "{:?}",
+            pair.measurement_gaps
+        );
     }
 
     #[test]

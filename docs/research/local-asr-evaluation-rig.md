@@ -45,8 +45,10 @@ npm run asr:research -- init \
 
 The parent benchmark requires at least 100 labelled clips covering short and
 long dictation, clean and noisy speech, hesitations, numbers, punctuation,
-names/jargon, and silence. The eight-entry example is deliberately only a smoke
-corpus. Duplicate and adapt its entries before the real benchmark.
+names/jargon, and silence. At least 100 of them have to be `human` on their own
+before a report will publish a whole-corpus rate; the eight-entry example is
+deliberately only a smoke corpus. Duplicate and adapt its entries before the
+real benchmark.
 
 ## Say where the audio came from
 
@@ -180,7 +182,9 @@ recall, punctuation and capitalization sequence accuracy, silence hallucination
 rate, latency p50/p95, and confidence expected calibration error when the
 engine supplied confidence. For every engine pair it contains normalized exact
 agreement, disagreement count and per-engine disagreement WER, plus oracle WER
-(the better whole hypothesis per clip). The scorer never merges words from two
+(the better whole hypothesis per clip); like the whole-corpus engine rates,
+those pair rates are withheld unless the corpus supports a voice claim and both
+engines transcribed every clip. The scorer never merges words from two
 hypotheses and never emits clip-level content.
 
 ## What a report is allowed to claim
@@ -195,12 +199,18 @@ the report leads with that rather than leaving it to the reader.
   `noise`, `segment-edges`. Every dimension is always present; a short one
   carries `supported: false` and the reason, so an unmeasured condition cannot
   be mistaken for a clean result.
-- `real_voice_accuracy_supported` opens only when at least one clip is `human`
-  and the corpus holds at least 100 clips. While it is closed, every
-  whole-corpus accuracy field — WER, term recall, punctuation, capitalization,
-  hallucination rate, calibration error — is `null`, and `gaps` says why. A
-  synthetic or unattributed corpus therefore cannot produce a headline rate at
-  all, however well it scored.
+- `real_voice_accuracy_supported` opens only when at least 100 clips are
+  `human` on their own: a corpus padded to that size with synthesized or
+  unattributed clips does not open it. While it is closed, every whole-corpus
+  accuracy field — WER, term recall, punctuation, capitalization, hallucination
+  rate, calibration error — is `null`, and `gaps` says why. A synthetic or
+  unattributed corpus therefore cannot produce a headline rate at all, however
+  well it scored.
+- a corpus that is big enough but not all one voice gets the same treatment for
+  a different reason: its whole-corpus rates are `null` too, because a rate over
+  the blend describes neither the voice nor the pipeline, and
+  `measurement_gaps` says so. The `provenance_slices` carry the labelled
+  numbers.
 - `provenance_slices` repeat the measurements per kind of audio, always all
   three. `unknown` clips are counted but never scored: a number attached to
   unattributed audio would be indistinguishable from a voice result at a
@@ -208,7 +218,11 @@ the report leads with that rather than leaving it to the reader.
   are still in the sensitive run file for anyone who annotates the manifest.
 - `clips_complete` and `measurement_gaps` cover the other way a report overstates
   itself. A run where the engine errored on some clips withholds the
-  whole-corpus rate rather than publishing one over the survivors.
+  whole-corpus rate rather than publishing one over the survivors, and every
+  engine pair sits behind the same boundary: its agreement, disagreement WER and
+  oracle WER are `null` unless the corpus supports a voice claim, no other audio
+  is mixed in, and both engines transcribed every clip. `clips_compared` and
+  `disagreement_clips` are counts, so they stay.
 
 Latency is exempt, because it is a property of the machine and the model rather
 than of whose voice was recorded.

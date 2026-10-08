@@ -48,10 +48,11 @@ invisible from the audio itself:
 
 The machine-checkable version of this is the `asr_research` corpus manifest
 (`docs/research/asr-evaluation-manifest.example.json`) and the `coverage` block
-of its `score` report, which withholds every whole-corpus accuracy field for a
-corpus with no human-voice clips in it. Do not fill in the tables in section 5
-from a corpus that does not carry those labels: an unattributed or synthetic run
-cannot support any of these rows.
+of its `score` report, which withholds every whole-corpus accuracy field unless
+at least 100 clips are human-voice on their own, and withholds them again when
+synthesized or unattributed clips are mixed in with the human ones. Do not fill
+in the tables in section 5 from a corpus that does not carry those labels: an
+unattributed or synthetic run cannot support any of these rows.
 
 Record each clip as its own file, then convert to the format the harness (and
 `decode_benchmark.rs`) require — 16 kHz mono 32-bit float WAV:

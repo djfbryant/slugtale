@@ -13,8 +13,9 @@ may cite it.
 
 Accuracy on a real voice comes from the private corpus rig
 (`docs/research/local-asr-evaluation-rig.md`), which records the provenance of
-every clip and refuses to publish a whole-corpus accuracy rate for a corpus with
-no human-voice clips in it.
+every clip and refuses to publish a whole-corpus accuracy rate unless at least
+100 of the clips are human-voice on their own and no synthetic or unattributed
+audio is mixed in.
 
 ## Why
 

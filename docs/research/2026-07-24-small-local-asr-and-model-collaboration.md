@@ -178,8 +178,8 @@ a speaker pseudonym so distinct voices can be counted. The published numbers in
 this document are priors from other people's audio on other people's hardware;
 only a corpus labelled with where it came from can turn them into a claim about
 this maintainer's dictation, and the rig in `local-asr-evaluation-rig.md`
-withholds a whole-corpus accuracy rate from any corpus that has no human-voice
-clips in it.
+withholds a whole-corpus accuracy rate from any corpus that cannot show at least
+100 human-voice clips on its own.
 
 Measure normalized WER, proper-term recall, punctuation/capitalization error,
 silence hallucinations, p50/p95 finalization latency, cold start, peak resident
