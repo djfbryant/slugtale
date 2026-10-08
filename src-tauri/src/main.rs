@@ -9,7 +9,7 @@ mod hotkey_registration;
 mod voice_activation;
 
 use hotkey_registration::{setup_configured_hotkey, HotkeyRegistrationState};
-use slugtale_lib::{DictationHost, WindowLabel};
+use slugtale_lib::{DictationEffects, DictationHost, DictationParts, WindowLabel};
 
 use slugtale_lib::AppFiles;
 
@@ -65,12 +65,15 @@ fn main() {
             // finds it in place. The Dictation Segment worker reaches the same
             // host from its own thread, so the runtime is handed a second handle
             // on it rather than a copy of anything the host already answers.
-            let host: Arc<DictationHost> = Arc::new(DictationHost::new(
-                Arc::new(commands::dictation::TauriSurface {
-                    app: app.handle().clone(),
-                }),
-                usage,
-            ));
+            let surface = Arc::new(commands::dictation::TauriSurface {
+                app: app.handle().clone(),
+            });
+            // The host is handed the two roles separately: it depends on the
+            // effects it performs and the parts a segment runs on, not on one
+            // adapter object that happens to be both.
+            let effects: Arc<dyn DictationEffects> = surface.clone();
+            let parts: Arc<dyn DictationParts> = surface.clone();
+            let host: Arc<DictationHost> = Arc::new(DictationHost::new(effects, parts, usage));
             app.manage(Arc::clone(&host));
             slugtale_lib::setup_tray(app)?;
             // The Dictation Segment worker outlives every dictation: it is what
