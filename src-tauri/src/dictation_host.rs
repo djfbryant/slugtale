@@ -463,7 +463,12 @@ where
 
         let runtime = self.runtime();
         let mut prepared = self.surface.prepared_insertion(pinned.target_pid)?;
-        prepared.guard_insertion_with(Arc::new(move || runtime.is_session_live(session)));
+        // Scope every effect this segment would have on the user — the keystrokes,
+        // the focus work before them, and the clipboard rescue if insertion fails
+        // — to the session that owns them. The runtime decides each one at the
+        // moment it happens rather than once here, because the decode that has
+        // just finished can have been overtaken (slugtale-cbxb).
+        prepared.guard_with_session(session, runtime.session_effects());
 
         let completed = crate::DictationWorkflow::new(
             &stack,
@@ -514,12 +519,24 @@ where
     /// microphone running. Called only from the worker thread. `cut` is the sample
     /// watermark the Pause Flush was queued with: the segment ends there (plus a
     /// small acoustic guard), whatever else has arrived since.
-    pub fn take_dictation_segment(&self, cut: u64) -> Option<crate::CapturedAudio> {
+    pub fn take_dictation_segment(
+        &self,
+        session: u64,
+        cut: u64,
+    ) -> Option<crate::CapturedAudio> {
         let flushed = self
             .capture
             .lock()
             .map_err(|_| "audio capture mutex poisoned".to_string())
-            .and_then(|mut guard| guard.cut_segment(cut).map_err(|error| error.to_string()));
+            .and_then(|mut guard| {
+                // The capture lock is held, so this is the last moment a newer
+                // Start can be beginning a capture: if the ring is no longer this
+                // session's, nothing may be drained from it (slugtale-cbxb).
+                if !self.owns_capture(session) {
+                    return Ok(None);
+                }
+                guard.cut_segment(cut).map_err(|error| error.to_string())
+            });
 
         match flushed {
             Ok(audio) => audio,
@@ -528,6 +545,20 @@ where
                 None
             }
         }
+    }
+
+    /// Whether `session` is the dictation the capture ring currently belongs to.
+    ///
+    /// The session pinned at Start is the capture's identity, which is what makes
+    /// "is this audio still ours" answerable at all: audio alone carries no
+    /// session, so a job that drained late would otherwise take the next
+    /// recording's speech (slugtale-cbxb).
+    fn owns_capture(&self, session: u64) -> bool {
+        self.session
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|pinned| pinned.session))
+            == Some(session)
     }
 }
 
@@ -559,8 +590,8 @@ impl<R> crate::DictationRuntimeHost for DictationHost<R>
 where
     R: crate::DictationRecorder + Send,
 {
-    fn take_pause_segment(&self, cut: u64) -> Option<crate::CapturedAudio> {
-        self.take_dictation_segment(cut)
+    fn take_pause_segment(&self, session: u64, cut: u64) -> Option<crate::CapturedAudio> {
+        self.take_dictation_segment(session, cut)
     }
 
     fn complete(
@@ -580,10 +611,12 @@ where
     /// dictation's own bar may be hidden: Cancel cleared its bar at the moment the
     /// user pressed Escape, and a dictation a newer Start replaced must leave the
     /// new bar alone (slugtale-cbxb).
-    fn last_job_settled(&self, session: u64) {
-        if self.runtime().is_session_live(session) {
-            self.surface.hide_dictation_bar();
-        }
+    ///
+    /// The runtime has already decided this, under the same lock that a newer
+    /// Start takes, so this method only mutates the surface — the decision and the
+    /// hide cannot come apart.
+    fn last_job_settled(&self, _session: u64) {
+        self.surface.hide_dictation_bar();
     }
 }
 
@@ -911,6 +944,10 @@ mod tests {
     /// the same callback the audio emitter thread calls.
     #[derive(Clone, Default)]
     struct FakeMicrophone {
+        /// Every cut the recorder was asked for, so a test can prove the
+        /// microphone was never touched rather than inferring it from what came
+        /// back.
+        cuts: Arc<std::sync::Mutex<Vec<u64>>>,
         level: Arc<std::sync::Mutex<Option<crate::AudioLevelCallback>>>,
         /// The ring position of the last voiced sample, moved forward whenever
         /// speech is heard so a Pause Flush has a cut worth queueing.
@@ -1049,6 +1086,7 @@ mod tests {
 
         fn cut_segment(&mut self, cut: u64) -> Result<CapturedAudio, AudioCaptureError> {
             let _ = self.cuts.send(cut);
+            self.microphone.cuts.lock().unwrap().push(cut);
             if self.fail_cut {
                 return Err(AudioCaptureError::new("fake cut failure"));
             }
@@ -1094,7 +1132,7 @@ mod tests {
     struct UnreachableRuntimeHost;
 
     impl DictationRuntimeHost for UnreachableRuntimeHost {
-        fn take_pause_segment(&self, _cut: u64) -> Option<CapturedAudio> {
+        fn take_pause_segment(&self, _session: u64, _cut: u64) -> Option<CapturedAudio> {
             None
         }
 
@@ -1203,6 +1241,12 @@ mod tests {
             self.host
                 .handle_dictation_event(DictationEvent::Start)
                 .expect("start succeeds");
+        }
+
+        /// Every cut the microphone was asked for, whether or not a test read it off
+        /// the channel.
+        fn drain_cuts(&self) -> Vec<u64> {
+            self.microphone.cuts.lock().unwrap().clone()
         }
 
         /// Whether Stop's own join of the level thread ran to the end. Stop
@@ -1660,6 +1704,91 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Some(TEST_TARGET_PID)],
             "the segment is aimed at the app its dictation began in"
+        );
+    }
+
+    #[test]
+    fn an_old_pause_flush_drains_no_audio_from_a_newer_dictations_capture() {
+        // The interleaving that used to take the new recording's speech: the
+        // worker's liveness check passed, and Cancel plus a newer Start landed
+        // before the drain. The session travels to the capture lock, which is the
+        // lock a concurrent Start holds while it begins capturing, so the ring is
+        // asked whether it is still this job's before anything is taken from it.
+        let surface = Arc::new(FakeSurface::default()).transcribing_as(&["words"]);
+        let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
+        let stale = running_session(&dictating.host);
+
+        dictating.cancel();
+        dictating.start_another_dictation();
+        assert_ne!(
+            running_session(&dictating.host),
+            stale,
+            "the replacement dictation now owns the capture"
+        );
+        assert!(
+            dictating.drain_cuts().is_empty(),
+            "nothing has been cut yet"
+        );
+
+        // The old job reaching the drain boundary now.
+        let taken = dictating.host.take_dictation_segment(stale, 8_000);
+
+        assert!(
+            taken.is_none(),
+            "a stale flush must not take the new recording's audio"
+        );
+        assert!(
+            dictating.drain_cuts().is_empty(),
+            "the microphone was never asked to cut anything"
+        );
+
+        // And the live session can still drain its own audio, so the guard refuses
+        // by session rather than refusing everything.
+        assert!(
+            dictating
+                .host
+                .take_dictation_segment(running_session(&dictating.host), 8_000)
+                .is_some()
+        );
+        assert_eq!(dictating.drain_cuts(), [8_000]);
+    }
+
+    #[test]
+    fn an_old_dictations_completion_never_hides_the_bar_a_new_dictation_showed() {
+        // Forced interleaving, the one the review names: the old dictation's final
+        // job settles exactly while the replacement dictation is showing its own
+        // bar. Deciding to hide and hiding are one operation under the runtime's
+        // effects lock, which every lifecycle event also takes, so the hide cannot
+        // slip into the gap between the check and the mutation (slugtale-cbxb).
+        let (surface, gate) = Arc::new(FakeSurface::default())
+            .transcribing_as(&["words from the replaced dictation"])
+            .blocking_transcription();
+        let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
+
+        // Stop queues the final segment and its decode blocks in the model.
+        dictating
+            .host
+            .handle_dictation_event(DictationEvent::Stop)
+            .expect("stop succeeds");
+        gate.wait_until_decoding();
+
+        // The user starts dictating again before that decode returns.
+        dictating.start_another_dictation();
+        surface.clear_calls();
+        gate.release();
+
+        // The replacement dictation's own segment settles after the old one,
+        // because the worker is single and ordered.
+        dictating.microphone.speak_then_pause();
+        dictating
+            .counted
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the replacement dictation's flush settles");
+
+        assert!(
+            !surface.calls().contains(&Call::HideBar),
+            "an old dictation's completion must not hide the new bar: {:?}",
+            surface.calls()
         );
     }
 
