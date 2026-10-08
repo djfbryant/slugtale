@@ -14,7 +14,7 @@ use crate::{
     count_words, CapturedAudio, CountedSegment, DictationSegmentOutcome, DictationSegmentPosition,
     SegmentPauseDetector, SEGMENT_PAUSE,
 };
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 /// Everything the Dictation Runtime asks of the app, and nothing else. One
@@ -24,15 +24,29 @@ use std::sync::{mpsc, Arc, Mutex};
 /// Dictation Segment. The runtime holds the host shared for the app's whole
 /// life and only ever reads through it, so a host keeps whatever locking its
 /// own state needs inside itself.
+///
+/// Every method that reaches the user carries the `session` — the number
+/// [`DictationRuntime::begin`] returned for the dictation the job belongs to. A
+/// job can still be running when the user cancels that dictation or starts
+/// another one, so the effects it would produce have to be told which dictation
+/// they belong to rather than assumed to be current (slugtale-cbxb).
 pub trait DictationRuntimeHost: Send + Sync {
     /// Take the pending Pause Flush audio from the capture ring, cutting at
     /// `cut` — the sample watermark the flush was queued with.
-    fn take_pause_segment(&self, cut: u64) -> Option<CapturedAudio>;
+    ///
+    /// `session` is the dictation the flush belongs to, and the host checks it
+    /// against its own capture ownership while holding the capture lock. The
+    /// worker's own liveness check happens before this call, so a Cancel and a
+    /// newer Start can land in between; without the session the old job would
+    /// drain whatever the new recording had captured (slugtale-cbxb).
+    fn take_pause_segment(&self, session: u64, cut: u64) -> Option<CapturedAudio>;
 
-    /// Transcribe, clean up, insert, and rescue one segment, start to finish.
-    /// Errors are reported as strings because they are logged, never surfaced.
+    /// Transcribe, clean up, insert, and rescue one segment of `session`, start
+    /// to finish. Errors are reported as strings because they are logged, never
+    /// surfaced.
     fn complete(
         &self,
+        session: u64,
         audio: CapturedAudio,
         position: DictationSegmentPosition,
     ) -> Result<DictationSegmentOutcome, String>;
@@ -42,17 +56,20 @@ pub trait DictationRuntimeHost: Send + Sync {
     /// is the host's half of ADR-0025.
     fn record_counted_segment(&self, segment: CountedSegment);
 
-    /// A dictation's final job has settled — inserted, skipped, failed, or even
+    /// `session`'s final job has settled — inserted, skipped, failed, or even
     /// panicked. Whatever happens, nothing else will end the transcribing
-    /// state: the host hides the Dictation Bar here.
-    fn last_job_settled(&self);
+    /// state: the host hides the Dictation Bar here, and only while `session`
+    /// is still the dictation that owns the bar.
+    fn last_job_settled(&self, session: u64);
 }
 
-/// One unit of Dictation Segment work, in the order the runtime heard it.
+/// One unit of Dictation Segment work, in the order the runtime heard it. Both
+/// variants carry the `session` the work belongs to, so nothing it produces can
+/// be attributed to a later dictation.
 #[derive(Debug)]
 enum DictationSegmentJob {
     PauseFlush {
-        dictation: u64,
+        session: u64,
         /// The ring sample position of the last voiced sample when this flush
         /// was queued. The worker drains only through it (plus the capture
         /// module's quiet-tail guard), so queue delay cannot append later
@@ -60,15 +77,15 @@ enum DictationSegmentJob {
         cut: u64,
     },
     Last {
-        dictation: u64,
+        session: u64,
         audio: CapturedAudio,
     },
 }
 
 impl DictationSegmentJob {
-    fn dictation(&self) -> u64 {
+    fn session(&self) -> u64 {
         match self {
-            Self::PauseFlush { dictation, .. } | Self::Last { dictation, .. } => *dictation,
+            Self::PauseFlush { session, .. } | Self::Last { session, .. } => *session,
         }
     }
 
@@ -79,51 +96,88 @@ impl DictationSegmentJob {
 
 /// Shared Dictation Segment state. The Tauri tier owns transport and audio;
 /// this decides which queued work is still valid.
+///
+/// Two locks, and holding one while taking the other is the whole design here:
+///
+/// - `lifecycle` belongs to whoever is starting, cancelling or finishing a
+///   dictation. It is never held across a decode, a settling sleep, or a focus
+///   activation.
+/// - `effects` belongs to whoever is about to let a job reach the user: take the
+///   microphone cut, type, rescue, or hide the Dictation Bar. `lifecycle` takes
+///   it too, but only for as long as it takes to record a new session number or
+///   a cancellation.
+///
+/// Deciding whether a job may still reach the user and then letting it do so is
+/// not one operation, so every such rule takes `effects` once and acts while
+/// holding it. A Cancel or a newer Start waits on the same lock, so it cannot
+/// slip into the gap between the check and the effect it was meant to prevent
+/// (slugtale-cbxb). `lifecycle` before `effects` is the only permitted order.
 #[derive(Default)]
 struct DictationSegmentControl {
-    dictation: AtomicU64,
+    session: AtomicU64,
     cancelled_through: AtomicU64,
-    rescued: AtomicBool,
+    /// The newest session whose Insertion Rescue suspended later Pause Flushes.
+    /// Recorded per session rather than as one flag, so a rescue completing
+    /// after the user started another dictation cannot suspend that dictation's
+    /// flushes, and so a new dictation does not have to clear a flag an old
+    /// completion might set again (slugtale-cbxb).
+    rescued_through: AtomicU64,
+    effects: Mutex<()>,
+    lifecycle: Mutex<()>,
 }
 
 impl DictationSegmentControl {
     fn current(&self) -> u64 {
-        self.dictation.load(Ordering::SeqCst)
+        self.session.load(Ordering::SeqCst)
     }
 
+    /// Open the next dictation. Holding `lifecycle` keeps the session number and
+    /// the cancellation record consistent with each other, and `effects` keeps a
+    /// job from letting an effect through against the session being replaced.
     fn begin(&self) -> u64 {
-        self.rescued.store(false, Ordering::SeqCst);
-        self.dictation.fetch_add(1, Ordering::SeqCst) + 1
+        let _lifecycle = self.lifecycle.lock();
+        let _effects = self.effects.lock();
+        self.session.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     fn abandon(&self) {
+        let _lifecycle = self.lifecycle.lock();
+        let _effects = self.effects.lock();
         self.cancelled_through
             .store(self.current(), Ordering::SeqCst);
     }
 
-    fn is_cancelled(&self, dictation: u64) -> bool {
-        dictation <= self.cancelled_through.load(Ordering::SeqCst)
+    fn is_cancelled(&self, session: u64) -> bool {
+        session <= self.cancelled_through.load(Ordering::SeqCst)
     }
 
-    fn is_recording(&self, dictation: u64) -> bool {
-        self.current() == dictation && !self.is_cancelled(dictation)
+    /// Whether `session` is still the dictation the app is running: neither
+    /// cancelled nor replaced by a newer Start.
+    ///
+    /// Only ever called while holding `effects`, which is what makes a check
+    /// followed by an effect one operation rather than two (slugtale-cbxb).
+    fn is_recording(&self, session: u64) -> bool {
+        self.current() == session && !self.is_cancelled(session)
     }
 
-    fn suspend_flushes_for_rescue(&self) {
-        self.rescued.store(true, Ordering::SeqCst);
+    /// Record that `session`'s Insertion Rescue must hold back its later Pause
+    /// Flushes. Also called while holding `effects`, so it cannot land between a
+    /// newer `begin` and that dictation's first flush (slugtale-cbxb).
+    fn suspend_flushes_for_rescue(&self, session: u64) {
+        self.rescued_through.fetch_max(session, Ordering::SeqCst);
     }
 
     /// The ADR-0026 rule "Rescue suspends flushes" (guarantee 3), in one place.
     ///
-    /// After Insertion Rescue fires, no later Pause Flush may insert, or the
-    /// rescue is buried under new text the user has to dig out. Both sides of
-    /// the segment queue ask this one question, and both must: the queue is
-    /// unbounded, so `on_voice_level` asks before it queues anything, and the
-    /// worker asks again before it drains, because a job queued before the
+    /// After Insertion Rescue fires, no later Pause Flush of *that dictation* may
+    /// insert, or the rescue is buried under new text the user has to dig out.
+    /// Both sides of the segment queue ask this one question, and both must: the
+    /// queue is unbounded, so `on_voice_level` asks before it queues anything, and
+    /// the worker asks again before it drains, because a job queued before the
     /// rescue arrived can still reach the drain. The last segment of the
     /// dictation is never held back, so the words the user said are still kept.
-    fn rescue_suspends_flushes(&self) -> bool {
-        self.rescued.load(Ordering::SeqCst)
+    fn rescue_suspends_flushes(&self, session: u64) -> bool {
+        session <= self.rescued_through.load(Ordering::SeqCst)
     }
 }
 
@@ -156,7 +210,7 @@ pub struct DictationRuntime {
 /// one when transcription takes longer.
 #[derive(Default)]
 struct DictationSegmentWorker {
-    dictation: u64,
+    session: u64,
     inserted_any: bool,
 }
 
@@ -167,29 +221,38 @@ impl DictationSegmentWorker {
         control: &DictationSegmentControl,
         host: &dyn DictationRuntimeHost,
     ) -> Result<DictationSegmentJobResult, String> {
-        let number = job.dictation();
+        let session = job.session();
         let last = job.is_last();
-        if number != self.dictation {
-            self.dictation = number;
+        if session != self.session {
+            self.session = session;
             self.inserted_any = false;
         }
 
+        // Each variant decides and acts under `effects`, so a Cancel or a newer
+        // Start cannot land between deciding and taking the audio. The flush's
+        // drain additionally re-checks inside the capture lock against the
+        // session the capture session belongs to, because that lock is the one
+        // a concurrent capture start holds (slugtale-cbxb).
         let audio = match job {
-            DictationSegmentJob::PauseFlush { dictation, cut } => {
-                if control.rescue_suspends_flushes() || !control.is_recording(dictation) {
+            DictationSegmentJob::PauseFlush { session, cut } => {
+                let _effects = control.effects.lock();
+                if control.rescue_suspends_flushes(session) || !control.is_recording(session) {
                     None
                 } else {
-                    host.take_pause_segment(cut)
+                    host.take_pause_segment(session, cut)
                 }
             }
             DictationSegmentJob::Last { audio, .. } => {
-                (!control.is_cancelled(number)).then_some(audio)
+                let _effects = control.effects.lock();
+                control.is_recording(session).then_some(audio)
             }
         };
 
         let Some(audio) = audio else {
             return Ok(DictationSegmentJobResult::Skipped { last });
         };
+        // From here the audio is this job's own and no lock is held: the decode
+        // ahead may take seconds, and no lifecycle event may block behind it.
 
         let speaking_seconds = if audio.sample_rate_hz > 0 {
             audio.samples.len() as f64 / f64::from(audio.sample_rate_hz)
@@ -202,17 +265,37 @@ impl DictationSegmentWorker {
         } else {
             DictationSegmentPosition::Continuation
         };
-        let outcome = host.complete(audio, position)?;
+        let outcome = host.complete(session, audio, position)?;
+        // The Usage handoff is an effect like any other: it writes to the user's
+        // Daily Usage Records, and words from a dictation the user cancelled must
+        // not appear there after Cancel has returned. Deciding and handing over are
+        // one operation under `effects`, which the lifecycle also takes
+        // (slugtale-cbxb).
         if outcome.inserted {
-            host.record_counted_segment(CountedSegment {
+            let counted = CountedSegment {
                 words: count_words(&outcome.transcription.text),
                 speaking_seconds,
                 starts_dictation,
-            });
+            };
+            let _effects = control.effects.lock();
+            if control.is_recording(session) {
+                host.record_counted_segment(counted);
+            }
         }
+        // A segment refused at its own boundary comes back marked as not
+        // inserted, so it neither reaches Usage nor takes the dictation's first
+        // position away from the segment that does insert.
         self.inserted_any |= outcome.inserted;
+        // A rescue raised by a session the user has already moved on from must
+        // not wedge the dictation they are in now: the suspension belongs to the
+        // dictation that rescued. Recording it under `effects` also means it
+        // cannot land between a newer `begin` and that dictation's first flush
+        // (slugtale-cbxb).
         if outcome.rescued {
-            control.suspend_flushes_for_rescue();
+            let _effects = control.effects.lock();
+            if control.is_recording(session) {
+                control.suspend_flushes_for_rescue(session);
+            }
         }
 
         Ok(DictationSegmentJobResult::Completed {
@@ -261,7 +344,7 @@ impl DictationRuntime {
         self.control.current()
     }
 
-    /// Open a new dictation and return its number.
+    /// Open a new dictation and return its session number.
     pub fn begin(&self) -> u64 {
         if let Ok(mut detector) = self.pause_detector.lock() {
             detector.rearm();
@@ -274,11 +357,23 @@ impl DictationRuntime {
         self.control.abandon();
     }
 
+    /// Whether `session` is still the dictation the user is running: not cancelled,
+    /// and not replaced by a newer Start.
+    ///
+    /// For the host's own use, where there is no effect to serialise against —
+    /// reading the bar's state, naming the session. A caller that is about to
+    /// *do* something the user would see must not use this: it is a check, and a
+    /// check is not a decision. The runtime holds that decision itself, under
+    /// `effects`, around every one of a job's effects (slugtale-cbxb).
+    pub fn is_session_live(&self, session: u64) -> bool {
+        self.control.is_recording(session)
+    }
+
     /// Queue a Pause Flush for the active dictation, cutting the segment at the
     /// sample watermark `cut`. Reports whether the worker accepted it.
     fn send_pause_flush(&self, cut: u64) -> bool {
         self.send(DictationSegmentJob::PauseFlush {
-            dictation: self.current(),
+            session: self.current(),
             cut,
         })
     }
@@ -297,7 +392,15 @@ impl DictationRuntime {
         if !detector.on_level(level, std::time::Instant::now()) {
             return;
         }
-        if self.control.rescue_suspends_flushes() {
+        // Asked for the dictation a flush would belong to, so a rescue from a
+        // session the user has left cannot hold back this one's flushes
+        // (slugtale-cbxb). Read without the effects lock: this runs on the
+        // recorder's level-emitter thread, and taking that lock here would put
+        // the level thread in contention with the lifecycle it feeds.
+        if self
+            .control
+            .rescue_suspends_flushes(self.control.current())
+        {
             return;
         }
         // Cut at the last voiced sample the ring knows about, not at whatever has
@@ -309,7 +412,7 @@ impl DictationRuntime {
     /// Queue the active dictation's final captured audio.
     pub fn send_last(&self, audio: CapturedAudio) -> bool {
         self.send(DictationSegmentJob::Last {
-            dictation: self.current(),
+            session: self.current(),
             audio,
         })
     }
@@ -356,8 +459,44 @@ impl DictationRuntime {
     /// The suspension set by a rescue, reached without a worker to set it, so a
     /// test can ask the producer side what it does with a flag already raised.
     #[cfg(test)]
-    fn suspend_flushes_for_test(&self) {
-        self.control.suspend_flushes_for_rescue();
+    fn suspend_flushes_for_test(&self, session: u64) {
+        let _effects = self.control.effects.lock();
+        self.control.suspend_flushes_for_rescue(session);
+    }
+
+    /// The runtime's own implementation of [`crate::SessionEffects`], so the Dictation
+    /// Host can scope a Dictation Segment's effects to a session without either
+    /// module depending on the other's internals.
+    pub fn session_effects(self: &Arc<Self>) -> Arc<dyn crate::SessionEffects> {
+        Arc::new(RuntimeSessionEffects {
+            runtime: Arc::clone(self),
+        })
+    }
+}
+
+/// Answers "may this session still reach the user?" in a way a check-then-act
+/// gap cannot slip into: the runtime's `effects` lock is held across the
+/// decision *and* the effect, and the lifecycle events that invalidate a session
+/// wait on that same lock (slugtale-cbxb).
+pub struct RuntimeSessionEffects {
+    runtime: Arc<DictationRuntime>,
+}
+
+impl crate::SessionEffects for RuntimeSessionEffects {
+    fn while_session_live(&self, session: u64, effect: &mut dyn FnMut()) -> bool {
+        let _effects = self.runtime.control.effects.lock();
+        if !self.runtime.control.is_recording(session) {
+            return false;
+        }
+        effect();
+        true
+    }
+
+    fn note_refused(&self, session: u64) {
+        // A refusal is not itself a dictation event, so there is nothing for the
+        // Dictation Host to be told. The flag on the prepared pair is what the
+        // caller reads.
+        let _ = session;
     }
 }
 
@@ -375,6 +514,11 @@ fn run_worker(
 /// Transcribe and insert one queued Dictation Segment. Every outcome is
 /// contained: a failure is logged, a panic is logged, and in both cases the next
 /// job still runs and a dictation's last job still settles its Dictation Bar.
+///
+/// The bar is settled for the session that owns it, on every path — completed,
+/// skipped, failed, or panicked. The host decides whether that session may still
+/// hide the bar: a cancelled dictation cleared it itself, and a dictation a newer
+/// Start replaced must not take the new bar down with it (slugtale-cbxb).
 fn settle_job(
     worker: &mut DictationSegmentWorker,
     job: DictationSegmentJob,
@@ -382,6 +526,7 @@ fn settle_job(
     host: &dyn DictationRuntimeHost,
 ) {
     let last = job.is_last();
+    let session = job.session();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         worker.process(job, control, host)
     }));
@@ -402,7 +547,14 @@ fn settle_job(
         Err(_) => eprintln!("dictation segment panicked; the queue stays open"),
     }
     if last {
-        host.last_job_settled();
+        // Asking whether this session may still hide the Dictation Bar and hiding
+        // it are one operation under `effects`: a newer Start that shows a new bar
+        // cannot slip between them and lose its bar to an old dictation's
+        // completion (slugtale-cbxb).
+        let _effects = control.effects.lock();
+        if control.is_recording(session) {
+            host.last_job_settled(session);
+        }
     }
 }
 
@@ -417,9 +569,9 @@ mod tests {
     #[derive(Clone, Debug, PartialEq)]
     enum HostCall {
         Cut(u64),
-        Completed(DictationSegmentPosition),
+        Completed(u64, DictationSegmentPosition),
         Recorded(CountedSegment),
-        BarHidden,
+        BarHidden(u64),
     }
 
     /// The one fake: it answers from a script — the audio each cut finds, the
@@ -433,6 +585,13 @@ mod tests {
         outcomes: Arc<Mutex<Vec<DictationSegmentOutcome>>>,
         /// The 1-based completion that panics, so a test picks the point.
         panic_at_completion: usize,
+        /// When set, every completion opens the next dictation just before it
+        /// answers: the window in which a decode outlives the dictation it
+        /// belongs to.
+        restart_during_completion: Option<Arc<DictationSegmentControl>>,
+        /// Which session each cut was asked for, so a test can prove the drain
+        /// boundary was told whose audio it was about to take.
+        sessions_cut: Arc<Mutex<Vec<(u64, u64)>>>,
     }
 
     impl FakeHost {
@@ -452,6 +611,14 @@ mod tests {
             self
         }
 
+        fn starting_the_next_dictation_during_completion(
+            mut self,
+            control: Arc<DictationSegmentControl>,
+        ) -> Self {
+            self.restart_during_completion = Some(control);
+            self
+        }
+
         fn calls(&self) -> Vec<HostCall> {
             self.calls.lock().unwrap().clone()
         }
@@ -466,11 +633,21 @@ mod tests {
                 .collect()
         }
 
+        fn sessions(&self) -> Vec<u64> {
+            self.calls()
+                .into_iter()
+                .filter_map(|call| match call {
+                    HostCall::Completed(session, _) => Some(session),
+                    _ => None,
+                })
+                .collect()
+        }
+
         fn positions(&self) -> Vec<DictationSegmentPosition> {
             self.calls()
                 .into_iter()
                 .filter_map(|call| match call {
-                    HostCall::Completed(position) => Some(position),
+                    HostCall::Completed(_, position) => Some(position),
                     _ => None,
                 })
                 .collect()
@@ -489,29 +666,43 @@ mod tests {
         fn bars_hidden(&self) -> usize {
             self.calls()
                 .iter()
-                .filter(|call| **call == HostCall::BarHidden)
+                .filter(|call| matches!(call, HostCall::BarHidden(_)))
                 .count()
+        }
+
+        /// The (session, cut) pair of every drain, in order.
+        fn drained(&self) -> Vec<(u64, u64)> {
+            self.sessions_cut.lock().unwrap().clone()
         }
     }
 
     impl DictationRuntimeHost for FakeHost {
-        fn take_pause_segment(&self, cut: u64) -> Option<CapturedAudio> {
+        fn take_pause_segment(&self, session: u64, cut: u64) -> Option<CapturedAudio> {
             self.calls.lock().unwrap().push(HostCall::Cut(cut));
+            self.sessions_cut
+                .lock()
+                .unwrap()
+                .push((session, cut));
             self.audio.lock().unwrap().remove(0)
         }
 
         fn complete(
             &self,
+            session: u64,
             _audio: CapturedAudio,
             position: DictationSegmentPosition,
         ) -> Result<DictationSegmentOutcome, String> {
+            // The user's next Start lands while this decode is still running.
+            if let Some(control) = self.restart_during_completion.as_ref() {
+                control.begin();
+            }
             let outcome = self.outcomes.lock().unwrap().remove(0);
             let completion = {
                 let mut calls = self.calls.lock().unwrap();
-                calls.push(HostCall::Completed(position));
+                calls.push(HostCall::Completed(session, position));
                 calls
                     .iter()
-                    .filter(|call| matches!(call, HostCall::Completed(_)))
+                    .filter(|call| matches!(call, HostCall::Completed(_, _)))
                     .count()
             };
             if completion == self.panic_at_completion {
@@ -524,8 +715,8 @@ mod tests {
             self.calls.lock().unwrap().push(HostCall::Recorded(segment));
         }
 
-        fn last_job_settled(&self) {
-            self.calls.lock().unwrap().push(HostCall::BarHidden);
+        fn last_job_settled(&self, session: u64) {
+            self.calls.lock().unwrap().push(HostCall::BarHidden(session));
         }
     }
 
@@ -759,7 +950,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("a flush queues while the dictation records");
 
-        runtime.suspend_flushes_for_test();
+        runtime.suspend_flushes_for_test(1);
 
         runtime.on_voice_level(speaking());
         std::thread::sleep(TEST_PAUSE * 3);
@@ -796,15 +987,15 @@ mod tests {
             &host,
             vec![
                 DictationSegmentJob::PauseFlush {
-                    dictation: 1,
+                    session: 1,
                     cut: 16_000,
                 },
                 DictationSegmentJob::PauseFlush {
-                    dictation: 1,
+                    session: 1,
                     cut: 32_000,
                 },
                 DictationSegmentJob::Last {
-                    dictation: 1,
+                    session: 1,
                     audio: audio(8_000, 16_000),
                 },
             ],
@@ -841,11 +1032,11 @@ mod tests {
             &host,
             vec![
                 DictationSegmentJob::PauseFlush {
-                    dictation: 1,
+                    session: 1,
                     cut: 0,
                 },
                 DictationSegmentJob::Last {
-                    dictation: 1,
+                    session: 1,
                     audio: audio(8_000, 16_000),
                 },
             ],
@@ -877,11 +1068,11 @@ mod tests {
             &host,
             vec![
                 DictationSegmentJob::PauseFlush {
-                    dictation: 1,
+                    session: 1,
                     cut: 0,
                 },
                 DictationSegmentJob::Last {
-                    dictation: 1,
+                    session: 1,
                     audio: audio(1, 1),
                 },
             ],
@@ -910,7 +1101,7 @@ mod tests {
         drive(
             &host,
             vec![DictationSegmentJob::PauseFlush {
-                dictation: 1,
+                session: 1,
                 cut: 48_000,
             }],
         );
@@ -932,7 +1123,7 @@ mod tests {
             worker
                 .process(
                     DictationSegmentJob::PauseFlush {
-                        dictation: first,
+                        session: first,
                         cut: 1_000
                     },
                     &control,
@@ -947,8 +1138,8 @@ mod tests {
     #[test]
     fn cancellation_and_rescue_suppress_pause_flushes_but_not_the_last_segment() {
         let control = DictationSegmentControl::default();
-        let dictation = control.begin();
-        control.suspend_flushes_for_rescue();
+        let session = control.begin();
+        control.suspend_flushes_for_rescue(session);
         let mut worker = DictationSegmentWorker::default();
         let host = FakeHost::answering(
             vec![Some(audio(1, 1))],
@@ -958,7 +1149,7 @@ mod tests {
         assert_eq!(
             worker
                 .process(
-                    DictationSegmentJob::PauseFlush { dictation, cut: 0 },
+                    DictationSegmentJob::PauseFlush { session, cut: 0 },
                     &control,
                     &host
                 )
@@ -968,7 +1159,7 @@ mod tests {
         worker
             .process(
                 DictationSegmentJob::Last {
-                    dictation,
+                    session,
                     audio: audio(1, 1),
                 },
                 &control,
@@ -983,7 +1174,7 @@ mod tests {
             worker
                 .process(
                     DictationSegmentJob::Last {
-                        dictation: next,
+                        session: next,
                         audio: audio(1, 1)
                     },
                     &control,
@@ -1013,15 +1204,15 @@ mod tests {
             &host,
             vec![
                 DictationSegmentJob::PauseFlush {
-                    dictation: 1,
+                    session: 1,
                     cut: 0,
                 },
                 DictationSegmentJob::PauseFlush {
-                    dictation: 1,
+                    session: 1,
                     cut: 1_000,
                 },
                 DictationSegmentJob::Last {
-                    dictation: 1,
+                    session: 1,
                     audio: audio(1, 1),
                 },
             ],
@@ -1050,7 +1241,7 @@ mod tests {
         // next dictation is how they move on. Without this the first Insertion
         // Rescue of a session would wedge every dictation that follows it.
         let control = DictationSegmentControl::default();
-        let rescued_dictation = control.begin();
+        let rescued_session = control.begin();
         let mut worker = DictationSegmentWorker::default();
         let host = FakeHost::answering(
             vec![Some(audio(1, 1)), Some(audio(1, 1))],
@@ -1063,7 +1254,7 @@ mod tests {
         worker
             .process(
                 DictationSegmentJob::PauseFlush {
-                    dictation: rescued_dictation,
+                    session: rescued_session,
                     cut: 0,
                 },
                 &control,
@@ -1071,11 +1262,11 @@ mod tests {
             )
             .unwrap();
 
-        let next_dictation = control.begin();
+        let next_session = control.begin();
         worker
             .process(
                 DictationSegmentJob::PauseFlush {
-                    dictation: next_dictation,
+                    session: next_session,
                     cut: 1_000,
                 },
                 &control,
@@ -1111,15 +1302,15 @@ mod tests {
             &host,
             vec![
                 DictationSegmentJob::PauseFlush {
-                    dictation: 1,
+                    session: 1,
                     cut: 0,
                 },
                 DictationSegmentJob::PauseFlush {
-                    dictation: 1,
+                    session: 1,
                     cut: 500,
                 },
                 DictationSegmentJob::Last {
-                    dictation: 1,
+                    session: 1,
                     audio: audio(1, 1),
                 },
             ],
@@ -1149,7 +1340,7 @@ mod tests {
         settle_job(
             &mut worker,
             DictationSegmentJob::PauseFlush {
-                dictation: 1,
+                session: 1,
                 cut: 0,
             },
             &control,
@@ -1158,7 +1349,7 @@ mod tests {
         settle_job(
             &mut worker,
             DictationSegmentJob::Last {
-                dictation: 1,
+                session: 1,
                 audio: audio(1, 1),
             },
             &control,
@@ -1167,7 +1358,576 @@ mod tests {
 
         assert!(host.positions().is_empty());
         assert!(host.recorded().is_empty());
-        assert_eq!(host.bars_hidden(), 1);
+        // Nothing may end the transcribing state either. A cancelled dictation
+        // cleared its own bar the moment Escape arrived, so its final job hiding
+        // the bar would take down whatever is on screen now — a newer dictation's
+        // bar (slugtale-cbxb).
+        assert_eq!(
+            host.bars_hidden(),
+            0,
+            "a cancelled dictation's settlement hides nothing"
+        );
+    }
+
+    #[test]
+    fn a_new_dictation_waits_for_a_flush_deciding_what_audio_to_take() {
+        // The first of the review's races, forced with a bounded wait: the worker is
+        // deciding whether its session may still drain the capture ring when a newer
+        // Start arrives. Deciding and asking the microphone are one operation under
+        // `effects`, and `begin` takes that same lock, so the Start cannot begin a
+        // recording while the old flush is still reaching for the ring (slugtale-cbxb).
+        let control = Arc::new(DictationSegmentControl::default());
+        let old = control.begin();
+
+        let inside = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        struct BlockingDrain {
+            inside: Arc<(Mutex<bool>, std::sync::Condvar)>,
+            release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        }
+
+        impl DictationRuntimeHost for BlockingDrain {
+            fn take_pause_segment(&self, _session: u64, _cut: u64) -> Option<CapturedAudio> {
+                let (lock, condvar) = &*self.inside;
+                *lock.lock().unwrap() = true;
+                condvar.notify_all();
+                let (lock, condvar) = &*self.release;
+                let mut released = lock.lock().unwrap();
+                while !*released {
+                    released = condvar.wait(released).expect("gate mutex");
+                }
+                Some(audio(1, 1))
+            }
+
+            fn complete(
+                &self,
+                _session: u64,
+                _audio: CapturedAudio,
+                _position: DictationSegmentPosition,
+            ) -> Result<DictationSegmentOutcome, String> {
+                Ok(outcome("words", true, false))
+            }
+
+            fn record_counted_segment(&self, _segment: CountedSegment) {}
+
+            fn last_job_settled(&self, _session: u64) {}
+        }
+
+        let host: Arc<dyn DictationRuntimeHost> = Arc::new(BlockingDrain {
+            inside: Arc::clone(&inside),
+            release: Arc::clone(&release),
+        });
+        let draining = {
+            let control = Arc::clone(&control);
+            std::thread::spawn(move || {
+                let mut worker = DictationSegmentWorker::default();
+                settle_job(
+                    &mut worker,
+                    DictationSegmentJob::PauseFlush {
+                        session: old,
+                        cut: 8_000,
+                    },
+                    &control,
+                    host.as_ref(),
+                );
+            })
+        };
+
+        {
+            let (lock, condvar) = &*inside;
+            let mut inside = lock.lock().unwrap();
+            while !*inside {
+                inside = condvar.wait(inside).expect("gate mutex");
+            }
+        }
+
+        let (running_tx, running_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let starting = {
+            let control = Arc::clone(&control);
+            std::thread::spawn(move || {
+                let _ = running_tx.send(());
+                control.begin();
+                let _ = finished_tx.send(());
+            })
+        };
+        running_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the Start thread ran");
+        assert!(
+            finished_rx
+                .recv_timeout(std::time::Duration::from_millis(250))
+                .is_err(),
+            "a Start began a new recording while the old flush was still reaching for the capture ring"
+        );
+
+        {
+            let (lock, condvar) = &*release;
+            *lock.lock().unwrap() = true;
+            condvar.notify_all();
+        }
+        draining.join().expect("the flush finishes");
+        starting.join().expect("the Start finishes");
+    }
+
+    #[test]
+    fn a_new_dictation_waits_for_a_settlement_that_is_deciding_whether_to_hide() {
+        // The interleaving the review names, forced with a bounded wait: an old
+        // dictation's final job is inside its settlement while a newer Start
+        // arrives. Deciding to hide and hiding are one operation under `effects`,
+        // and `begin` takes that same lock, so the Start cannot overtake the
+        // decision and then lose its bar to it (slugtale-cbxb). With the two
+        // steps apart, the Start completes while the hide is still pending, and
+        // this test fails.
+        let control = Arc::new(DictationSegmentControl::default());
+        let old = control.begin();
+
+        // Hold the settlement at the point where it has decided to hide.
+        let inside = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        struct BlockingSettlement {
+            inside: Arc<(Mutex<bool>, std::sync::Condvar)>,
+            release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        }
+
+        impl DictationRuntimeHost for BlockingSettlement {
+            fn take_pause_segment(&self, _session: u64, _cut: u64) -> Option<CapturedAudio> {
+                None
+            }
+
+            fn complete(
+                &self,
+                _session: u64,
+                _audio: CapturedAudio,
+                _position: DictationSegmentPosition,
+            ) -> Result<DictationSegmentOutcome, String> {
+                Err("test host never transcribes".to_string())
+            }
+
+            fn record_counted_segment(&self, _segment: CountedSegment) {}
+
+            fn last_job_settled(&self, _session: u64) {
+                let (lock, condvar) = &*self.inside;
+                *lock.lock().unwrap() = true;
+                condvar.notify_all();
+                let (lock, condvar) = &*self.release;
+                let mut released = lock.lock().unwrap();
+                while !*released {
+                    released = condvar.wait(released).expect("gate mutex");
+                }
+            }
+        }
+
+        let host: Arc<dyn DictationRuntimeHost> = Arc::new(BlockingSettlement {
+            inside: Arc::clone(&inside),
+            release: Arc::clone(&release),
+        });
+        let settling = {
+            let control = Arc::clone(&control);
+            std::thread::spawn(move || {
+                let mut worker = DictationSegmentWorker::default();
+                settle_job(
+                    &mut worker,
+                    DictationSegmentJob::Last {
+                        session: old,
+                        audio: audio(1, 1),
+                    },
+                    &control,
+                    host.as_ref(),
+                );
+            })
+        };
+
+        // The settlement has decided to hide and is about to.
+        {
+            let (lock, condvar) = &*inside;
+            let mut inside = lock.lock().unwrap();
+            while !*inside {
+                inside = condvar.wait(inside).expect("gate mutex");
+            }
+        }
+
+        // A newer Start arrives while the hide is pending.
+        let (running_tx, running_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let starting = {
+            let control = Arc::clone(&control);
+            std::thread::spawn(move || {
+                let _ = running_tx.send(());
+                control.begin();
+                let _ = finished_tx.send(());
+            })
+        };
+        running_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the Start thread ran");
+
+        assert!(
+            finished_rx
+                .recv_timeout(std::time::Duration::from_millis(250))
+                .is_err(),
+            "a Start overtook a settlement that had already decided to hide the bar"
+        );
+
+        {
+            let (lock, condvar) = &*release;
+            *lock.lock().unwrap() = true;
+            condvar.notify_all();
+        }
+        settling.join().expect("the settlement finishes");
+        starting.join().expect("the Start finishes");
+        assert!(
+            control.is_recording(control.current()),
+            "the newer dictation is the live one once both have finished"
+        );
+    }
+
+    #[test]
+    fn a_rescue_recorded_after_a_newer_start_never_suspends_the_new_dictation() {
+        // The review's fourth race: the suspension is recorded against the
+        // dictation that rescued, not against "some dictation". Recording it per
+        // session makes the order irrelevant — a late old rescue lands after the
+        // newer `begin` and suspends only the session it belongs to (slugtale-cbxb).
+        let control = DictationSegmentControl::default();
+        let old = control.begin();
+
+        // The user starts again, and only then does the old dictation's rescue
+        // record its suspension.
+        let newer = control.begin();
+        control.suspend_flushes_for_rescue(old);
+
+        assert!(
+            !control.rescue_suspends_flushes(newer),
+            "the new dictation's flushes must not be suspended by the old one's rescue"
+        );
+        assert!(
+            control.rescue_suspends_flushes(old),
+            "the rescuing dictation still holds its own flushes back"
+        );
+    }
+
+    #[test]
+    fn a_dictation_the_user_cancelled_does_not_hide_the_bar_from_its_settled_job() {
+        // After Cancel nothing else may end the transcribing state: Cancel cleared
+        // the bar itself, and an old job's settlement must not touch whatever is
+        // on screen now. The decision and the hide are one operation under
+        // `effects` (slugtale-cbxb).
+        let control = DictationSegmentControl::default();
+        let cancelled = control.begin();
+        control.abandon();
+        let mut worker = DictationSegmentWorker::default();
+        let host = FakeHost::answering(vec![Some(audio(1, 1))], vec![]);
+
+        settle_job(
+            &mut worker,
+            DictationSegmentJob::Last {
+                session: cancelled,
+                audio: audio(1, 1),
+            },
+            &control,
+            &host,
+        );
+
+        assert!(!control.is_recording(cancelled));
+        assert_eq!(
+            host.bars_hidden(),
+            0,
+            "a cancelled dictation's job must not hide any bar"
+        );
+    }
+
+    #[test]
+    fn a_cancel_arriving_during_a_decode_stops_that_segments_usage_count() {
+        // The Usage handoff is an effect: the decode finishing first is not a
+        // licence to write words the user cancelled. The decode here blocks until
+        // Cancel has already returned, so the only reachable order is the one
+        // that must not count: the worker arriving at the handoff afterwards.
+        // Deciding and handing over are one operation under `effects`, which
+        // `abandon` also takes (slugtale-cbxb).
+        struct DecodingHost {
+            entered: std::sync::mpsc::Sender<()>,
+            release: Mutex<std::sync::mpsc::Receiver<()>>,
+            recorded: Mutex<Vec<CountedSegment>>,
+        }
+
+        const RELEASE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+        impl DictationRuntimeHost for DecodingHost {
+            fn take_pause_segment(&self, _session: u64, _cut: u64) -> Option<CapturedAudio> {
+                Some(audio(1, 1))
+            }
+
+            fn complete(
+                &self,
+                _session: u64,
+                _audio: CapturedAudio,
+                _position: DictationSegmentPosition,
+            ) -> Result<DictationSegmentOutcome, String> {
+                let _ = self.entered.send(());
+                // Bounded: a failing test must end this wait, not park the worker.
+                let _ = self
+                    .release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(RELEASE_DEADLINE);
+                Ok(outcome("words the user cancelled", true, false))
+            }
+
+            fn record_counted_segment(&self, segment: CountedSegment) {
+                self.recorded.lock().unwrap().push(segment);
+            }
+
+            fn last_job_settled(&self, _session: u64) {}
+        }
+
+        let control = Arc::new(DictationSegmentControl::default());
+        let session = control.begin();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let host = Arc::new(DecodingHost {
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+            recorded: Mutex::new(Vec::new()),
+        });
+
+        let working = {
+            let control = Arc::clone(&control);
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || {
+                let mut worker = DictationSegmentWorker::default();
+                settle_job(
+                    &mut worker,
+                    DictationSegmentJob::PauseFlush { session, cut: 0 },
+                    &control,
+                    &*host,
+                );
+            })
+        };
+
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the segment reached its decode");
+
+        // Cancel returns while the decode is still blocked: it does not queue
+        // behind the model that is thinking.
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
+        let cancelling = {
+            let control = Arc::clone(&control);
+            std::thread::spawn(move || {
+                control.abandon();
+                let _ = cancelled_tx.send(());
+            })
+        };
+        cancelled_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("Cancel must not wait behind the decode");
+
+        // Let the decode finish and watch the handoff boundary.
+        release_tx.send(()).expect("the decode release reaches the worker");
+        working.join().expect("the worker finishes");
+        cancelling.join().expect("the cancel thread finishes");
+
+        assert!(
+            host.recorded.lock().unwrap().is_empty(),
+            "a segment the user cancelled must not reach Usage"
+        );
+        assert!(!control.is_recording(session));
+    }
+
+    #[test]
+    fn a_pause_flush_drain_is_told_which_dictations_audio_it_may_take() {
+        // The worker's liveness check happens before it asks the microphone for
+        // anything, so the boundary itself has to know whose audio it is about to
+        // take — otherwise a Cancel and a newer Start landing in between would
+        // hand an old job the new recording's speech (slugtale-cbxb).
+        let control = DictationSegmentControl::default();
+        let session = control.begin();
+        let mut worker = DictationSegmentWorker::default();
+        let host = FakeHost::answering(
+            vec![Some(audio(1, 1))],
+            vec![outcome("words", true, false)],
+        );
+
+        worker
+            .process(
+                DictationSegmentJob::PauseFlush {
+                    session,
+                    cut: 48_000,
+                },
+                &control,
+                &host,
+            )
+            .unwrap();
+
+        assert_eq!(host.drained(), [(session, 48_000)]);
+    }
+
+    #[test]
+    fn a_superseded_dictation_drops_every_job_it_still_had_queued() {
+        // Cancel a slow dictation and start another one before its final job is
+        // drained. Neither the pending flush nor the final segment may reach the
+        // host: their words would land in the app the new dictation is aimed at,
+        // and the old job's bar hide would take the new bar down (slugtale-cbxb).
+        let control = DictationSegmentControl::default();
+        let first = control.begin();
+        let mut worker = DictationSegmentWorker::default();
+        let host = FakeHost::answering(
+            vec![Some(audio(1, 1))],
+            vec![outcome("old words", true, false)],
+        );
+
+        control.abandon();
+        let second = control.begin();
+
+        settle_job(
+            &mut worker,
+            DictationSegmentJob::PauseFlush {
+                session: first,
+                cut: 1_000,
+            },
+            &control,
+            &host,
+        );
+        settle_job(
+            &mut worker,
+            DictationSegmentJob::Last {
+                session: first,
+                audio: audio(1, 1),
+            },
+            &control,
+            &host,
+        );
+
+        assert!(host.cuts().is_empty(), "no segment may be taken for a dead session");
+        assert!(host.positions().is_empty());
+        assert!(host.recorded().is_empty());
+        assert_eq!(
+            host.bars_hidden(),
+            0,
+            "the replaced dictation's settlement must not hide the new bar"
+        );
+        // ...and the dictation the user is actually running is unaffected.
+        assert!(control.is_recording(second));
+    }
+
+    #[test]
+    fn a_rescue_from_a_dictation_the_user_left_does_not_suspend_the_new_one() {
+        // Insertion Rescue suspends later Pause Flushes so the rescued words are
+        // not buried. That suspension belongs to the dictation that rescued them,
+        // and a decode long enough for the user to start another dictation can
+        // finish after they have: the rescue must not wedge the dictation they
+        // are in now (slugtale-cbxb). The fake host starts the next dictation
+        // while this completion is still in flight, which is exactly that window.
+        let control = Arc::new(DictationSegmentControl::default());
+        let first = control.begin();
+        let mut worker = DictationSegmentWorker::default();
+        let host = FakeHost::answering(
+            vec![Some(audio(1, 1)), Some(audio(1, 1))],
+            vec![
+                outcome("rescued words", true, true),
+                outcome("next words", true, false),
+            ],
+        )
+        .starting_the_next_dictation_during_completion(Arc::clone(&control));
+
+        worker
+            .process(
+                DictationSegmentJob::PauseFlush {
+                    session: first,
+                    cut: 0,
+                },
+                &control,
+                &host,
+            )
+            .unwrap();
+
+        assert!(
+            !control.rescue_suspends_flushes(first),
+            "the rescue belongs to a dictation the user has already left"
+        );
+
+        // And the dictation they are in now flushes normally.
+        let second = control.current();
+        assert!(second > first);
+        worker
+            .process(
+                DictationSegmentJob::PauseFlush {
+                    session: second,
+                    cut: 1_000,
+                },
+                &control,
+                &host,
+            )
+            .unwrap();
+        assert_eq!(host.cuts(), [0, 1_000]);
+    }
+
+    #[test]
+    fn a_live_dictation_still_suspends_its_own_flushes_after_a_rescue() {
+        // The other half of the same rule, so the fix above cannot simply switch
+        // the suspension off: a rescue inside the running dictation still holds
+        // back later Pause Flushes (ADR-0026).
+        let control = DictationSegmentControl::default();
+        let session = control.begin();
+        let mut worker = DictationSegmentWorker::default();
+        let host = FakeHost::answering(
+            vec![Some(audio(1, 1))],
+            vec![outcome("rescued words", true, true)],
+        );
+
+        worker
+            .process(
+                DictationSegmentJob::PauseFlush {
+                    session,
+                    cut: 0,
+                },
+                &control,
+                &host,
+            )
+            .unwrap();
+
+        assert!(control.rescue_suspends_flushes(session));
+    }
+
+    #[test]
+    fn every_job_carries_the_session_its_effects_belong_to() {
+        // The host resolves Settings and the text target per session, so the
+        // number it is handed has to be the job's own (slugtale-cbxb).
+        let control = DictationSegmentControl::default();
+        let first = control.begin();
+        let mut worker = DictationSegmentWorker::default();
+        let host = FakeHost::answering(
+            vec![Some(audio(1, 1)), Some(audio(1, 1))],
+            vec![
+                outcome("first words", true, false),
+                outcome("second words", true, false),
+            ],
+        );
+
+        worker
+            .process(
+                DictationSegmentJob::PauseFlush {
+                    session: first,
+                    cut: 0,
+                },
+                &control,
+                &host,
+            )
+            .unwrap();
+
+        let second = control.begin();
+        worker
+            .process(
+                DictationSegmentJob::Last {
+                    session: second,
+                    audio: audio(1, 1),
+                },
+                &control,
+                &host,
+            )
+            .unwrap();
+
+        assert_eq!(host.sessions(), [first, second]);
     }
 
     #[test]
@@ -1180,7 +1940,7 @@ mod tests {
         settle_job(
             &mut worker,
             DictationSegmentJob::Last {
-                dictation: 1,
+                session: 1,
                 audio: audio(1, 1),
             },
             &control,
@@ -1204,7 +1964,7 @@ mod tests {
         settle_job(
             &mut worker,
             DictationSegmentJob::Last {
-                dictation: 1,
+                session: 1,
                 audio: audio(1, 1),
             },
             &control,
@@ -1213,7 +1973,7 @@ mod tests {
         settle_job(
             &mut worker,
             DictationSegmentJob::PauseFlush {
-                dictation: 1,
+                session: 1,
                 cut: 0,
             },
             &control,
@@ -1235,7 +1995,7 @@ mod tests {
         drive(
             &host,
             vec![DictationSegmentJob::PauseFlush {
-                dictation: 1,
+                session: 1,
                 cut: 0,
             }],
         );
@@ -1253,8 +2013,8 @@ mod tests {
         runtime.on_voice_level(0.0);
 
         match receiver.recv_timeout(std::time::Duration::from_secs(1)) {
-            Ok(DictationSegmentJob::PauseFlush { dictation, cut }) => {
-                assert_eq!(dictation, 1);
+            Ok(DictationSegmentJob::PauseFlush { session, cut }) => {
+                assert_eq!(session, 1);
                 assert_eq!(cut, 42_000);
             }
             other => panic!("expected a Pause Flush at the probed watermark, got {other:?}"),
