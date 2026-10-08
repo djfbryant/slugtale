@@ -28,7 +28,11 @@
 //
 // A regular non-timeout exit code is always passed through untouched, and the
 // timer is always cleared when the child ends so a finished run holds no timer
-// open.
+// open. While the call is pending, both timers stay referenced: they are the
+// work that settles the returned promise, so an otherwise idle event loop must
+// not exit out from under it (Node 20's test runner fails a test whose promise
+// is still pending then, and a caller would never see its 124). The hold is
+// bounded by the cap plus one grace window, and `finish` clears both timers.
 
 const { spawn: defaultSpawn, spawnSync: defaultSpawnSync } = require("node:child_process");
 
@@ -166,11 +170,11 @@ function runChildWithTimeout(run, system = {}) {
         killProcessTree(child.pid, killSystem);
 
         // If the kill never reached the child there is no exit event coming,
-        // and waiting for one is the very hang this cap exists to prevent.
+        // and waiting for one is the very hang this cap exists to prevent. The
+        // grace timer is the promise's own deadline, so it stays referenced
+        // while it runs; `finish` clears it either way.
         graceTimer = setTimeout(() => finish(TIMEOUT_EXIT_CODE, null), graceMs);
-        graceTimer.unref();
       }, timeoutSeconds * 1000);
-      timer.unref();
     }
 
     child.on("error", (error) => {

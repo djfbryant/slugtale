@@ -237,7 +237,10 @@ test("a normal exit releases the timeout timer", async () => {
 
 test("the timeout still gives up when the kill never reaches the child", async () => {
   // If the tree stop fails there is no exit event coming, and waiting for one
-  // is the very hang the cap exists to prevent.
+  // is the very hang the cap exists to prevent. The fake child owns no real
+  // process handle, so this is also the regression for the function's own
+  // timers holding the promise up: Node 20's test runner fails a test whose
+  // promise is still pending when the event loop drains (CI run 37785012417).
   const child = new EventEmitter();
   child.pid = 99;
 
