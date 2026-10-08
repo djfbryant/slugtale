@@ -362,6 +362,22 @@ impl TranscriptionProvider for ParakeetProvider {
         validate_captured_audio(self.model, audio)?;
         self.transcribe_validated(audio)
     }
+
+    /// Load the TDT sessions now, ahead of the first dictation.
+    ///
+    /// This override is the whole point of the method existing here. The shared
+    /// engine interface supplies a `warm_up` that does nothing, and the Engine
+    /// Catalogue reaches every engine as a `dyn TranscriptionProvider`, so
+    /// Parakeet TDT v2 and Phonon-2 both inherited the no-op and stayed cold —
+    /// the first recording after choosing one of them still paid for loading a
+    /// 622 MiB encoder. The work itself is the inherent method, which is also
+    /// what answers `RuntimeNotBuilt` on a build without the ONNX runtime and
+    /// `AssetsMissing` when the weights are not installed.
+    fn warm_up(&self) -> Result<(), AsrError> {
+        // Fully qualified so this reaches the inherent implementation rather than
+        // recursing into itself.
+        ParakeetProvider::warm_up(self)
+    }
 }
 
 #[cfg(not(feature = "local-parakeet-runtime"))]
@@ -573,6 +589,7 @@ impl ParakeetProvider {
 mod tests {
     use super::*;
     use crate::EngineView;
+    use std::sync::Arc;
 
     #[test]
     fn metadata_carries_every_cc_by_obligation_settings_has_to_render() {
@@ -931,6 +948,44 @@ mod tests {
             provider.warm_up().unwrap_err(),
             AsrError::Runtime("the Parakeet runtime is shutting down".to_string())
         );
+    }
+
+    /// The catalogue only ever holds `Arc<dyn TranscriptionProvider>`, so a
+    /// warm-up defined on the concrete type and not overridden on the trait is a
+    /// no-op in production. Both TDT models are checked because they share one
+    /// provider type and are selected separately.
+    #[test]
+    fn warm_up_through_the_shared_interface_reaches_both_tdt_models() {
+        for (model, expected) in [
+            (&PARAKEET_TDT_V2, TranscriptionEngine::Parakeet),
+            (&PHONON_2, TranscriptionEngine::Phonon),
+        ] {
+            let provider: Arc<dyn TranscriptionProvider> =
+                Arc::new(ParakeetProvider::for_model(model, unique_test_dir("warm-up")));
+
+            // Warm-up must reach the real loader, which is why this fails rather
+            // than succeeding: the assets are not installed in this directory. A
+            // no-op default would answer `Ok(())` here and let the first dictation
+            // pay for the model load.
+            let error = provider.warm_up().expect_err(
+                "warm-up through the trait must reach the TDT loader, not the \
+                 interface's default no-op",
+            );
+            match error {
+                AsrError::EngineUnavailable { engine, reason } => {
+                    assert_eq!(engine, expected);
+                    if cfg!(feature = "local-parakeet-runtime") {
+                        assert!(
+                            matches!(reason, EngineUnavailable::AssetsMissing { .. }),
+                            "a runtime build should report missing weights, got {reason:?}"
+                        );
+                    } else {
+                        assert_eq!(reason, EngineUnavailable::RuntimeNotBuilt);
+                    }
+                }
+                other => panic!("expected an unavailable engine, got {other:?}"),
+            }
+        }
     }
 
     #[test]

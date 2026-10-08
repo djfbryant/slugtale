@@ -27,15 +27,21 @@ fn app_files(app: &tauri::AppHandle) -> AppFiles {
     app.state::<AppFiles>().inner().clone()
 }
 
+/// Read the current Settings. Every command that *changes* one goes through the
+/// store's transaction instead — `update_settings` or `update_settings_and_apply`
+/// on [`AppFiles`] — because this returns a snapshot, and saving a snapshot read
+/// before another writer changed it is how a background model install used to
+/// overwrite a newer choice.
 fn load_current_settings(app: &tauri::AppHandle) -> slugtale_lib::Settings {
     app_files(app).settings()
 }
 
-fn save_current_settings(
+/// Change the current Settings as one transaction and get the value that stuck.
+fn update_current_settings(
     app: &tauri::AppHandle,
-    settings: &slugtale_lib::Settings,
-) -> Result<(), String> {
-    app_files(app).save_settings(settings)
+    change: impl FnOnce(&mut slugtale_lib::Settings) -> Result<(), String>,
+) -> Result<slugtale_lib::Settings, String> {
+    app_files(app).update_settings(change)
 }
 
 fn model_manager(app: &tauri::AppHandle) -> Result<slugtale_lib::LocalModelManager, String> {
@@ -561,12 +567,9 @@ fn save_hotkey_settings(
     hotkey: Option<String>,
     activation_mode: slugtale_lib::ActivationMode,
 ) -> Result<slugtale_lib::Settings, String> {
-    let previous = load_current_settings(&app);
-    slugtale_lib::apply_and_persist(
-        &previous,
+    app_files(&app).update_settings_and_apply(
         |settings| slugtale_lib::apply_hotkey_settings(settings, hotkey, activation_mode),
         |settings| update_registered_hotkey(&app, settings),
-        |settings| save_current_settings(&app, settings),
     )
 }
 
@@ -575,10 +578,10 @@ fn save_transcription_settings(
     app: tauri::AppHandle,
     speed_profile: slugtale_lib::SpeedProfile,
 ) -> Result<slugtale_lib::Settings, String> {
-    let mut settings = load_current_settings(&app);
-    slugtale_lib::apply_transcription_settings(&mut settings, speed_profile);
-    save_current_settings(&app, &settings)?;
-    Ok(settings)
+    update_current_settings(&app, |settings| {
+        slugtale_lib::apply_transcription_settings(settings, speed_profile);
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -586,10 +589,10 @@ fn save_transcript_cleanup_settings(
     app: tauri::AppHandle,
     cleanup_mode: slugtale_lib::TranscriptCleanupMode,
 ) -> Result<slugtale_lib::Settings, String> {
-    let mut settings = load_current_settings(&app);
-    slugtale_lib::apply_transcript_cleanup_settings(&mut settings, cleanup_mode);
-    save_current_settings(&app, &settings)?;
-    Ok(settings)
+    update_current_settings(&app, |settings| {
+        slugtale_lib::apply_transcript_cleanup_settings(settings, cleanup_mode);
+        Ok(())
+    })
 }
 
 /// Save whether dictation records from the built-in microphone when the
@@ -599,10 +602,10 @@ fn save_microphone_settings(
     app: tauri::AppHandle,
     prefer_built_in_microphone: bool,
 ) -> Result<slugtale_lib::Settings, String> {
-    let mut settings = load_current_settings(&app);
-    slugtale_lib::apply_microphone_settings(&mut settings, prefer_built_in_microphone);
-    save_current_settings(&app, &settings)?;
-    Ok(settings)
+    update_current_settings(&app, |settings| {
+        slugtale_lib::apply_microphone_settings(settings, prefer_built_in_microphone);
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -628,14 +631,15 @@ fn save_dictation_bar_settings(
     accent_color: slugtale_lib::AccentColor,
     bar_display: slugtale_lib::BarDisplay,
 ) -> Result<slugtale_lib::Settings, String> {
-    let mut settings = load_current_settings(&app);
-    slugtale_lib::apply_dictation_bar_settings(
-        &mut settings,
-        bar_position,
-        accent_color,
-        bar_display,
-    );
-    save_current_settings(&app, &settings)?;
+    let settings = update_current_settings(&app, |settings| {
+        slugtale_lib::apply_dictation_bar_settings(
+            settings,
+            bar_position,
+            accent_color,
+            bar_display,
+        );
+        Ok(())
+    })?;
     apply_dictation_bar_appearance(&app, &settings);
     Ok(settings)
 }
@@ -657,12 +661,9 @@ fn save_launch_at_login(
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<slugtale_lib::Settings, String> {
-    let previous = load_current_settings(&app);
-    slugtale_lib::apply_and_persist(
-        &previous,
+    app_files(&app).update_settings_and_apply(
         |settings| slugtale_lib::apply_launch_at_login_settings(settings, enabled),
         |settings| set_launch_at_login_state(&app, settings.launch_at_login),
-        |settings| save_current_settings(&app, settings),
     )
 }
 
@@ -731,9 +732,10 @@ fn set_transcription_engines(
     primary_engine: slugtale_lib::TranscriptionEngine,
     second_opinion: slugtale_lib::SecondOpinionMode,
 ) -> Result<slugtale_lib::Settings, String> {
-    let mut settings = load_current_settings(&app);
-    slugtale_lib::apply_engine_settings(&mut settings, primary_engine, second_opinion);
-    save_current_settings(&app, &settings)?;
+    let settings = update_current_settings(&app, |settings| {
+        slugtale_lib::apply_engine_settings(settings, primary_engine, second_opinion);
+        Ok(())
+    })?;
     // Start warming the newly effective engine now so the first dictation
     // after the change does not pay for a cold model load.
     warm_effective_primary_engine(&app);
@@ -879,13 +881,11 @@ fn get_usage_summary(app: tauri::AppHandle) -> UsageSummary {
 /// Baseline is in the Settings File and is untouched.
 #[tauri::command]
 fn set_usage_storing(app: tauri::AppHandle, enabled: bool) -> Result<UsageSummary, String> {
-    let mut settings = load_current_settings(&app);
-    slugtale_lib::apply_usage_settings(&mut settings, enabled);
-    save_current_settings(&app, &settings)?;
-
-    if !enabled {
-        app_files(&app).delete_usage_file()?;
-    }
+    // The store saves the choice and deletes the Usage File under one owner, so
+    // a counted segment racing this command either finishes first and is then
+    // deleted, or finds storing off and skips. Splitting the two steps here is
+    // what let the file come back after the user had deleted it.
+    app_files(&app).set_usage_storing(enabled)?;
 
     Ok(get_usage_summary(app))
 }
@@ -897,10 +897,10 @@ fn set_typing_estimate(
     app: tauri::AppHandle,
     estimate: Option<u32>,
 ) -> Result<UsageSummary, String> {
-    let mut settings = load_current_settings(&app);
-    slugtale_lib::apply_typed_estimate(&mut settings.typing_baseline, estimate)
-        .map_err(|error| error.to_string())?;
-    save_current_settings(&app, &settings)?;
+    update_current_settings(&app, |settings| {
+        slugtale_lib::apply_typed_estimate(&mut settings.typing_baseline, estimate)
+            .map_err(|error| error.to_string())
+    })?;
 
     Ok(get_usage_summary(app))
 }
@@ -959,13 +959,14 @@ fn submit_typing_challenge(
         slugtale_lib::TYPING_CHALLENGE_SECONDS,
     );
 
-    let mut settings = load_current_settings(&app);
-    slugtale_lib::record_typing_challenge(
-        &mut settings.typing_baseline,
-        passage_index,
-        words_per_minute,
-    );
-    save_current_settings(&app, &settings)?;
+    let settings = update_current_settings(&app, |settings| {
+        slugtale_lib::record_typing_challenge(
+            &mut settings.typing_baseline,
+            passage_index,
+            words_per_minute,
+        );
+        Ok(())
+    })?;
 
     notify_usage_changed(&app);
     Ok(typing_challenge_state(&settings.typing_baseline))
@@ -975,9 +976,10 @@ fn submit_typing_challenge(
 /// Time Saved moves with the new baseline, because it was never stored.
 #[tauri::command]
 fn redo_typing_challenges(app: tauri::AppHandle) -> Result<TypingChallengeState, String> {
-    let mut settings = load_current_settings(&app);
-    slugtale_lib::redo_typing_challenges(&mut settings.typing_baseline);
-    save_current_settings(&app, &settings)?;
+    let settings = update_current_settings(&app, |settings| {
+        slugtale_lib::redo_typing_challenges(&mut settings.typing_baseline);
+        Ok(())
+    })?;
 
     notify_usage_changed(&app);
     Ok(typing_challenge_state(&settings.typing_baseline))
