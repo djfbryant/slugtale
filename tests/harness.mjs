@@ -1,3 +1,31 @@
+/**
+ * Every file a page ships: its markup, its stylesheets and its scripts.
+ *
+ * The shipped pages keep their JavaScript and CSS in files rather than inline, so
+ * a test that greps the `.html` for behaviour it ships would find nothing — and
+ * would keep passing if the page stopped shipping that behaviour at all. This
+ * reads what a browser would load.
+ *
+ * @param {string} file page name under `src/`
+ * @returns {{markup: string, styles: string, scripts: string, all: string}}
+ */
+export function shippedSource(file) {
+  const html = readFileSync(new URL(file, SRC), "utf8");
+  const styles = stylesheetOf(file);
+  const scripts = [
+    ...html.matchAll(/<script[^>]*\bsrc\s*=\s*"([^"]*)"[^>]*>/g),
+  ]
+    .map(([, href]) => href)
+    .filter((href) => LOCAL_SCRIPT.test(href))
+    .map((href) => readFileSync(new URL(href, SRC), "utf8"));
+  return {
+    markup: html,
+    styles,
+    scripts: scripts.join("\n"),
+    all: `${html}\n${styles}\n${scripts.join("\n")}`
+  };
+}
+
 // One harness for the three pages Slugtale ships.
 //
 // Each page is a plain HTML file with an inline `<script>`, and each one was
@@ -15,6 +43,7 @@
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
+const SRC = new URL("../src/", import.meta.url);
 const SCRIPT = /<script(?<attrs>[^>]*)>(?<body>[\s\S]*?)<\/script>/g;
 const TAG = /<(\/)?([a-zA-Z][\w:-]*)((?:\s+[^\s=>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*(\/)?>/g;
 const ATTRIBUTE = /([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
@@ -325,22 +354,52 @@ function descendants(node, found = []) {
   return found;
 }
 
-function readPage(file, markup) {
-  const html = markup ?? readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+// A `src` that the page means as a local asset: a relative path, optionally with a
+// query string or fragment. Anything absolute, protocol-relative or remote is
+// refused, because the harness has no way to fetch it and a test that silently ran
+// without a module would pass against a page that cannot load one in the app.
+const LOCAL_SCRIPT = /^(?!\/)(?![\w-]+:)([^"'\s?#]+)(?:[?#][^"'\s]*)?$/;
+
+/**
+ * Read one page and the scripts it runs, in document order.
+ *
+ * The shipped pages carry their JavaScript in external files, because the app's
+ * script CSP allows no inline script (slugtale-9bx follow-up). So the harness
+ * follows `src` the way a browser would for a local file — in the order the page
+ * lists them, since that order decides who may call whom at load time.
+ *
+ * @param {string} file page name under `src/`, or an absolute path when `baseDir`
+ *   says the page's references resolve somewhere else.
+ * @param {string|undefined} markup page source to use instead of reading `src/`
+ * @param {URL} baseDir directory the page's own relative `src` values resolve
+ *   against; defaults to `src/`
+ */
+function readPage(file, markup, baseDir = SRC) {
+  const html = markup ?? readFileSync(new URL(file, baseDir), "utf8");
 
   const scripts = [];
   for (const match of html.matchAll(SCRIPT)) {
-    if (/\bsrc\s*=/.test(match.groups.attrs)) {
-      throw new Error(
-        `${file} loads a script by src, which this harness does not follow. ` +
-          `Inline the body, or teach runPage to read it.`,
-      );
+    const src = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/.exec(match.groups.attrs);
+    if (src) {
+      const value = src[1] ?? src[2] ?? src[3];
+      if (!LOCAL_SCRIPT.test(value)) {
+        throw new Error(
+          `${file} loads "${value}" from outside src/. This harness runs local ` +
+            `script files only, so a test here would pass against a page that ` +
+            `cannot load that script in the app.`,
+        );
+      }
+      scripts.push(readFileSync(new URL(value, baseDir), "utf8"));
+      continue;
     }
-    scripts.push(match.groups.body);
+    // An inline block is still run: a page may legitimately hold a few lines, and
+    // removing the CSP's unsafe-inline is only worth doing once the shipped pages
+    // actually stop relying on it.
+    if (match.groups.body.trim()) scripts.push(match.groups.body);
   }
-  if (scripts.length === 0) throw new Error(`${file} has no inline script to run`);
+  if (scripts.length === 0) throw new Error(`${file} runs no script this harness can read`);
 
-  return { script: scripts.join("\n"), shell: html.replace(SCRIPT, "") };
+  return { script: scripts.join("\n;\n"), shell: html.replace(SCRIPT, "") };
 }
 
 function buildDocument(page) {
@@ -390,11 +449,37 @@ function buildDocument(page) {
 }
 
 /**
+ * The CSS a browser would apply to a page: every local stylesheet it links, in
+ * the order the page lists them.
+ *
+ * A test that asserts on styling has to read this rather than the page's markup.
+ * The shipped pages keep their styles in files, so a `<style>`-block search finds
+ * nothing and, worse, would keep finding nothing if the page ever stopped linking
+ * the stylesheet at all.
+ *
+ * @param {string} file page name under `src/`
+ * @returns {string} the concatenated stylesheets
+ */
+export function stylesheetOf(file) {
+  const html = readFileSync(new URL(file, SRC), "utf8");
+  const linked = [...html.matchAll(/<link[^>]*\brel="stylesheet"[^>]*>/g)].map(([tag]) => {
+    const href = /\bhref\s*=\s*"([^"]*)"/.exec(tag);
+    return href && LOCAL_SCRIPT.test(href[1]) ? href[1] : null;
+  });
+  if (linked.length === 0) {
+    throw new Error(`${file} links no local stylesheet, so it ships unstyled`);
+  }
+  return linked.map((href) => readFileSync(new URL(href, SRC), "utf8")).join("\n");
+}
+
+/**
  * Run a page against a fake DOM built from the page's own markup.
  *
  * @param {string} file            page name under `src/`, e.g. `index.html`
  * @param {object} [options]
  * @param {string} [options.markup]  page source to run instead of reading `src/`
+ * @param {URL} [options.baseDir]  directory a page's own relative `src` values
+ *   resolve against, for a fixture page that lives outside `src/`
  * @param {Function} [options.invoke]  stands in for the Tauri bridge
  * @param {string[]} [options.exports]  handles the test will read, and that the page must expose
  * @param {string} [options.exportSource]  raw export block, for a handle that closes over private state
@@ -419,7 +504,7 @@ export function runPage(file, options = {}) {
     runBootstrap = false
   } = options;
 
-  const page = readPage(file, options.markup);
+  const page = readPage(file, options.markup, options.baseDir);
   const { byId, document, rootStyle } = buildDocument(page);
 
   // Timers are always queued and never fire on their own. A test that needs one

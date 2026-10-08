@@ -3,6 +3,11 @@ import test from "node:test";
 
 import { runPage } from "./harness.mjs";
 
+// Fixture pages that need a real file next to them on disk, because the property
+// under test is that the harness follows a local `src`. Kept out of `src/`, which
+// ships in the app and is held to runtime pages only.
+const FIXTURES = new URL("./fixtures/", import.meta.url);
+
 // Five test files used to carry their own copy of the load-a-page hack, and each
 // copy extracted the *first* `<script>` block. A page that grew a second block
 // would have been half-tested with every assertion still green. These tests pin
@@ -30,14 +35,34 @@ test("every script block on a page is loaded, not just the first", () => {
   assert.equal(api.second(), 2);
 });
 
-test("a page that loads a script by src fails loudly instead of half-testing", () => {
+test("a local script by src is followed, so a page's own file is what runs", () => {
+  // The shipped pages carry their JavaScript outside the HTML because the script
+  // CSP allows no inline script. The harness has to follow a local `src` the way
+  // a browser would, or every screen test would be testing the markup and nothing
+  // else.
+  const { api } = runPage("external.html", {
+    baseDir: FIXTURES,
+    exports: ["fromExternalFile"]
+  });
+
+  assert.equal(api.fromExternalFile(), "loaded from its own file");
+});
+
+test("a script src the harness cannot resolve fails loudly instead of half-testing", () => {
   assert.throws(
     () =>
-      runPage("external.html", {
-        markup: '<script src="tauri.js"></script><script>function reachable() { return 1; }</script>',
-        exports: ["reachable"]
+      runPage("remote.html", {
+        markup: '<script src="https://cdn.example/tauri.js"></script>',
       }),
-    /src/
+    /outside src/
+  );
+  assert.throws(
+    () =>
+      runPage("missing.html", {
+        baseDir: FIXTURES,
+        markup: '<script src="no-such-file.js"></script>',
+      }),
+    /ENOENT|no-such-file/
   );
 });
 

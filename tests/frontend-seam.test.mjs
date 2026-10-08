@@ -17,10 +17,27 @@ const rustSources = readdirSync(rustDir, { recursive: true })
   .map((name) => readFileSync(new URL(String(name), rustDir), "utf8"))
   .join("\n");
 
-const frontendSources = readdirSync(new URL("../src/", import.meta.url))
-  .filter((name) => name.endsWith(".html"))
-  .map((name) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8"))
+// Every file the frontend actually ships: the HTML pages, the stylesheets they
+// link, and the scripts they load. Reading only the `.html` would make every
+// assertion here blind to the code that now lives outside it, which is exactly
+// the drift these tests exist to catch.
+const srcDir = new URL("../src/", import.meta.url);
+const frontendSources = readdirSync(srcDir, { recursive: true })
+  .filter((name) => /\.(html|css|js)$/.test(String(name)))
+  .map((name) => readFileSync(new URL(String(name), srcDir), "utf8"))
   .join("\n");
+
+// The stylesheet a page links, so a style assertion names the file a browser
+// fetches rather than a block inside the page.
+function stylesheetFor(page) {
+  const html = readFileSync(new URL(page, srcDir), "utf8");
+  const linked = [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)]
+    .map(([, href]) => href)
+    .filter((href) => !/^(https?:)?\/\//.test(href));
+  return linked
+    .map((href) => readFileSync(new URL(href, srcDir), "utf8"))
+    .join("\n");
+}
 
 function emittedEventNames(source) {
   const names = new Set();

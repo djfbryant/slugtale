@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 
+import { shippedSource } from "./harness.mjs";
+
 const require = createRequire(import.meta.url);
 const config = require("../src-tauri/tauri.conf.json");
 
@@ -74,18 +76,20 @@ test("app update results use a tagged status enum", () => {
 test("the app has no install command or frontend install call", () => {
   const main = readRepo("src-tauri/src/main.rs");
   const appUpdate = readRepo("src-tauri/src/app_update.rs");
-  const settings = readRepo("src/index.html");
+  const settings = shippedSource("index.html");
 
   assert.doesNotMatch(`${main}\n${appUpdate}`, /install_app_update|download_and_install/);
-  assert.doesNotMatch(settings, /install_app_update|installAppUpdate|app-update-install-button/);
-  assert.match(settings, /invoke\("check_for_app_update"\)/);
+  // Read every file the page ships, not just its markup: the update call lives in
+  // the script, so a markup-only read would pass a page that no longer checks.
+  assert.doesNotMatch(settings.all, /install_app_update|installAppUpdate|app-update-install-button/);
+  assert.match(settings.scripts, /invoke\("check_for_app_update"\)/);
   for (const id of [
     "app-update-state",
     "app-update-check-button",
     "app-update-release-button",
     "app-update-message",
   ]) {
-    assert.ok(settings.includes(`id="${id}"`), `Settings must render #${id}`);
+    assert.ok(settings.markup.includes(`id="${id}"`), `Settings must render #${id}`);
   }
 });
 
