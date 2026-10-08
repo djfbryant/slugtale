@@ -31,9 +31,7 @@ pub(super) fn save_settings(
         return Err("Voice activation is not available in this version of Slugtale.".to_string());
     }
 
-    let previous = super::app_files(app).settings();
-    slugtale_lib::apply_and_persist(
-        &previous,
+    super::app_files(app).update_settings_and_apply(
         |settings| slugtale_lib::apply_voice_activation_settings(settings, enabled),
         // Validation rides the side-effect step: the worker must not start
         // without an engine that can run the wake checks.
@@ -48,7 +46,6 @@ pub(super) fn save_settings(
             }
             sync_worker(app, settings.voice_activation_enabled)
         },
-        |settings| super::app_files(app).save_settings(settings),
     )
 }
 

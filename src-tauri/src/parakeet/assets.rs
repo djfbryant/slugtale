@@ -212,11 +212,12 @@ fn verify_manifest(asset_dir: &Path, manifest: &[ParakeetAsset]) -> Result<(), M
 /// artefact.
 ///
 /// Discipline, per file: download to a `.download` staging name, check the size,
-/// check the digest, and only then rename into place. A staged file is deleted
-/// on **every** failure path, so a failed or interrupted install can never leave
-/// bytes that a later run would mistake for a finished download. Files that are
-/// already installed at the right size are skipped, which makes a retry after a
-/// dropped connection resume rather than start over.
+/// check the digest, and only then rename into place. A [`StagedFile`] covers
+/// every exit after that staging name is created — a failed transfer, a failed
+/// size or digest check, a failed rename — so a half-finished install can never
+/// leave 622 MiB of encoder on disk until the next retry or the user's own
+/// cleaner. Files that are already installed at the right size are skipped,
+/// which makes a retry after a dropped connection resume rather than start over.
 pub fn install_parakeet_assets(
     asset_dir: &Path,
     files: &TdtModelFiles,
@@ -244,6 +245,10 @@ pub fn install_parakeet_assets(
 
         let staged_path = asset_dir.join(format!("{}.download", asset.filename));
         std::fs::remove_file(&staged_path).ok();
+        // Armed from here on, so the two exits that used to `?` straight out of
+        // the loop — a transfer that died halfway and a rename that could not
+        // land — now clean up like the size and digest checks already did.
+        let mut staged = StagedFile::new(staged_path.clone());
 
         // Progress is reported as one bar across the whole install, because the
         // user asked to install "Parakeet", not three files: per-file progress
@@ -259,42 +264,43 @@ pub fn install_parakeet_assets(
         let downloaded_bytes = match staged_path.metadata() {
             Ok(metadata) => metadata.len(),
             Err(error) => {
-                return Err(discard_staged_file(
-                    &staged_path,
-                    format!("could not read the downloaded {}: {error}", asset.filename),
-                ));
+                return Err(
+                    staged.reject(format!("could not read the downloaded {}: {error}", asset.filename))
+                );
             }
         };
         if downloaded_bytes != asset.bytes {
-            return Err(discard_staged_file(
-                &staged_path,
-                format!(
-                    "{} was incomplete: expected {} bytes, got {downloaded_bytes}",
-                    asset.filename, asset.bytes
-                ),
-            ));
+            return Err(staged.reject(format!(
+                "{} was incomplete: expected {} bytes, got {downloaded_bytes}",
+                asset.filename, asset.bytes
+            )));
         }
 
         let actual_sha256 = match sha256_file(&staged_path) {
             Ok(digest) => digest,
             Err(error) => {
-                return Err(discard_staged_file(
-                    &staged_path,
-                    format!("could not verify {}: {error}", asset.filename),
-                ));
+                return Err(
+                    staged.reject(format!("could not verify {}: {error}", asset.filename))
+                );
             }
         };
         if !actual_sha256.eq_ignore_ascii_case(asset.sha256) {
-            return Err(discard_staged_file(
-                &staged_path,
-                format!(
-                    "{} checksum mismatch: expected {}, got {actual_sha256}",
-                    asset.filename, asset.sha256
-                ),
-            ));
+            return Err(staged.reject(format!(
+                "{} checksum mismatch: expected {}, got {actual_sha256}",
+                asset.filename, asset.sha256
+            )));
         }
 
-        std::fs::rename(&staged_path, asset_dir.join(asset.filename))?;
+        if let Err(error) = std::fs::rename(&staged_path, asset_dir.join(asset.filename)) {
+            return Err(staged.reject(format!(
+                "could not install {} into {}: {error}",
+                asset.filename,
+                asset_dir.display()
+            )));
+        }
+        // The bytes are under the installed name now. Nothing is staged.
+        staged.disarm();
+
         completed += asset.bytes;
         on_progress(DownloadProgress {
             downloaded: completed,
@@ -303,6 +309,57 @@ pub fn install_parakeet_assets(
     }
 
     Ok(parakeet_asset_status(asset_dir, files))
+}
+
+/// One file being downloaded to a staging name, removed unless the install says
+/// it succeeded.
+///
+/// The guard only ever holds the `.download` path, so an installed asset is
+/// outside its reach and a failed rename cannot take a good file with it. Cleanup
+/// on drop is deliberately silent: the failure that caused it is already the
+/// error the caller is returning, and a cleanup problem must not replace or
+/// censor that. The paths that can report both use [`Self::reject`] instead.
+struct StagedFile {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl StagedFile {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    /// The bytes are in place under the installed name; there is nothing left to
+    /// clean up.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// Report why this staged file was rejected, deleting it first so a failed
+    /// delete is appended to the real reason rather than substituted for it.
+    fn reject(mut self, message: String) -> ModelError {
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                self.armed = false;
+                return ModelError::Download(format!(
+                    "{message}; could not delete the invalid staged file: {error}"
+                ));
+            }
+        }
+        self.armed = false;
+        ModelError::Download(message)
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        if self.armed {
+            // Best effort by design: see the type comment.
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 /// Remove the installed assets and any staging leftovers, freeing the disk.
@@ -324,20 +381,6 @@ fn remove_file_if_present(path: &Path) -> Result<(), ModelError> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(ModelError::Io(error)),
-    }
-}
-
-/// Delete a staged download and report why it was rejected. Returning the
-/// original reason even when the delete itself fails keeps the message the user
-/// sees about the real problem, with the cleanup failure appended rather than
-/// substituted.
-fn discard_staged_file(path: &Path, message: String) -> ModelError {
-    match std::fs::remove_file(path) {
-        Ok(()) => ModelError::Download(message),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ModelError::Download(message),
-        Err(error) => ModelError::Download(format!(
-            "{message}; could not delete the invalid staged file: {error}"
-        )),
     }
 }
 
@@ -559,6 +602,70 @@ mod tests {
         std::fs::remove_dir_all(&asset_dir).ok();
     }
 
+    /// A dropped transfer used to return straight out of the install loop and leave
+/// the partially written `.download` file on disk — 622 MiB of encoder in the
+/// real case — until the next retry or the user found it themselves.
+#[test]
+    fn a_failed_transfer_leaves_no_staging_file_and_keeps_the_original_error() {
+        let asset_dir = unique_test_dir("install-transfer-failed");
+        let manifest = FIXTURE_FILES;
+        let downloader = FixtureDownloader::failing_transfer_of("vocab.txt");
+
+        let error = install_parakeet_assets(&asset_dir, &manifest, &downloader, &mut |_| {})
+            .expect_err("a dropped transfer fails the install");
+
+        assert!(
+            error.to_string().contains("the connection dropped"),
+            "the reason the transfer failed must survive the cleanup: {error}"
+        );
+        assert!(
+            !asset_dir.join("vocab.txt.download").exists(),
+            "a failed transfer must not leave its staging file behind"
+        );
+        assert!(!asset_dir.join("vocab.txt").exists());
+
+        std::fs::remove_dir_all(&asset_dir).ok();
+    }
+
+/// The rename is the other exit that returned without cleaning up. It must not
+/// take the already-installed files with it: the guard only ever holds the
+/// `.download` path, so a file that is already in place is out of its reach.
+#[test]
+    fn a_failed_rename_leaves_no_staging_file_and_keeps_installed_assets() {
+        let asset_dir = unique_test_dir("install-rename-failed");
+        let manifest = FIXTURE_FILES;
+        let downloader = FixtureDownloader::faithful();
+        install_parakeet_assets(&asset_dir, &manifest, &downloader, &mut |_| {})
+            .expect("the first install succeeds");
+
+        // The vocabulary is installed at the right size, so the install skips it
+        // and goes straight to the encoder. A directory where the encoder belongs
+        // makes the size check pass on the staged bytes and then fails the rename,
+        // which is the only failure left to reach.
+        let encoder = "encoder-model.int8.onnx";
+        std::fs::remove_file(asset_dir.join(encoder)).unwrap();
+        std::fs::create_dir(asset_dir.join(encoder)).unwrap();
+
+        let error = install_parakeet_assets(&asset_dir, &manifest, &downloader, &mut |_| {})
+            .expect_err("a rename onto a directory fails the install");
+
+        assert!(
+            error.to_string().contains("could not install"),
+            "the rename failure must be reported: {error}"
+        );
+        assert!(
+            !asset_dir.join(format!("{encoder}.download")).exists(),
+            "a failed rename must not leave its staging file behind"
+        );
+        assert_eq!(
+            std::fs::read(asset_dir.join("vocab.txt")).unwrap(),
+            b"parakeet vocabulary",
+            "a failed rename must not delete an installed asset"
+        );
+
+        std::fs::remove_dir_all(&asset_dir).ok();
+    }
+
     #[test]
     fn install_resumes_rather_than_re_downloading_finished_files() {
         // 631 MiB over a flaky connection needs more than one attempt; the
@@ -676,6 +783,8 @@ mod tests {
         Tamper,
         /// Short read, as a dropped connection produces.
         Truncate,
+        /// The transfer fails outright after writing part of the body.
+        Transfer,
     }
 
     impl FixtureDownloader {
@@ -696,6 +805,13 @@ mod tests {
         fn truncating(filename: &'static str) -> Self {
             Self {
                 sabotage: Some((filename, Sabotage::Truncate)),
+                requested: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn failing_transfer_of(filename: &'static str) -> Self {
+            Self {
+                sabotage: Some((filename, Sabotage::Transfer)),
                 requested: std::sync::Mutex::new(Vec::new()),
             }
         }
@@ -732,6 +848,15 @@ mod tests {
                 }
                 Some((target, Sabotage::Truncate)) if target == filename => {
                     body.truncate(body.len() / 2);
+                }
+                Some((target, Sabotage::Transfer)) if target == filename => {
+                    // Write the first half, then fail the way a dropped connection
+                    // does: the destination exists with partial bytes and the caller
+                    // gets an error, not a short file to be caught by the size check.
+                    std::fs::write(destination, &body[..body.len() / 2])?;
+                    return Err(ModelError::Download(
+                        "the connection dropped mid-transfer".to_string(),
+                    ));
                 }
                 _ => {}
             }
