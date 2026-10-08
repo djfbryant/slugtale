@@ -141,7 +141,7 @@ test("the release build resolves Cargo features through the shared helper", () =
     [
       "build",
       "--features",
-      "local-whisper-runtime,local-whisper-runtime-metal,voice-activation",
+      "local-whisper-runtime,local-whisper-runtime-metal,voice-activation,local-phonon-mlx",
       "--ci",
     ],
   );

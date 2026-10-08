@@ -12,7 +12,7 @@
 
 use crate::{
     count_words, CapturedAudio, CountedSegment, DictationSegmentOutcome, DictationSegmentPosition,
-    SegmentPauseDetector, SEGMENT_PAUSE,
+    SegmentPauseDetector,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -145,6 +145,10 @@ pub struct DictationRuntime {
     /// heard nothing and therefore cannot flush before the user has said
     /// anything.
     pause_detector: Mutex<SegmentPauseDetector>,
+    /// The Segment Pause the next dictation arms its detector with, as the user
+    /// last chose it in settings. Only `begin()` reads it, so a dictation already
+    /// in progress keeps the pause it started with.
+    pending_pause: Mutex<std::time::Duration>,
     /// Reads the capture ring's voiced-sample watermark — the microphone half
     /// of the watermark cut (ADR-0026). Probed only at the moment a flush is
     /// due, never per level sample.
@@ -232,8 +236,9 @@ impl DictationRuntime {
     pub fn start(
         host: Arc<dyn DictationRuntimeHost>,
         voice_watermark: impl Fn() -> u64 + Send + Sync + 'static,
+        pause: std::time::Duration,
     ) -> Result<Self, String> {
-        Self::start_with_pause(host, Arc::new(voice_watermark), SEGMENT_PAUSE)
+        Self::start_with_pause(host, Arc::new(voice_watermark), pause)
     }
 
     fn start_with_pause(
@@ -253,6 +258,7 @@ impl DictationRuntime {
             control,
             jobs: Mutex::new(Some(sender)),
             pause_detector: Mutex::new(SegmentPauseDetector::with_pause(pause)),
+            pending_pause: Mutex::new(pause),
             voice_watermark,
         })
     }
@@ -261,12 +267,25 @@ impl DictationRuntime {
         self.control.current()
     }
 
-    /// Open a new dictation and return its number.
+    /// Open a new dictation and return its number. The detector takes the pause
+    /// chosen most recently in settings, then forgets any speech it heard before.
     pub fn begin(&self) -> u64 {
         if let Ok(mut detector) = self.pause_detector.lock() {
+            if let Ok(pause) = self.pending_pause.lock() {
+                detector.set_pause(*pause);
+            }
             detector.rearm();
         }
         self.control.begin()
+    }
+
+    /// Adopt the Segment Pause the user chose in settings. The next `begin()`
+    /// arms with it; a dictation already in progress keeps the pause it started
+    /// with, because the flush decision for that speech belongs to it.
+    pub fn set_pause(&self, pause: std::time::Duration) {
+        if let Ok(mut pending) = self.pending_pause.lock() {
+            *pending = pause;
+        }
     }
 
     /// Abandon the active dictation's un-inserted remainder.
@@ -291,10 +310,14 @@ impl DictationRuntime {
     /// capture ring's watermark, and hands the queue a request rather than
     /// touching the audio session.
     pub fn on_voice_level(&self, level: f32) {
+        self.on_voice_level_at(level, std::time::Instant::now());
+    }
+
+    fn on_voice_level_at(&self, level: f32, at: std::time::Instant) {
         let Ok(mut detector) = self.pause_detector.lock() else {
             return;
         };
-        if !detector.on_level(level, std::time::Instant::now()) {
+        if !detector.on_level(level, at) {
             return;
         }
         if self.control.rescue_suspends_flushes() {
@@ -347,6 +370,7 @@ impl DictationRuntime {
                 control,
                 jobs: Mutex::new(Some(sender)),
                 pause_detector: Mutex::new(SegmentPauseDetector::with_pause(pause)),
+                pending_pause: Mutex::new(pause),
                 voice_watermark,
             },
             receiver,
@@ -1285,23 +1309,27 @@ mod tests {
     fn a_second_dictation_behaves_exactly_as_a_first_dictation() {
         let (used, used_queue) = DictationRuntime::for_testing(TEST_PAUSE, Arc::new(|| 7));
         let (fresh, fresh_queue) = DictationRuntime::for_testing(TEST_PAUSE, Arc::new(|| 7));
+        let start = std::time::Instant::now();
 
         // Dictation one on the used runtime speaks, then stops short of a
         // pause: nothing flushed, so the detector keeps the last word.
         used.begin();
-        used.on_voice_level(speaking());
-        std::thread::sleep(TEST_PAUSE / 4);
-        used.on_voice_level(0.0);
+        used.on_voice_level_at(speaking(), start);
+        let before_pause = start + TEST_PAUSE / 4;
+        used.on_voice_level_at(0.0, before_pause);
+        assert!(before_pause.duration_since(start) < TEST_PAUSE);
         assert!(used_queue.try_recv().is_err(), "no pause elapsed yet");
 
         // Dictation two on the used runtime, and dictation one on the fresh one.
         used.begin();
         fresh.begin();
+        let mut at = start + TEST_PAUSE * 2;
         for _ in 0..4 {
-            used.on_voice_level(0.0);
-            fresh.on_voice_level(0.0);
-            std::thread::sleep(TEST_PAUSE * 2);
+            used.on_voice_level_at(0.0, at);
+            fresh.on_voice_level_at(0.0, at);
+            at += TEST_PAUSE * 2;
         }
+        assert!(at.duration_since(start) > TEST_PAUSE);
         assert!(
             used_queue.try_recv().is_err(),
             "a dictation that opens with silence must not flush, however long ago the user spoke"
@@ -1309,9 +1337,10 @@ mod tests {
         assert!(fresh_queue.try_recv().is_err());
 
         for (runtime, queue) in [(&used, &used_queue), (&fresh, &fresh_queue)] {
-            runtime.on_voice_level(speaking());
-            std::thread::sleep(TEST_PAUSE * 3);
-            runtime.on_voice_level(0.0);
+            runtime.on_voice_level_at(speaking(), at);
+            let quiet_at = at + TEST_PAUSE * 3;
+            assert!(quiet_at.duration_since(at) >= TEST_PAUSE);
+            runtime.on_voice_level_at(0.0, quiet_at);
             assert!(
                 queue
                     .recv_timeout(std::time::Duration::from_secs(1))
@@ -1349,5 +1378,69 @@ mod tests {
         assert!(receiver
             .recv_timeout(std::time::Duration::from_secs(1))
             .is_ok());
+    }
+
+    #[test]
+    fn a_pause_chosen_in_settings_arms_the_next_dictation() {
+        let (runtime, receiver) = DictationRuntime::for_testing(TEST_PAUSE, Arc::new(|| 7));
+        let saved_pause = TEST_PAUSE * 6;
+        runtime.set_pause(saved_pause);
+        runtime.begin();
+        let start = std::time::Instant::now();
+
+        // Opening silence longer than the new pause never flushes.
+        runtime.on_voice_level_at(0.0, start);
+        let long_silence = start + TEST_PAUSE * 8;
+        assert!(long_silence.duration_since(start) > saved_pause);
+        runtime.on_voice_level_at(0.0, long_silence);
+        let spoken_at = long_silence + TEST_PAUSE;
+        runtime.on_voice_level_at(speaking(), spoken_at);
+        assert!(receiver.try_recv().is_err());
+
+        // Quiet for less than the new pause is not enough; the old pause would
+        // already have flushed here.
+        let before_saved_pause = spoken_at + saved_pause - std::time::Duration::from_millis(1);
+        assert!(before_saved_pause.duration_since(spoken_at) < saved_pause);
+        runtime.on_voice_level_at(0.0, before_saved_pause);
+        assert!(
+            receiver.try_recv().is_err(),
+            "the new pause has not elapsed yet"
+        );
+
+        let saved_pause_elapsed = spoken_at + saved_pause;
+        assert!(saved_pause_elapsed.duration_since(spoken_at) >= saved_pause);
+        runtime.on_voice_level_at(0.0, saved_pause_elapsed);
+        assert!(matches!(
+            receiver.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(DictationSegmentJob::PauseFlush { .. })
+        ));
+    }
+
+    #[test]
+    fn a_pause_chosen_mid_dictation_does_not_change_the_one_in_progress() {
+        let (runtime, receiver) = DictationRuntime::for_testing(TEST_PAUSE, Arc::new(|| 7));
+        runtime.begin();
+        let spoken_at = std::time::Instant::now();
+        runtime.on_voice_level_at(speaking(), spoken_at);
+
+        // The dictation in progress keeps the pause it started with, so quiet
+        // for that pause ends it even though the setting now asks for longer.
+        runtime.set_pause(TEST_PAUSE * 6);
+        let just_before_pause = spoken_at + TEST_PAUSE - std::time::Duration::from_millis(1);
+        assert!(just_before_pause.duration_since(spoken_at) < TEST_PAUSE);
+        runtime.on_voice_level_at(0.0, just_before_pause);
+        assert!(
+            receiver.try_recv().is_err(),
+            "the armed pause has not elapsed"
+        );
+
+        let armed_pause_elapsed = spoken_at + TEST_PAUSE;
+        assert!(armed_pause_elapsed.duration_since(spoken_at) >= TEST_PAUSE);
+        runtime.on_voice_level_at(0.0, armed_pause_elapsed);
+
+        assert!(matches!(
+            receiver.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(DictationSegmentJob::PauseFlush { .. })
+        ));
     }
 }

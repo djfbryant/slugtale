@@ -891,8 +891,12 @@ mod tests {
 
     fn started_runtime() -> Arc<DictationRuntime> {
         Arc::new(
-            DictationRuntime::start(Arc::new(UnreachableRuntimeHost), || 0)
-                .expect("test runtime starts"),
+            DictationRuntime::start(
+                Arc::new(UnreachableRuntimeHost),
+                || 0,
+                crate::segment_pause_duration(&crate::Settings::default()),
+            )
+            .expect("test runtime starts"),
         )
     }
 

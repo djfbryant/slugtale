@@ -17,6 +17,9 @@ local-whisper-runtime-metal = ["local-whisper-runtime", "whisper-rs/metal"]
 # macOS, Windows, and Linux, unlike the Core ML/Swift path the original design
 # assumed, so the Linux port inherits it for free.
 local-parakeet-runtime = ["dep:parakeet-rs"]
+# Private Fermion MLX worker on Apple silicon macOS 14+. Other targets and
+# older macOS keep the ONNX provider. Setup downloads the pinned runtime.
+local-phonon-mlx = []
 # Parakeet on the Apple Neural Engine / GPU through ONNX Runtime's Core ML
 # execution provider. macOS-only; the CPU provider stays the portable default.
 local-parakeet-runtime-coreml = ["local-parakeet-runtime", "parakeet-rs/coreml"]

@@ -592,6 +592,22 @@ fn save_transcript_cleanup_settings(
     Ok(settings)
 }
 
+/// Save the Segment Pause length in seconds. The runtime adopts it for the next
+/// dictation; a dictation already running keeps the length it started with.
+#[tauri::command]
+fn save_segment_pause_settings(
+    app: tauri::AppHandle,
+    segment_pause_secs: i64,
+) -> Result<slugtale_lib::Settings, String> {
+    let current = load_current_settings(&app);
+    slugtale_lib::save_segment_pause(
+        &current,
+        segment_pause_secs,
+        |pause| dictation_host(&app).runtime().set_pause(pause),
+        |settings| save_current_settings(&app, settings),
+    )
+}
+
 /// Save whether dictation records from the built-in microphone when the
 /// default one is Bluetooth. The next dictation picks the new microphone up.
 #[tauri::command]
@@ -1240,9 +1256,12 @@ fn main() {
             // watermark cut (ADR-0026).
             let watermark_host = Arc::clone(&host);
             let runtime_host = Arc::clone(&host);
-            let runtime = slugtale_lib::DictationRuntime::start(runtime_host, move || {
-                watermark_host.voice_watermark()
-            })
+            let pause = slugtale_lib::segment_pause_duration(&load_current_settings(app.handle()));
+            let runtime = slugtale_lib::DictationRuntime::start(
+                runtime_host,
+                move || watermark_host.voice_watermark(),
+                pause,
+            )
             .map_err(std::io::Error::other)?;
             host.set_runtime(Arc::new(runtime))
                 .map_err(std::io::Error::other)?;
@@ -1312,6 +1331,7 @@ fn main() {
             save_hotkey_settings,
             save_transcription_settings,
             save_transcript_cleanup_settings,
+            save_segment_pause_settings,
             save_microphone_settings,
             voice_activation_supported,
             save_voice_activation_settings,
