@@ -303,27 +303,22 @@ pub fn segment_pause_duration(settings: &Settings) -> std::time::Duration {
     std::time::Duration::from_secs(secs as u64)
 }
 
-/// The one Segment Pause save: validate first so a rejected value touches
-/// neither the Settings File nor the running runtime, then hand the runtime the
-/// new length and persist. When persisting fails, the runtime is handed the
-/// previous length back, so the file and the runtime never disagree.
+/// The one Segment Pause save: validate a copy first so a rejected value touches
+/// neither the Settings File nor the running runtime, then persist the copy and
+/// only after that hand the runtime its new length. Until the write succeeds the
+/// runtime keeps the saved length, so a dictation begun during the write arms
+/// with it, and a failed write leaves both the file and the runtime unchanged.
 pub fn save_segment_pause(
     current: &Settings,
     segment_pause_secs: i64,
-    adopt_pause: impl Fn(std::time::Duration),
+    adopt_pause: impl FnOnce(std::time::Duration),
     persist: impl FnOnce(&Settings) -> Result<(), String>,
 ) -> Result<Settings, String> {
     let mut proposed = current.clone();
     apply_segment_pause_settings(&mut proposed, segment_pause_secs)?;
-    apply_and_persist(
-        current,
-        |settings| settings.segment_pause_secs = proposed.segment_pause_secs,
-        |settings| {
-            adopt_pause(segment_pause_duration(settings));
-            Ok(())
-        },
-        persist,
-    )
+    persist(&proposed)?;
+    adopt_pause(segment_pause_duration(&proposed));
+    Ok(proposed)
 }
 
 /// Update the Transcript Cleanup mode stored in the Settings File (slugtale-kyc).
@@ -650,28 +645,82 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_segment_pause_write_hands_the_runtime_its_previous_length_back() {
+    fn the_runtime_keeps_the_saved_pause_until_the_write_succeeds() {
         let current = Settings {
             segment_pause_secs: 3,
             ..Settings::default()
         };
-        let adopted = std::cell::RefCell::new(Vec::new());
+        let runtime = std::cell::Cell::new(std::time::Duration::from_secs(3));
+        let seen_while_writing = std::cell::Cell::new(None);
+
+        let saved = save_segment_pause(
+            &current,
+            8,
+            |pause| runtime.set(pause),
+            |_| {
+                seen_while_writing.set(Some(runtime.get()));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        // A dictation that begins during the write arms with the saved 3 seconds.
+        assert_eq!(saved.segment_pause_secs, 8);
+        assert_eq!(
+            seen_while_writing.get(),
+            Some(std::time::Duration::from_secs(3))
+        );
+        assert_eq!(runtime.get(), std::time::Duration::from_secs(8));
+    }
+
+    #[test]
+    fn a_failed_segment_pause_write_keeps_the_saved_file_and_runtime() {
+        let path = std::env::temp_dir().join(format!(
+            "slugtale-settings-failed-segment-pause-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let blocked_temp_path = path.with_file_name(format!(
+            ".{}.{}.tmp",
+            path.file_name().unwrap().to_string_lossy(),
+            std::process::id()
+        ));
+        let current = Settings {
+            segment_pause_secs: 3,
+            ..Settings::default()
+        };
+        save_settings(&path, &current).unwrap();
+        let saved_file = std::fs::read(&path).unwrap();
+
+        // Block the atomic writer before it can replace the saved Settings File.
+        std::fs::create_dir(&blocked_temp_path).unwrap();
+        let runtime = std::cell::Cell::new(std::time::Duration::from_secs(3));
+        let seen_while_writing = std::cell::Cell::new(None);
 
         let result = save_segment_pause(
             &current,
             8,
-            |pause| adopted.borrow_mut().push(pause),
-            |_| Err("disk full".to_string()),
+            |pause| runtime.set(pause),
+            |settings| {
+                seen_while_writing.set(Some(runtime.get()));
+                save_settings(&path, settings).map_err(|error| error.to_string())
+            },
         );
 
-        assert_eq!(result.unwrap_err(), "disk full");
+        assert!(result.is_err());
         assert_eq!(
-            *adopted.borrow(),
-            [
-                std::time::Duration::from_secs(8),
-                std::time::Duration::from_secs(3)
-            ]
+            seen_while_writing.get(),
+            Some(std::time::Duration::from_secs(3))
         );
+        assert_eq!(runtime.get(), std::time::Duration::from_secs(3));
+        assert_eq!(std::fs::read(&path).unwrap(), saved_file);
+        assert_eq!(load_settings(&path).segment_pause_secs, 3);
+
+        std::fs::remove_dir(&blocked_temp_path).unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
