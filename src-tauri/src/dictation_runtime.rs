@@ -255,11 +255,7 @@ impl DictationSegmentWorker {
         // From here the audio is this job's own and no lock is held: the decode
         // ahead may take seconds, and no lifecycle event may block behind it.
 
-        let speaking_seconds = if audio.sample_rate_hz > 0 {
-            audio.samples.len() as f64 / f64::from(audio.sample_rate_hz)
-        } else {
-            0.0
-        };
+        let speaking_seconds = crate::captured_audio_duration(&audio).as_secs_f64();
         let starts_dictation = !self.inserted_any;
         let position = if starts_dictation {
             DictationSegmentPosition::First
@@ -369,18 +365,6 @@ impl DictationRuntime {
     /// Abandon the active dictation's un-inserted remainder.
     pub fn abandon(&self) {
         self.control.abandon();
-    }
-
-    /// Whether `session` is still the dictation the user is running: not cancelled,
-    /// and not replaced by a newer Start.
-    ///
-    /// For the host's own use, where there is no effect to serialise against —
-    /// reading the bar's state, naming the session. A caller that is about to
-    /// *do* something the user would see must not use this: it is a check, and a
-    /// check is not a decision. The runtime holds that decision itself, under
-    /// `effects`, around every one of a job's effects (slugtale-cbxb).
-    pub fn is_session_live(&self, session: u64) -> bool {
-        self.control.is_recording(session)
     }
 
     /// Queue a Pause Flush for the active dictation, cutting the segment at the
@@ -498,13 +482,6 @@ impl crate::SessionEffects for RuntimeSessionEffects {
         }
         effect();
         true
-    }
-
-    fn note_refused(&self, session: u64) {
-        // A refusal is not itself a dictation event, so there is nothing for the
-        // Dictation Host to be told. The flag on the prepared pair is what the
-        // caller reads.
-        let _ = session;
     }
 }
 

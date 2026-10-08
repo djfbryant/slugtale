@@ -8,7 +8,7 @@ use tauri::Manager;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use crate::commands::dictation::{begin_dictation, dictation_host};
-use crate::commands::usage::typing_challenge_is_open;
+use crate::commands::dictation_input_is_inert;
 
 const DICTATION_ESCAPE_KEY: &str = "Escape";
 
@@ -49,13 +49,13 @@ pub(super) fn setup_configured_hotkey(
             match registration {
                 Ok(registration) => {
                     if let Some(commands) = registration.key_commands.as_ref() {
-                        let key = if shortcut.key == tauri_plugin_global_shortcut::Code::Escape
-                            && shortcut.mods.is_empty()
-                        {
-                            slugtale_lib::DictationKey::Escape
-                        } else {
-                            slugtale_lib::DictationKey::Hotkey
-                        };
+                        // The key-identity rule is the core's: the adapter only
+                        // reports which key the plugin saw and whether any
+                        // modifier was held with it.
+                        let key = slugtale_lib::dictation_key_for(slugtale_lib::GlobalKey::new(
+                            shortcut.key == tauri_plugin_global_shortcut::Code::Escape,
+                            !shortcut.mods.is_empty(),
+                        ));
                         let _ = commands.send(GlobalKeyCommand::Input(key, input));
                     }
                 }
@@ -131,10 +131,10 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                         }
                     }
                     GlobalKeyCommand::Input(key, input) => {
-                        // The Typing Challenge guard also lives inside
-                        // begin_dictation; this early check keeps the release of
-                        // a swallowed key from reaching the lifecycle at all.
-                        if typing_challenge_is_open(&app) {
+                        // One rule, consulted by the begin sequence too. This
+                        // early check is what keeps the release of a swallowed
+                        // key from reaching the lifecycle at all.
+                        if dictation_input_is_inert(&app) {
                             continue;
                         }
 
@@ -183,19 +183,9 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             .lock()
                             .ok()
                             .and_then(|mut registration| {
-                                let event = match (key, input) {
-                                    (slugtale_lib::DictationKey::Hotkey, input) => {
-                                        registration.control.on_hotkey(input)
-                                    }
-                                    (
-                                        slugtale_lib::DictationKey::Escape,
-                                        slugtale_lib::HotkeyInput::Pressed,
-                                    ) => registration.control.cancel(),
-                                    (
-                                        slugtale_lib::DictationKey::Escape,
-                                        slugtale_lib::HotkeyInput::Released,
-                                    ) => None,
-                                };
+                                // The whole transition table is the core's; the
+                                // adapter only forwards what the plugin saw.
+                                let event = registration.control.on_key(key, input);
                                 Some((event, registration.control.is_dictating()))
                             });
                         if let Some((event, should_register)) = transition {

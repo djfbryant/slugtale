@@ -83,13 +83,15 @@ src/                    Frontend (plain HTML settings window)
 src-tauri/
   src/
     lib.rs              App logic and Rust unit tests (no Tauri command macros here)
-    main.rs             Tauri entry point — wires Builder, tray setup, command handlers
+    main.rs             Tauri entry point — wires Builder, managed state, window events,
+                        and the one `generate_handler!` list
+    commands/           The Tauri command adapters, grouped by domain
   tauri.conf.json       App config: settings window (hidden by default), bundle off
   capabilities/         Tauri v2 permission manifests
   icons/icon.png        Placeholder tray/app icon (32x32 RGBA)
 ```
 
-Key design rule: `lib.rs` contains only plain Rust — no `#[tauri::command]` macros. Command wrappers live in `main.rs`. This keeps the library fully unit-testable without a running Tauri runtime.
+Key design rule: `lib.rs` contains only plain Rust — no `#[tauri::command]` macros. Command wrappers live in `src/commands/`, one module per domain (settings, dictation, engines, usage, updates, platform). `lib.rs` re-exports each of its modules with `pub use`, so the domain modules can be split, renamed and moved without breaking a `slugtale_lib::*` call site. This keeps the library fully unit-testable without a running Tauri runtime: only the adapters in `commands/` and the small shell modules the binary owns (`hotkey_registration.rs`, `voice_activation.rs`, `dictation_bar_window.rs`) touch the Tauri runtime.
 
 ## Conventions & Patterns
 
@@ -97,4 +99,4 @@ Key design rule: `lib.rs` contains only plain Rust — no `#[tauri::command]` ma
 - Platform-specific OS behavior lives behind a **Platform Adapter** boundary (ADR-0021). This includes hotkeys, permissions, audio, notifications, and file-manager reveal. Any spawned OS process (`open`, `explorer`, `xdg-open`, `afplay`, `osascript`) belongs in `macos.rs`, `windows.rs`, or `linux.rs`. Domain modules keep the decision logic and dispatch through `#[cfg]` arms to adapter functions (see `recording_feedback.rs`, `local_model.rs`).
 - Rust unit tests live in a `#[cfg(test)] mod tests` in the module they cover, preferring that module's public interface. `lib.rs` keeps only the tests for behavior it owns itself. A module gated to one platform (`macos.rs`, `windows.rs`, `linux.rs`) must test from inside itself — its code does not exist on the other platforms, so `lib.rs` cannot reach it — and may reach a private policy function there rather than leave it uncovered.
 - Frontend tests live in `tests/` as `*.test.mjs`. `npm test` discovers them from that directory, so a test placed elsewhere is silently skipped.
-- Tauri commands in `main.rs` are thin wrappers that delegate to `lib.rs` functions.
+- Tauri commands in `commands/` are thin adapters that delegate to `lib.rs` functions: they translate the wire types and reach the Tauri runtime, and the rules stay in the library.

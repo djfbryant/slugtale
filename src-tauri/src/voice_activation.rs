@@ -36,15 +36,12 @@ pub(super) fn save_settings(
         // Validation rides the side-effect step: the worker must not start
         // without an engine that can run the wake checks.
         |settings| {
-            if enabled
-                && app
-                    .state::<slugtale_lib::TranscriptionEngineCatalogue>()
-                    .whisper_provider(settings)
-                    .is_none()
-            {
-                return Err("Voice activation needs the local Whisper model.".to_string());
-            }
-            sync_worker(app, settings.voice_activation_enabled)
+            let whisper_can_run = app
+                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                .whisper_provider(settings)
+                .is_some();
+            slugtale_lib::validate_voice_activation(settings, whisper_can_run)
+                .and_then(|()| sync_worker(app, settings.voice_activation_enabled))
         },
     )
 }

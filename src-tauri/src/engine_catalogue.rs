@@ -156,6 +156,20 @@ impl TranscriptionEngineCatalogue {
         })
     }
 
+    /// Start warming the effective primary engine and return the warm-up, ready
+    /// to run off the caller's thread. `None` when no engine can run, in which
+    /// case there is nothing worth warming.
+    ///
+    /// Release-then-warm is the ordering, and it belongs here rather than at
+    /// the caller: releasing the models this engine replaces *before* loading
+    /// it is what keeps switching engines from leaving two large models
+    /// resident on a memory-constrained Mac.
+    pub fn begin_primary_warm_up(&self, settings: &Settings) -> Option<EngineWarmUp> {
+        let warm_up = self.prepare_primary_warm_up(settings)?;
+        self.release_models_except(warm_up.engine());
+        Some(warm_up)
+    }
+
     /// Release every large loaded model except `keep`, so switching engines on
     /// a memory-constrained machine does not leave two large models resident.
     /// In-flight transcriptions keep their own references and finish safely;

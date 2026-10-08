@@ -63,10 +63,6 @@ pub trait SessionEffects: Send + Sync {
     /// Run `effect` only if `session` is still live, deciding and acting as one
     /// operation. Reports whether the effect ran.
     fn while_session_live(&self, session: u64, effect: &mut dyn FnMut()) -> bool;
-
-    /// Report that the effect for `session` was refused, so the caller does not
-    /// report words it never delivered.
-    fn note_refused(&self, session: u64);
 }
 
 /// A guard with no session behind it, for a prepared pair nothing has scoped.
@@ -78,8 +74,6 @@ impl SessionEffects for UnscopedEffects {
         effect();
         true
     }
-
-    fn note_refused(&self, _session: u64) {}
 }
 
 /// A focus that never drifts, for a wrapper built outside `prepare_text_insertion`
@@ -226,13 +220,8 @@ impl SessionEffects for SessionScoped {
             true
         } else {
             self.refused.store(true, Ordering::SeqCst);
-            self.effects.note_refused(session);
             false
         }
-    }
-
-    fn note_refused(&self, session: u64) {
-        self.effects.note_refused(session)
     }
 }
 
@@ -252,15 +241,13 @@ impl InsertionRescue for SessionScopedRescue {
         transcription: &crate::FinalTranscription,
     ) -> Result<(), crate::InsertionRescueError> {
         let mut outcome = Ok(());
-        let session = self.session;
-        let ran = self.scoped.while_session_live(session, &mut || {
+        let ran = self.scoped.while_session_live(self.session, &mut || {
             if let Err(error) = self.inner.rescue(transcription) {
                 outcome = Err(error);
             }
         });
         if !ran {
             self.refused.store(true, Ordering::SeqCst);
-            self.scoped.note_refused(session);
             // Nothing was preserved, so this must not read to the caller as a
             // successful rescue of words the user never received anywhere.
             return Err(crate::InsertionRescueError::new(
@@ -808,8 +795,6 @@ mod tests {
             }
             answer
         }
-
-        fn note_refused(&self, _session: u64) {}
     }
 
     struct RecordingRescue(Arc<Mutex<Vec<String>>>);
@@ -1033,11 +1018,18 @@ mod tests {
         let newer = started_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("a newer Start must not wait behind the blocked activation");
+        // The replacement dictation owns the session now; the retired one may
+        // no longer reach the user. Asked through the same guard the insertion
+        // used, so the assertion is about the decision the runtime makes.
+        let effects = runtime.session_effects();
         assert!(
-            runtime.is_session_live(newer),
+            effects.while_session_live(newer, &mut || {}),
             "the replacement dictation owns the session"
         );
-        assert!(!runtime.is_session_live(session));
+        assert!(
+            !effects.while_session_live(session, &mut || {}),
+            "the retired dictation may no longer reach the user"
+        );
 
         activation.release();
         let refused = inserting.join().expect("the insertion thread finishes");
