@@ -7,6 +7,8 @@
     "dev": "node scripts/run-dev.js",
     "dev:raw": "PATH=$HOME/.cargo/bin:$PATH tauri dev --features local-whisper-runtime",
     "build": "node scripts/run-tauri.js build --ci",
+    "check:examples": "node scripts/run-cargo.js check --examples --features local-whisper-runtime,apple-speech-runtime,voice-activation",
+    "check:examples:apple": "node scripts/run-cargo.js check --examples --features local-whisper-runtime,local-whisper-runtime-metal,local-parakeet-runtime,local-parakeet-runtime-coreml,apple-speech-runtime,voice-activation",
     "macos:install": "node scripts/install-macos-app.js",
     "macos:reauthorize": "node scripts/reauthorize-macos-app.js",
     "macos:reset-permissions": "node scripts/reset-dev-permissions.js",

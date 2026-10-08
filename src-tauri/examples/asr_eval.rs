@@ -67,13 +67,13 @@
 //! records it as unavailable rather than failing to build.
 
 use slugtale_lib::{
-    AppleSpeechProvider, CapturedAudio, EngineAvailability, EscalationReason, LocalModelRef,
-    LocalWhisperRuntime, ParakeetProvider, SecondOpinionMode, SecondOpinionRouter, SpeedProfile,
-    TranscriptionProvider, WhisperTranscriptionProvider,
+    AppleSpeechProvider, AsrRuntime, CapturedAudio, EngineAvailability, EscalationReason,
+    LocalModelRef, LocalWhisperRuntime, ParakeetProvider, RoutingDiagnostics, SecondOpinionMode,
+    SecondOpinionRouter, SpeedProfile, TranscriptionProvider, WhisperTranscriptionProvider,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const USAGE: &str = "\
@@ -763,13 +763,37 @@ fn evaluate_engine(
 /// standalone, indexed the same way as `clips` — that is what lets this
 /// function score a win/loss/tie without ever comparing transcript text
 /// itself, only the numbers each pass already reduced it to.
+///
+/// ## Scored through the supported public routing surface
+///
+/// The router's internal `route` method and the `RoutedTranscription` it
+/// returns are both private to the app, and this harness deliberately does not
+/// reopen them: the app keeps transcript-shaped internals private, so a
+/// measurement tool must measure the shipped boundary instead of the guts
+/// behind it. Everything this report needs is reachable publicly:
+///
+/// - [`AsrRuntime::transcribe`] returns the one transcript the router chose —
+///   the same call the app's Dictation Runtime makes.
+/// - [`SecondOpinionRouter::observing`] reports the non-content decision for
+///   that call: which engine won, which escalation rule fired, and the total
+///   latency. [`RoutingDiagnostics`] carries codes and a duration, never a
+///   transcript, which is exactly why it is the public door.
 fn evaluate_routed(
     primary: Arc<dyn TranscriptionProvider>,
     second: Arc<dyn TranscriptionProvider>,
     clips: &[Clip],
     primary_alone_wers: &[Option<f64>],
 ) -> RoutedReport {
-    let router = SecondOpinionRouter::new(primary, second, SecondOpinionMode::Automatic);
+    // The observer is a `Fn`, so the slot it fills needs interior mutability.
+    let decided: Arc<Mutex<Option<RoutingDiagnostics>>> = Arc::new(Mutex::new(None));
+    let recorder = Arc::clone(&decided);
+    let router = SecondOpinionRouter::new(primary, second, SecondOpinionMode::Automatic).observing(
+        move |diagnostics| {
+            *recorder
+                .lock()
+                .expect("routing decision slot was never locked across threads") = Some(diagnostics);
+        },
+    );
 
     let mut evaluated = 0usize;
     let mut escalations = 0usize;
@@ -783,19 +807,33 @@ fn evaluate_routed(
 
     for (index, clip) in clips.iter().enumerate() {
         let audio = CapturedAudio::mono_16khz(clip.samples.clone());
-        let Ok(routed) = router.route(&audio) else {
+
+        // Clear the slot first so a failed or skipped route can never be scored
+        // against the previous clip's decision.
+        *decided
+            .lock()
+            .expect("routing decision slot was never locked across threads") = None;
+
+        let Ok(selected) = router.transcribe(audio) else {
             continue;
         };
+        let Some(diagnostics) = *decided
+            .lock()
+            .expect("routing decision slot was never locked across threads")
+        else {
+            continue;
+        };
+
         evaluated += 1;
-        latencies.push(routed.total_latency);
+        latencies.push(Duration::from_millis(diagnostics.total_latency_ms));
 
         let reference_is_silent = clip.reference.trim().is_empty();
         if !reference_is_silent {
             non_silence_clips += 1;
-            let routed_wer = word_error_rate(&clip.reference, routed.selected.text()).rate;
+            let routed_wer = word_error_rate(&clip.reference, &selected.text).rate;
             wer_sum += routed_wer;
 
-            if routed.escalation.is_some() {
+            if diagnostics.escalation.is_some() {
                 if let Some(Some(primary_wer)) = primary_alone_wers.get(index).copied() {
                     match classify_selector_outcome(primary_wer, routed_wer) {
                         SelectorOutcome::Win => wins += 1,
@@ -806,7 +844,7 @@ fn evaluate_routed(
             }
         }
 
-        if let Some(escalation) = routed.escalation {
+        if let Some(escalation) = diagnostics.escalation {
             escalations += 1;
             *reason_counts
                 .entry(escalation_label(escalation).to_string())
@@ -1025,9 +1063,16 @@ fn main() {
         )));
         // Balanced, the app's default: the benchmark that produced the profile
         // numbers was measured with the profile a fresh install runs.
+        //
+        // No `LocalModelManager`: the harness is handed a model path on the
+        // command line, and the manager only backs asset install/status/removal
+        // — never `transcribe`. Passing `None` therefore measures decode
+        // quality honestly and makes the provider report its assets as
+        // unmeasured instead of claiming a lookup this tool never made.
         let provider: Arc<dyn TranscriptionProvider> = Arc::new(WhisperTranscriptionProvider::new(
             runtime,
             SpeedProfile::default(),
+            None,
         ));
         let (report, wers) = evaluate_engine("whisper", provider.as_ref(), &clips, &terms);
         engine_reports.push(report);
