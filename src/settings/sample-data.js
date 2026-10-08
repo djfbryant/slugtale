@@ -18,24 +18,6 @@
       bytes: null
     };
 
-    const fallbackSettings = {
-      hotkey: null,
-      activation_mode: "toggle",
-      launch_at_login: false,
-      diagnostic_logging: false,
-      model: null,
-      speed_profile: "balanced",
-      segment_pause_secs: 5,
-      bar_position: "bottom-center",
-      accent_color: "red",
-      bar_display: "primary",
-      primary_engine: "whisper",
-      second_opinion: "off",
-      transcript_cleanup: "basic",
-      voice_activation_enabled: false,
-      prefer_built_in_microphone: true
-    };
-
     // Shown only outside the desktop app (no Tauri bridge), so the pane is never
     // blank. Mirrors what a fresh install's Whisper-only Settings File reports.
     const fallbackEngines = [
@@ -63,7 +45,6 @@
       }
     ];
 
-    const BAR_POSITIONS = ["bottom-center", "bottom-left", "bottom-right"];
-    const ACCENT_COLORS = ["red", "amber", "green", "blue", "violet", "graphite"];
-    const SECOND_OPINION_MODES = ["off", "automatic"];
+    // BAR_POSITIONS, ACCENT_COLORS and SECOND_OPINION_MODES live in vocab.js so
+    // the Settings window and the Dictation Bar spell them from one home.
 

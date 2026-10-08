@@ -1,3 +1,6 @@
+    // These three preferences write one field of the settings file and update
+    // their own row. They read and write `currentSettings` through `setSettings`
+    // (state.js) like every other writer, rather than re-merging defaults here.
     async function saveLaunchAtLogin(enabled) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };
@@ -5,7 +8,7 @@
       const messageEl = document.getElementById("launch-at-login-message");
 
       if (!invoke) {
-        currentSettings = { ...currentSettings, launch_at_login: enabled };
+        setSettings({ ...currentSettings, launch_at_login: enabled });
         toggle.checked = enabled;
         return;
       }
@@ -18,7 +21,7 @@
       try {
         const saved = await invoke("save_launch_at_login", { enabled });
         savingLaunchAtLogin = false;
-        currentSettings = { ...fallbackSettings, ...saved };
+        setSettings(saved);
         toggle.checked = Boolean(currentSettings.launch_at_login);
         toggle.disabled = false;
         messageEl.textContent = currentSettings.launch_at_login
@@ -26,7 +29,7 @@
           : "";
       } catch (error) {
         savingLaunchAtLogin = false;
-        currentSettings = { ...previousSettings };
+        setSettings(previousSettings);
         toggle.checked = Boolean(currentSettings.launch_at_login);
         toggle.disabled = false;
         messageEl.classList.add("error");
@@ -42,7 +45,7 @@
       const messageEl = document.getElementById("microphone-message");
 
       if (!invoke) {
-        currentSettings = { ...currentSettings, prefer_built_in_microphone: enabled };
+        setSettings({ ...currentSettings, prefer_built_in_microphone: enabled });
         toggle.checked = enabled;
         return;
       }
@@ -55,13 +58,13 @@
       try {
         const saved = await invoke("save_microphone_settings", { preferBuiltInMicrophone: enabled });
         savingMicrophone = false;
-        currentSettings = { ...fallbackSettings, ...saved };
+        setSettings(saved);
         toggle.checked = currentSettings.prefer_built_in_microphone !== false;
         toggle.disabled = false;
         messageEl.textContent = "";
       } catch (error) {
         savingMicrophone = false;
-        currentSettings = { ...previousSettings };
+        setSettings(previousSettings);
         toggle.checked = currentSettings.prefer_built_in_microphone !== false;
         toggle.disabled = false;
         messageEl.classList.add("error");
@@ -78,7 +81,7 @@
       const messageEl = document.getElementById("voice-activation-message");
 
       if (!invoke) {
-        currentSettings = { ...currentSettings, voice_activation_enabled: enabled };
+        setSettings({ ...currentSettings, voice_activation_enabled: enabled });
         toggle.checked = enabled;
         return;
       }
@@ -91,7 +94,7 @@
       try {
         const saved = await invoke("save_voice_activation_settings", { enabled });
         savingVoiceActivation = false;
-        currentSettings = { ...fallbackSettings, ...saved };
+        setSettings(saved);
         toggle.checked = Boolean(currentSettings.voice_activation_enabled);
         toggle.disabled = false;
         messageEl.textContent = currentSettings.voice_activation_enabled
@@ -99,11 +102,10 @@
           : "";
       } catch (error) {
         savingVoiceActivation = false;
-        currentSettings = { ...previousSettings };
+        setSettings(previousSettings);
         toggle.checked = Boolean(currentSettings.voice_activation_enabled);
         toggle.disabled = false;
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
       }
     }
-

@@ -5,23 +5,23 @@
       const messageEl = document.getElementById("transcription-message");
 
       if (!invoke) {
-        renderSettings(nextSettings);
+        renderSettings(setSettings(nextSettings));
         return;
       }
 
       savingProfile = true;
-      renderSettings(nextSettings);
+      renderSettings(setSettings(nextSettings));
       messageEl.classList.remove("error");
       messageEl.textContent = "Saving…";
 
       try {
         const saved = await invoke("save_transcription_settings", { speedProfile });
         savingProfile = false;
-        renderSettings(saved);
+        renderSettings(setSettings(saved));
         messageEl.textContent = "Saved. Applies to your next dictation.";
       } catch (error) {
         savingProfile = false;
-        renderSettings(previousSettings);
+        renderSettings(setSettings(previousSettings));
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
       }
@@ -34,23 +34,23 @@
       const messageEl = document.getElementById("transcription-message");
 
       if (!invoke) {
-        renderSettings(nextSettings);
+        renderSettings(setSettings(nextSettings));
         return;
       }
 
       savingPause = true;
-      renderSettings(nextSettings);
+      renderSettings(setSettings(nextSettings));
       messageEl.classList.remove("error");
       messageEl.textContent = "Saving…";
 
       try {
         const saved = await invoke("save_segment_pause_settings", { segmentPauseSecs });
         savingPause = false;
-        renderSettings(saved);
+        renderSettings(setSettings(saved));
         messageEl.textContent = "Saved. Applies to your next dictation.";
       } catch (error) {
         savingPause = false;
-        renderSettings(previousSettings);
+        renderSettings(setSettings(previousSettings));
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
       }
@@ -63,25 +63,25 @@
       const messageEl = document.getElementById("cleanup-message");
 
       if (!invoke) {
-        renderSettings(nextSettings);
+        renderSettings(setSettings(nextSettings));
         return;
       }
 
       savingCleanup = true;
-      renderSettings(nextSettings);
+      renderSettings(setSettings(nextSettings));
       messageEl.classList.remove("error");
       messageEl.textContent = "Saving…";
 
       try {
         const saved = await invoke("save_transcript_cleanup_settings", { cleanupMode });
         savingCleanup = false;
-        renderSettings(saved);
+        renderSettings(setSettings(saved));
         messageEl.textContent = cleanupMode !== "basic"
           ? "Saved. Applies to your next dictation."
           : "Saved.";
       } catch (error) {
         savingCleanup = false;
-        renderSettings(previousSettings);
+        renderSettings(setSettings(previousSettings));
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
       }
@@ -93,9 +93,9 @@
     async function saveDictationBarSettings({ barPosition, accentColor, barDisplay }) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };
-      const nextPosition = barPosition || currentSettings.bar_position || "bottom-center";
-      const nextAccent = accentColor || currentSettings.accent_color || "red";
-      const nextDisplay = barDisplay || currentSettings.bar_display || "primary";
+      const nextPosition = barPosition || currentSettings.bar_position;
+      const nextAccent = accentColor || currentSettings.accent_color;
+      const nextDisplay = barDisplay || currentSettings.bar_display;
       const nextSettings = {
         ...currentSettings,
         bar_position: nextPosition,
@@ -105,12 +105,12 @@
       const messageEl = document.getElementById("dictation-bar-message");
 
       if (!invoke) {
-        renderSettings(nextSettings);
+        renderSettings(setSettings(nextSettings));
         return;
       }
 
       savingDictationBar = true;
-      renderSettings(nextSettings);
+      renderSettings(setSettings(nextSettings));
       messageEl.classList.remove("error");
       messageEl.textContent = "Saving…";
 
@@ -121,11 +121,11 @@
           barDisplay: nextDisplay
         });
         savingDictationBar = false;
-        renderSettings(saved);
+        renderSettings(setSettings(saved));
         messageEl.textContent = "Saved.";
       } catch (error) {
         savingDictationBar = false;
-        renderSettings(previousSettings);
+        renderSettings(setSettings(previousSettings));
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
       }
