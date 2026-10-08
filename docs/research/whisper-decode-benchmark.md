@@ -2,6 +2,21 @@
 
 Date: 2026-07-02 · Issue: slugtale-1lq
 
+## What this document measures, and what it does not
+
+This is a **latency** benchmark on **synthesized** speech. Every clip below was
+produced by macOS `say`, so the corpus contains no human voice, no room noise, no
+distant microphone, no silence, no names and no segment edges. It measures how
+long the decoder takes on three clean synthetic voices; it says nothing about
+how accurate dictation is on your voice, and no accuracy claim in this repository
+may cite it.
+
+Accuracy on a real voice comes from the private corpus rig
+(`docs/research/local-asr-evaluation-rig.md`), which records the provenance of
+every clip and refuses to publish a whole-corpus accuracy rate unless at least
+100 of the clips are human-voice on their own and no synthetic or unattributed
+audio is mixed in.
+
 ## Why
 
 The Transcription Speed Profile originally mapped Fast/Balanced/Accurate to
@@ -49,6 +64,15 @@ Accuracy: every strategy transcribed every clip essentially perfectly (one
 article/punctuation-level difference between strategies on the long clip), so
 accuracy stayed within tolerance across the board on these clips.
 
+That paragraph is a statement about these three `say`-generated clips and
+nothing else. Near-perfect text from a clean synthesized voice is the expected
+result for any competent decoder; it is not evidence that the profile choices
+above preserve accuracy on a human voice, in a noisy room, or at a segment edge.
+It also does not test the Segment Pause threshold, which is a level comparison
+rather than a decode strategy: a level threshold reads a steady fan as speech
+and a quiet final word as silence, which the audio-path measurements in the
+evaluation-rig doc record directly.
+
 ## Decisions
 
 - **Fast → `Greedy { best_of: 1 }`** — lowest decoder overhead; fastest or
@@ -67,3 +91,8 @@ accuracy stayed within tolerance across the board on these clips.
   `coreml` feature was evaluated and deferred: it needs a separately converted
   `.mlmodelc` encoder shipped next to the ggml model and only accelerates the
   encoder, which Metal already offloads.
+
+These are latency decisions made on latency evidence. The accuracy hedge claimed
+for Balanced and Accurate is unmeasured on real speech; re-check it against the
+private corpus rig before treating either as a quality improvement.
+
