@@ -6,14 +6,16 @@ use std::sync::Arc;
 
 use tauri::{Emitter, Manager};
 
-use slugtale_lib::{DictationHost, DictationPhase, DictationSurface, WindowLabel};
+use slugtale_lib::{
+    BoxedDiagnosticSink, DictationEffects, DictationHost, DictationParts, DictationPhase,
+    WindowLabel,
+};
 
 use crate::dictation_bar_window::{hide_dictation_bar, show_dictation_bar};
 use crate::hotkey_registration::{request_escape_registration, HotkeyRegistrationState};
 
 use super::settings::{build_activation_snapshot_for, report_not_ready};
-use super::usage::typing_challenge_is_open;
-use super::{app_files, load_current_settings, record_diagnostic_event};
+use super::{app_files, dictation_input_is_inert, load_current_settings, record_diagnostic_event};
 
 /// Drive the recording surface (ADR-0014) from a dictation lifecycle event:
 /// play the start/stop sound and show or hide the Dictation Bar. The bar's Stop
@@ -87,84 +89,82 @@ fn end_active_dictation(
 }
 
 /// Begin a dictation from any activation input — a Hotkey press or a Voice
-/// Activation wake phrase — through one readiness-gated sequence. The hotkey
-/// worker and Voice Activation used to run two private copies of this dance
-/// and had already drifted on the typing-challenge guard and the rollback.
+/// Activation wake phrase — through one readiness-gated sequence.
 ///
-/// `set_escape(true)` arms bare Escape before recording starts, so there is no
-/// active but uncancellable dictation; `set_escape(false)` disarms it. The
-/// hotkey worker arms synchronously, Voice Activation asks the global-key
-/// worker — the caller owns both that difference and the honest error report,
-/// because an arm failure must roll the begin back like any other failed step.
+/// The sequence itself is not here: it belongs to the core Dictation Control
+/// ([`slugtale_lib::begin_activation`]), which owns the order — transition, arm
+/// Escape, record — and the rollback when a step fails. This adapter supplies
+/// the host that sequence reaches: the shared control behind its registration
+/// lock, the caller's Escape arming, and the dictation host that records. The
+/// hotkey worker and Voice Activation differ only in how they arm Escape, which
+/// is exactly what `arm_escape` is.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn begin_dictation(
     app: &tauri::AppHandle,
     input: slugtale_lib::DictationInput,
-    set_escape: &mut dyn FnMut(bool) -> Result<(), String>,
+    arm_escape: &mut dyn FnMut(bool) -> Result<(), String>,
 ) -> Result<(), String> {
-    // The Typing Challenge measures how fast the user types, so their hotkey
-    // has to stay plain text for those thirty seconds. Swallowed here — before
-    // any readiness snapshot is paid for or lifecycle state moves — so
-    // releasing it later cannot resume anything. The guard stays in the host:
-    // DictationControl only decides requests that reach it.
-    if typing_challenge_is_open(app) {
+    // The Typing Challenge rule runs before any readiness snapshot is paid for
+    // or lifecycle state moves: the user is typing a passage, so this input
+    // does nothing at all and releasing it later resumes nothing. One rule,
+    // consulted by the hotkey worker as well.
+    if dictation_input_is_inert(app) {
         return Ok(());
     }
 
-    let (activation, dictation_available) = {
-        let activation = build_activation_snapshot_for(app, input);
-        let available = activation.dictation_available();
-        if !available {
-            report_not_ready(app, &activation.report);
-        }
-        (Some(activation), available)
-    };
-
-    let event = {
-        let state = app.state::<HotkeyRegistrationState>();
-        let mut registration = state
-            .0
-            .lock()
-            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
-        registration.control.begin(dictation_available)
-    };
-    let Ok(event) = event else {
-        // NotReady has already had its user-facing report; AlreadyDictating
-        // report; AlreadyDictating means a later input changes nothing.
-        return Ok(());
-    };
-
-    // Recording has not started yet; arming Escape here keeps the window where
-    // the lifecycle says dictating but Escape is not global down to nothing.
-    if let Err(error) = set_escape(true) {
-        if let Ok(mut registration) = app.state::<HotkeyRegistrationState>().0.lock() {
-            registration.control.abandon_begin();
-        }
-        eprintln!("dictation did not start because global Escape could not be registered");
-        return Err(error);
+    let activation = build_activation_snapshot_for(app, input);
+    if !activation.dictation_available() {
+        report_not_ready(app, &activation.report);
     }
 
-    if let Err(error) = dictation_host(app).handle_dictation_event_with(event, activation) {
-        // Roll the lifecycle back so the next activation can try again instead
-        // of finding a discarded dictation still marked active.
-        if let Ok(mut registration) = app.state::<HotkeyRegistrationState>().0.lock() {
-            registration.control.abandon_begin();
-            let _ = request_escape_registration(&registration, false);
-        }
-        return Err(error);
-    }
-
-    Ok(())
+    slugtale_lib::begin_activation(&mut TauriBeginHost { app, arm_escape }, activation)
 }
 
-/// The Tauri adapter for the dictation lifecycle's surface: the bar window,
-/// Settings reads, diagnostics, and failure notifications, reached through the
-/// one AppHandle.
+/// The `BeginHost` the Tauri tier supplies: the shared control, the caller's
+/// Escape arming, and the dictation host that starts the recording.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+struct TauriBeginHost<'a> {
+    app: &'a tauri::AppHandle,
+    arm_escape: &'a mut dyn FnMut(bool) -> Result<(), String>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl slugtale_lib::BeginHost for TauriBeginHost<'_> {
+    fn with_control<R>(
+        &mut self,
+        step: &mut dyn FnMut(&mut slugtale_lib::DictationControl) -> R,
+    ) -> Option<R> {
+        // The guard lives no longer than this call, so recording, transcription
+        // and window work never run with the shared registration lock held —
+        // they must not be able to stall the shortcut handler on the main
+        // thread (slugtale-pil).
+        let state = self.app.state::<HotkeyRegistrationState>();
+        let mut registration = state.0.lock().ok()?;
+        Some(step(&mut registration.control))
+    }
+
+    fn set_escape(&mut self, armed: bool) -> Result<(), String> {
+        (self.arm_escape)(armed)
+    }
+
+    fn start(
+        &mut self,
+        event: slugtale_lib::DictationEvent,
+        activation: slugtale_lib::DictationActivation,
+    ) -> Result<(), String> {
+        dictation_host(self.app).handle_dictation_event_with(event, Some(activation))
+    }
+}
+
+/// The Tauri adapter for the dictation lifecycle's two ports: the bar window,
+/// Settings reads, diagnostics, and failure notifications for the effects role,
+/// and the app's own log, engines, and Text Insertion for the parts role. Both
+/// are reached through the one AppHandle.
 pub(crate) struct TauriSurface {
     pub(crate) app: tauri::AppHandle,
 }
 
-impl DictationSurface for TauriSurface {
+impl DictationEffects for TauriSurface {
     fn settings(&self) -> slugtale_lib::Settings {
         load_current_settings(&self.app)
     }
@@ -195,18 +195,25 @@ impl DictationSurface for TauriSurface {
     fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound) {
         let _ = slugtale_lib::play_dictation_sound(sound);
     }
+}
 
+impl DictationParts for TauriSurface {
+    /// The app's one Local Diagnostic Log, handed on with its sink's type
+    /// erased: the lifecycle names a log, and this module is the only place that
+    /// knows it is a file.
     fn diagnostic_log(
         &self,
         settings: &slugtale_lib::Settings,
-    ) -> slugtale_lib::SharedDiagnosticLog<slugtale_lib::FileDiagnosticSink> {
-        app_files(&self.app).diagnostic_log(settings.diagnostic_logging)
+    ) -> slugtale_lib::ErasedDiagnosticLog {
+        app_files(&self.app)
+            .diagnostic_log(settings.diagnostic_logging)
+            .erased()
     }
 
     fn dictation_stack(
         &self,
         settings: &slugtale_lib::Settings,
-    ) -> Result<slugtale_lib::DictationStack<slugtale_lib::FileDiagnosticSink>, String> {
+    ) -> Result<slugtale_lib::DictationStack<BoxedDiagnosticSink>, String> {
         let diagnostic_log = self.diagnostic_log(settings);
         self.app
             .state::<slugtale_lib::TranscriptionEngineCatalogue>()

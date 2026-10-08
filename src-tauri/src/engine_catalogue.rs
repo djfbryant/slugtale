@@ -156,6 +156,20 @@ impl TranscriptionEngineCatalogue {
         })
     }
 
+    /// Start warming the effective primary engine and return the warm-up, ready
+    /// to run off the caller's thread. `None` when no engine can run, in which
+    /// case there is nothing worth warming.
+    ///
+    /// Release-then-warm is the ordering, and it belongs here rather than at
+    /// the caller: releasing the models this engine replaces *before* loading
+    /// it is what keeps switching engines from leaving two large models
+    /// resident on a memory-constrained Mac.
+    pub fn begin_primary_warm_up(&self, settings: &Settings) -> Option<EngineWarmUp> {
+        let warm_up = self.prepare_primary_warm_up(settings)?;
+        self.release_models_except(warm_up.engine());
+        Some(warm_up)
+    }
+
     /// Release every large loaded model except `keep`, so switching engines on
     /// a memory-constrained machine does not leave two large models resident.
     /// In-flight transcriptions keep their own references and finish safely;
@@ -419,14 +433,14 @@ impl Default for TranscriptionEngineCatalogue {
 mod tests {
     use super::*;
     use crate::{
-        AsrRuntime, EngineAssets, EngineConfidence, EngineMetadata, EngineTranscription,
-        FinalTranscription,
+        AsrRuntime, EngineAssetLifecycle, EngineAssets, EngineConfidence, EngineMetadata,
+        EngineTranscriber, EngineTranscription, FinalTranscription,
     };
     use std::time::Duration;
 
     struct FakeProvider(TranscriptionEngine);
 
-    impl TranscriptionProvider for FakeProvider {
+    impl EngineTranscriber for FakeProvider {
         fn engine(&self) -> TranscriptionEngine {
             self.0
         }
@@ -452,13 +466,6 @@ mod tests {
             EngineAvailability::Available
         }
 
-        fn assets(&self) -> EngineAssets {
-            EngineAssets {
-                installed_bytes: None,
-                present: Some(true),
-            }
-        }
-
         fn transcribe(
             &self,
             _audio: &crate::CapturedAudio,
@@ -473,6 +480,15 @@ mod tests {
                 confidence: EngineConfidence::unreported(),
                 latency: Duration::ZERO,
             })
+        }
+    }
+
+    impl EngineAssetLifecycle for FakeProvider {
+        fn assets(&self) -> EngineAssets {
+            EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
         }
     }
 
@@ -708,7 +724,7 @@ mod tests {
         warm_calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
-    impl TranscriptionProvider for WarmCountingProvider {
+    impl EngineTranscriber for WarmCountingProvider {
         fn engine(&self) -> TranscriptionEngine {
             TranscriptionEngine::Whisper
         }
@@ -719,13 +735,6 @@ mod tests {
 
         fn availability(&self) -> EngineAvailability {
             EngineAvailability::Available
-        }
-
-        fn assets(&self) -> EngineAssets {
-            EngineAssets {
-                installed_bytes: None,
-                present: Some(true),
-            }
         }
 
         fn transcribe(
@@ -741,6 +750,15 @@ mod tests {
             self.warm_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
+        }
+    }
+
+    impl EngineAssetLifecycle for WarmCountingProvider {
+        fn assets(&self) -> EngineAssets {
+            EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
         }
     }
 

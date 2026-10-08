@@ -8,7 +8,6 @@
       violet: ["#a78bfa", "rgba(167, 139, 250, 0.3)", "rgba(167, 139, 250, 0.16)"],
       graphite: ["#9aa4ad", "rgba(154, 164, 173, 0.3)", "rgba(154, 164, 173, 0.16)"]
     };
-    const POSITIONS = ["bottom-center", "bottom-left", "bottom-right"];
     const PHASES = { recording: "Recording", transcribing: "Transcribing…" };
     // How often the backend is asked where the pointer is. The bar cannot watch
     // the pointer itself while it is letting clicks through to the app below.
@@ -45,14 +44,14 @@
     const FLOW_DEPTH = 0.19;
     const FLOW_RATE = 0.00183;
 
-    function invoke(command, args) {
-      const core = window.__TAURI__ && window.__TAURI__.core;
-      if (!core || typeof core.invoke !== "function") return Promise.resolve();
-      return core.invoke(command, args).catch((error) => {
-        console.error(command + " failed", error);
-      });
-    }
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const halo = document.getElementById("halo");
+    const label = document.getElementById("label");
+    const elapsed = document.getElementById("elapsed");
+    const envelope = document.getElementById("envelope");
 
+    // `invoke` is the shared Tauri bridge (tauri-bridge.js), loaded before this
+    // page's own script.
     function stop() {
       invoke("dictation_event", { event: "stop" });
     }
@@ -60,12 +59,6 @@
     function cancel() {
       invoke("dictation_event", { event: "cancel" });
     }
-
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const halo = document.getElementById("halo");
-    const label = document.getElementById("label");
-    const elapsed = document.getElementById("elapsed");
-    const envelope = document.getElementById("envelope");
 
     let phase = "recording";
     let phaseStart = Date.now();
@@ -110,9 +103,9 @@
 
     function setAppearance(appearance) {
       const settings = appearance || {};
-      const position = POSITIONS.indexOf(settings.position) >= 0
+      const position = BAR_POSITIONS.indexOf(settings.position) >= 0
         ? settings.position
-        : POSITIONS[0];
+        : BAR_POSITIONS[0];
       const accent = ACCENTS[settings.accent] || ACCENTS.red;
 
       document.body.dataset.position = position;
@@ -284,10 +277,12 @@
     resetWave();
     requestAnimationFrame(animate);
 
-    const events = window.__TAURI__ && window.__TAURI__.event;
-    if (events && typeof events.listen === "function") {
-      events.listen("dictation-phase", (event) => setPhase(event.payload));
-      events.listen("dictation-appearance", (event) => setAppearance(event.payload));
-      events.listen("dictation-audio-level", (event) => setAudioLevel(event.payload));
-      events.listen("dictation-visibility", (event) => setVisible(event.payload === true));
+    // The backend drives the bar's phases and appearance; `listen` is the shared
+    // bridge's event accessor (tauri-bridge.js).
+    const listen = tauriEvent();
+    if (listen) {
+      listen("dictation-phase", (event) => setPhase(event.payload));
+      listen("dictation-appearance", (event) => setAppearance(event.payload));
+      listen("dictation-audio-level", (event) => setAudioLevel(event.payload));
+      listen("dictation-visibility", (event) => setVisible(event.payload === true));
     }

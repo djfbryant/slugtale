@@ -152,11 +152,14 @@ pub fn wake_phrase_score(transcript: &str) -> f32 {
     0.0
 }
 
-/// What one evaluated transcript decided.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WakeDetection {
-    pub score: f32,
-}
+/// What one evaluated transcript decided: it cleared the trigger threshold and
+/// the cooldown, so the wake phrase has been heard.
+///
+/// The score that decided it is deliberately not carried here — nothing reads
+/// it, and [`wake_phrase_score`] is the tested rule a caller that ever needs
+/// the number should ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WakeDetection;
 
 /// Tunables for [`WakeWordDetector`]. Defaults are deliberately strict: the
 /// spike's job is to measure real false-accept rates, and a detector that
@@ -212,7 +215,7 @@ impl WakeWordDetector {
         }
         self.last_trigger_ms = now_ms;
         self.has_triggered = true;
-        Some(WakeDetection { score })
+        Some(WakeDetection)
     }
 }
 
@@ -395,7 +398,6 @@ mod tests {
 
         let first = detector.on_transcript("hi slugtale", 1_000);
         assert!(first.is_some());
-        assert_eq!(first.unwrap().score, 1.0);
 
         // Inside the cooldown: suppressed even at full score.
         assert!(detector.on_transcript("hi slugtale", 3_000).is_none());

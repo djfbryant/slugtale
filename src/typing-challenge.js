@@ -2,11 +2,6 @@
     // ship in the app, nothing is downloaded, and the only thing that leaves
     // this window is a word-per-minute number.
 
-    function tauriInvoke() {
-      const core = window.__TAURI__ && window.__TAURI__.core;
-      return core && core.invoke;
-    }
-
     // Shown outside the desktop app so the window is never blank.
     const fallbackState = {
       passage: "The harbour was quiet that morning, and the boats leaned together at their moorings as if sharing a long and complicated secret.",

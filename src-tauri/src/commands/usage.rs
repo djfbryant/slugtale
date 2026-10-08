@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 use slugtale_lib::{TypingChallengeOpen, WindowLabel};
 
@@ -68,7 +68,7 @@ pub(crate) fn get_usage_summary(app: tauri::AppHandle) -> UsageSummary {
         slugtale_lib::UsageFile::default()
     };
     let today = slugtale_lib::today_local();
-    let week_start = locale_week_start(&app);
+    let week_start = locale_week_start();
 
     UsageSummary {
         store_usage: settings.store_usage,
@@ -266,16 +266,6 @@ fn notify_usage_changed(app: &tauri::AppHandle) {
     if let Some(window) = WindowLabel::Settings.window(app) {
         let _ = window.emit("usage-changed", ());
     }
-}
-
-/// Whether the Typing Challenge window is on screen right now.
-///
-/// While it is, the dictation Hotkey does nothing at all (ADR-0025): the user is
-/// typing a passage, and their hotkey is very likely inside it. Doing nothing —
-/// rather than starting a dictation, or refusing with a notification — is what
-/// keeps the thirty seconds being a measurement of typing.
-pub(crate) fn typing_challenge_is_open(app: &tauri::AppHandle) -> bool {
-    app.state::<TypingChallengeOpen>().get()
 }
 
 /// Start the Dictation Runtime's Usage writer body (ADR-0025). The file half

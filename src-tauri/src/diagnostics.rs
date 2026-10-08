@@ -172,6 +172,39 @@ where
     }
 }
 
+/// A [`DiagnosticSink`] whose concrete type is erased: a sink that takes
+/// rendered log lines, with the file, the in-memory buffer, or the test spy
+/// behind it the implementation's business alone.
+///
+/// This is what lets a port hand a Local Diagnostic Log out without naming
+/// where it writes. A port that named [`FileDiagnosticSink`] would force every
+/// implementation to write to the same place, which is exactly what a fake in a
+/// test must be free not to do.
+pub struct BoxedDiagnosticSink {
+    sink: Box<dyn DiagnosticSink + Send + Sync>,
+}
+
+impl BoxedDiagnosticSink {
+    pub fn new<S>(sink: S) -> Self
+    where
+        S: DiagnosticSink + Send + Sync + 'static,
+    {
+        Self {
+            sink: Box::new(sink),
+        }
+    }
+}
+
+impl DiagnosticSink for BoxedDiagnosticSink {
+    fn write_line(&mut self, line: &str) {
+        self.sink.write_line(line);
+    }
+}
+
+/// The Local Diagnostic Log as a port hands it out: one log, one destination,
+/// and no name for what that destination is.
+pub type ErasedDiagnosticLog = SharedDiagnosticLog<BoxedDiagnosticSink>;
+
 /// The Local Diagnostic Log (ADR-0019): development troubleshooting output gated
 /// by the user's `diagnostic_logging` preference (off by default). When disabled
 /// it records nothing, so no log file accumulates unless the user opts in.
@@ -188,10 +221,17 @@ where
         Self { enabled, sink }
     }
 
-    pub fn record(&mut self, event: DiagnosticEvent) {
+    /// Write one already-rendered line, through the same gate an event goes
+    /// through. [`Self::record`] renders and lands here, so a line that arrives
+    /// from another handle of the same log is gated the same way.
+    fn write_line(&mut self, line: &str) {
         if self.enabled {
-            self.sink.write_line(&render_diagnostic_event(&event));
+            self.sink.write_line(line);
         }
+    }
+
+    pub fn record(&mut self, event: DiagnosticEvent) {
+        self.write_line(&render_diagnostic_event(&event));
     }
 }
 
@@ -283,6 +323,56 @@ where
             Ok(mut log) => log.record(event),
             Err(_) => eprintln!("diagnostic log mutex poisoned"),
         }
+    }
+
+    /// The same log reached through a sink whose concrete type is erased, for a
+    /// caller that must not name where the log writes. The new handle starts
+    /// from this one's enable flag and forwards every rendered line back through
+    /// it, so both handles append to the same sink under the same lock and stay
+    /// one log rather than two that happen to share a destination.
+    pub fn erased(&self) -> ErasedDiagnosticLog
+    where
+        S: DiagnosticSink + Send + Sync + 'static,
+    {
+        ErasedDiagnosticLog::new(
+            self.is_enabled(),
+            BoxedDiagnosticSink::new(LogAsSink { log: self.clone() }),
+        )
+    }
+
+    /// Whether recording is on right now.
+    fn is_enabled(&self) -> bool {
+        match self.inner.lock() {
+            Ok(log) => log.enabled,
+            Err(poisoned) => poisoned.into_inner().enabled,
+        }
+    }
+
+    /// Write one line that is already rendered, through the same gate every
+    /// event goes through. This is the door another handle of this log — an
+    /// [`ErasedDiagnosticLog`] over it — writes through.
+    fn append_line(&self, line: &str) {
+        match self.inner.lock() {
+            Ok(mut log) => log.write_line(line),
+            Err(_) => eprintln!("diagnostic log mutex poisoned"),
+        }
+    }
+}
+
+/// A shared log seen as a [`DiagnosticSink`]: it takes lines that are already
+/// rendered and writes them back through the log they came from. This is what
+/// lets one log be handed out under two different sink types without the two
+/// drifting apart.
+struct LogAsSink<S> {
+    log: SharedDiagnosticLog<S>,
+}
+
+impl<S> DiagnosticSink for LogAsSink<S>
+where
+    S: DiagnosticSink + Send + Sync + 'static,
+{
+    fn write_line(&mut self, line: &str) {
+        self.log.append_line(line);
     }
 }
 
@@ -539,6 +629,55 @@ mod tests {
         assert_eq!(contents.lines().count(), 2);
 
         std::fs::remove_dir_all(&log_dir).ok();
+    }
+
+    #[test]
+    fn an_erased_handle_writes_through_the_same_sink_as_the_log_it_came_from() {
+        let (lines, sink) = collecting_lines();
+        let log = SharedDiagnosticLog::new(true, BoxedDiagnosticSink::new(sink));
+
+        log.erased()
+            .record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
+
+        assert_eq!(lines.lock().unwrap().len(), 1);
+        assert!(lines.lock().unwrap()[0].contains("hotkey"));
+    }
+
+    #[test]
+    fn an_erased_handle_starts_from_the_enable_flag_of_the_log_it_came_from() {
+        let (lines, sink) = collecting_lines();
+        let log = SharedDiagnosticLog::new(false, BoxedDiagnosticSink::new(sink));
+        let erased = log.erased();
+
+        erased.record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
+
+        assert!(
+            lines.lock().unwrap().is_empty(),
+            "a disabled log stays disabled through an erased handle: {:?}",
+            lines.lock().unwrap()
+        );
+
+        // The log the handle was taken from is the one place the preference
+        // lives, so a later change reaches a handle taken after it.
+        log.set_enabled(true);
+        log.erased()
+            .record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
+
+        assert_eq!(lines.lock().unwrap().len(), 1);
+    }
+
+    /// A sink a test can read back: every rendered line, in order. Behind an
+    /// `Arc` because an erased handle reaches it from the log's own sink, which
+    /// has to be `Send + Sync` to be handed out as a trait object.
+    fn collecting_lines() -> (
+        Arc<Mutex<Vec<String>>>,
+        impl FnMut(&str) + Send + Sync + 'static,
+    ) {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let collected = Arc::clone(&lines);
+        (lines, move |line: &str| {
+            collected.lock().unwrap().push(line.to_string());
+        })
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {

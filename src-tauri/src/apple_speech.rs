@@ -12,7 +12,7 @@
 //! rather than silently omitting it. So [`AppleSpeechProvider`] compiles
 //! everywhere; what varies is the answer it gives:
 //!
-//! | Build | [`TranscriptionProvider::availability`] |
+//! | Build | [`EngineTranscriber::availability`] |
 //! |---|---|
 //! | Linux, Windows | [`EngineUnavailable::UnsupportedPlatform`] |
 //! | macOS without the `apple-speech-runtime` feature | [`EngineUnavailable::RuntimeNotBuilt`] |
@@ -50,8 +50,8 @@
 //! reaches the Local Diagnostic Log or the network.
 
 use crate::{
-    AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssets, EngineAvailability,
-    EngineMetadata, EngineTranscription, TranscriptionEngine, TranscriptionProvider,
+    AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssetLifecycle, EngineAssets,
+    EngineAvailability, EngineMetadata, EngineTranscriber, EngineTranscription, TranscriptionEngine,
 };
 // Named separately because only the portable half and the tests refer to it by
 // this path; on macOS with the runtime the bridge imports its own. The import
@@ -135,7 +135,7 @@ fn unsupported_platform_reason() -> EngineUnavailable {
 /// Apple SpeechTranscriber behind the Transcription Engine boundary.
 ///
 /// Construction is free and touches nothing: the first
-/// [`TranscriptionProvider::availability`] call does the real probe — OS
+/// [`EngineTranscriber::availability`] call does the real probe — OS
 /// version, hardware, locale, installed assets — and every call after it reads
 /// the cached answer. That matters because availability is consulted on the
 /// dictation fast path as well as in Settings, and asking macOS about its asset
@@ -214,7 +214,7 @@ impl AppleSpeechProvider {
     }
 }
 
-impl TranscriptionProvider for AppleSpeechProvider {
+impl EngineTranscriber for AppleSpeechProvider {
     fn engine(&self) -> TranscriptionEngine {
         APPLE_SPEECH_ENGINE
     }
@@ -274,7 +274,13 @@ impl TranscriptionProvider for AppleSpeechProvider {
         validate_recording(audio)?;
         transcribe_with_apple_speech(&self.locale, audio)
     }
+}
 
+/// Apple's weights are macOS's: Slugtale measures neither their size nor their
+/// presence, cannot download them, and cannot remove them. The one action it
+/// *can* offer is asking the operating system to install them, which is why
+/// this engine's install is a refusal to pretend rather than a no-op.
+impl EngineAssetLifecycle for AppleSpeechProvider {
     fn assets(&self) -> EngineAssets {
         // macOS neither publishes the installed size nor lets an application
         // inventory another application's copy, so there is nothing to report

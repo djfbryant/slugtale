@@ -10,10 +10,7 @@ use crate::voice_activation;
 
 use super::engines::current_engine_availability;
 use super::platform::CurrentPlatform;
-use super::{
-    app_files, load_current_settings, record_diagnostic_event, update_current_settings,
-    warm_effective_primary_engine,
-};
+use super::{app_files, load_current_settings, record_diagnostic_event, update_current_settings};
 
 /// The app's answers to the five readiness facts, probed through one
 /// interface so both snapshot paths see identical state (slugtale-g1o.6).
@@ -86,13 +83,11 @@ pub(crate) fn build_activation_snapshot_for(
 pub(crate) fn report_not_ready(
     app: &tauri::AppHandle,
     report: &slugtale_lib::SettingsReadinessReport,
-) -> bool {
+) {
+    record_readiness_incomplete(app, report);
+
     let missing = slugtale_lib::missing_required_items(report);
     if !missing.is_empty() {
-        record_diagnostic_event(
-            app,
-            slugtale_lib::DiagnosticEvent::readiness_incomplete(&missing),
-        );
         let labels = missing
             .iter()
             .map(|item| item.label.as_str())
@@ -104,29 +99,35 @@ pub(crate) fn report_not_ready(
         );
     }
     slugtale_lib::show_settings(app.clone());
-    true
 }
 
+/// Name the unmet required items of a report in the Local Diagnostic Log, once.
+/// Both the not-ready report and the readiness read go through here, so what is
+/// logged and what the user is told cannot disagree.
+fn record_readiness_incomplete(
+    app: &tauri::AppHandle,
+    report: &slugtale_lib::SettingsReadinessReport,
+) {
+    let missing = slugtale_lib::missing_required_items(report);
+    if missing.is_empty() {
+        return;
+    }
+    record_diagnostic_event(
+        app,
+        slugtale_lib::DiagnosticEvent::readiness_incomplete(&missing),
+    );
+}
+
+/// The readiness report the Settings pane shows, and nothing else: a read. The
+/// model warm-up that used to ride along here is the caller's to ask for when
+/// it means one, so opening the pane cannot start an engine load as a side
+/// effect of being looked at.
 #[tauri::command]
-pub(crate) fn get_settings_readiness(app: tauri::AppHandle) -> slugtale_lib::SettingsReadinessReport {
+pub(crate) fn get_settings_readiness(
+    app: tauri::AppHandle,
+) -> slugtale_lib::SettingsReadinessReport {
     let report = current_settings_readiness(&app);
-    // The report is also the signal to start loading the Local Model in the
-    // background, so opening Settings is what gets the first dictation fast.
-    let local_model_ready =
-        slugtale_lib::ReadinessItem::find(&report, slugtale_lib::ReadinessItemId::LocalModel)
-            .is_some_and(|item| item.ready);
-    if local_model_ready {
-        warm_effective_primary_engine(&app);
-    }
-    if !report.dictation_available {
-        let missing = slugtale_lib::missing_required_items(&report);
-        if !missing.is_empty() {
-            record_diagnostic_event(
-                &app,
-                slugtale_lib::DiagnosticEvent::readiness_incomplete(&missing),
-            );
-        }
-    }
+    record_readiness_incomplete(&app, &report);
     report
 }
 

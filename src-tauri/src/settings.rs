@@ -364,6 +364,23 @@ pub fn apply_voice_activation_settings(settings: &mut Settings, enabled: bool) {
     settings.voice_activation_enabled = enabled;
 }
 
+/// Why Voice Activation cannot be switched on: it listens for the wake phrase
+/// by transcribing short windows of audio with the local Whisper model, so a
+/// machine with no runnable Whisper provider has a listener that can never
+/// hear its trigger. The rule lives here, next to the save that stores the
+/// choice, so the Settings writer and the listener start cannot disagree about
+/// when the opt-in is legitimate.
+pub const VOICE_ACTIVATION_NEEDS_WHISPER: &str = "Voice activation needs the local Whisper model.";
+
+/// Whether the Voice Activation choice in `settings` is one this machine can
+/// honour. Turning it off is always legitimate.
+pub fn validate_voice_activation(settings: &Settings, whisper_can_run: bool) -> Result<(), String> {
+    if settings.voice_activation_enabled && !whisper_can_run {
+        return Err(VOICE_ACTIVATION_NEEDS_WHISPER.to_string());
+    }
+    Ok(())
+}
+
 /// Write the Settings File as human-readable JSON so it can be inspected
 /// during development (ADR-0018).
 pub fn save_settings(path: &std::path::Path, settings: &Settings) -> std::io::Result<()> {
@@ -425,6 +442,22 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn voice_activation_needs_a_whisper_provider_that_can_run() {
+        let mut settings = Settings::default();
+        settings.voice_activation_enabled = true;
+
+        assert_eq!(
+            validate_voice_activation(&settings, false),
+            Err(VOICE_ACTIVATION_NEEDS_WHISPER.to_string())
+        );
+        assert_eq!(validate_voice_activation(&settings, true), Ok(()));
+
+        // Turning it off is always legitimate, whisper or not.
+        settings.voice_activation_enabled = false;
+        assert_eq!(validate_voice_activation(&settings, false), Ok(()));
+    }
 
     #[test]
     fn fresh_settings_default_to_unconfigured_and_opt_out() {

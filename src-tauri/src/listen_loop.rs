@@ -4,9 +4,14 @@
 //!
 //! The loop decides; the host acts. Every operating-system touch — the capture
 //! session, the transcription engine, notifications, the dictation trigger —
-//! sits behind [`WakeListener`], so the suppression, retry, report-once, and
+//! sits behind the ports below, so the suppression, retry, report-once, and
 //! rebuild rules are unit-testable on every platform without audio hardware
 //! (ADR-0021: the Windows and Linux ports reuse this loop unchanged).
+//!
+//! Those ports are three roles, not one long list: [`ListenTransport`] is how
+//! the loop is driven, [`WakeCapture`] is the microphone and the engine behind
+//! it, and [`WakeTrigger`] is the wake check and what the user sees because of
+//! one. [`WakeListener`] composes them, because one adapter answers all three.
 
 use crate::{wake_phrase_score, SpeechWindowBuffer, WakeWordConfig, WakeWordDetector};
 use std::time::Duration;
@@ -40,10 +45,11 @@ pub enum WakeCheck {
     Transcript(String),
 }
 
-/// The ports the listen loop needs. One adapter, few methods: the platform
-/// executor implements all of them once against the app handle, and tests
-/// implement them once against a fake.
-pub trait WakeListener {
+/// How the loop is driven: what it should do next, whether it has been told to
+/// stop, how long it may wait before looking again, and whether a dictation has
+/// taken the microphone. Transport (a channel, a test) is the adapter's
+/// business; these are the meanings.
+pub trait ListenTransport {
     /// Block until the next command arrives. `None` ends the worker.
     fn next_command(&mut self) -> Option<ListenerCommand>;
 
@@ -55,7 +61,14 @@ pub trait WakeListener {
 
     /// Whether a dictation is active; the listener must stand down while it is.
     fn dictating(&self) -> bool;
+}
 
+/// The capture session and the two things that decide whether it may open: an
+/// engine that can run wake checks, and a microphone the user has granted. The
+/// rebuild and close doors are here because a broken capture is the loop's most
+/// common failure and it must be able to recover without waiting for the OS to
+/// notice.
+pub trait WakeCapture {
     /// Whether the wake-check engine can actually run right now.
     fn engine_ready(&self) -> bool;
 
@@ -67,7 +80,12 @@ pub trait WakeListener {
     fn rebuild_capture(&mut self);
     fn close_capture(&mut self);
     fn take_segment(&mut self) -> Result<Vec<f32>, String>;
+}
 
+/// The wake check itself, and the two things the user sees because of one: a
+/// microphone the loop cannot hear, and the dictation a detected wake phrase
+/// starts.
+pub trait WakeTrigger {
     /// Run one wake check over a window of speech. Always greedy decoding:
     /// the user's wider beam is useful for dictation text, but wasteful for a
     /// two-word phrase.
@@ -79,6 +97,13 @@ pub trait WakeListener {
     /// Begin a dictation from the wake phrase.
     fn trigger_wake(&mut self);
 }
+
+/// One port, three roles. [`run_listen_loop`] is handed the composition because
+/// one adapter is all three — the macOS tier answers every role against the app
+/// handle, and a test answers them all against a fake — but the roles are what
+/// the loop actually depends on, named separately so an implementation can be
+/// read, and replaced, one concern at a time.
+pub trait WakeListener: ListenTransport + WakeCapture + WakeTrigger {}
 
 /// Run the always-listening worker until its channel closes.
 ///
@@ -310,7 +335,7 @@ mod tests {
         vec![0.0; 32_000]
     }
 
-    impl WakeListener for FakeListener {
+    impl ListenTransport for FakeListener {
         fn next_command(&mut self) -> Option<ListenerCommand> {
             // Exactly one Listen per run; the wait budget ends the listen
             // loop, and None ends the worker. Returning Some forever would
@@ -336,7 +361,9 @@ mod tests {
         fn dictating(&self) -> bool {
             self.dictating
         }
+    }
 
+    impl WakeCapture for FakeListener {
         fn engine_ready(&self) -> bool {
             self.engine_ready
         }
@@ -374,7 +401,9 @@ mod tests {
                 segments.remove(0)
             }
         }
+    }
 
+    impl WakeTrigger for FakeListener {
         fn wake_check(&mut self, _samples: Vec<f32>) -> WakeCheck {
             *self.checks.borrow_mut() += 1;
             let mut transcripts = self.transcripts.borrow_mut();
@@ -393,6 +422,8 @@ mod tests {
             *self.triggers.borrow_mut() += 1;
         }
     }
+
+    impl WakeListener for FakeListener {}
 
     #[test]
     fn stands_down_while_a_dictation_is_active_and_never_opens_the_microphone() {

@@ -1,7 +1,7 @@
 use crate::{
-    AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssets, EngineAvailability,
-    EngineMetadata, EngineTranscription, EngineUnavailable, FinalTranscription,
-    HttpModelDownloader, ModelDownloader, TranscriptionEngine, TranscriptionProvider,
+    AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssetLifecycle, EngineAssets,
+    EngineAvailability, EngineMetadata, EngineTranscriber, EngineTranscription, EngineUnavailable,
+    FinalTranscription, HttpModelDownloader, ModelDownloader, TranscriptionEngine,
 };
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -200,7 +200,7 @@ fn directory_bytes(root: &Path) -> u64 {
         .sum()
 }
 
-impl TranscriptionProvider for MlxProvider {
+impl EngineTranscriber for MlxProvider {
     fn engine(&self) -> TranscriptionEngine {
         TranscriptionEngine::Phonon
     }
@@ -218,15 +218,6 @@ impl TranscriptionProvider for MlxProvider {
     }
     fn availability(&self) -> EngineAvailability {
         lock(&self.availability).clone()
-    }
-    fn assets(&self) -> EngineAssets {
-        EngineAssets {
-            installed_bytes: Some(directory_bytes(&self.root)),
-            present: Some(probe(&self.root).is_available()),
-        }
-    }
-    fn can_install_assets(&self) -> bool {
-        true
     }
     fn warm_up(&self) -> Result<(), AsrError> {
         self.with_worker(|_| Ok(()))
@@ -248,6 +239,22 @@ impl TranscriptionProvider for MlxProvider {
             transcription,
             start.elapsed(),
         ))
+    }
+}
+
+/// Phonon-2 MLX is the one engine whose assets Slugtale installs from Settings:
+/// a private Python runtime plus the weights, downloaded and set up on demand.
+/// Installing and removing is the engine's own job, so it lives here and not on
+/// the transcriber above.
+impl EngineAssetLifecycle for MlxProvider {
+    fn assets(&self) -> EngineAssets {
+        EngineAssets {
+            installed_bytes: Some(directory_bytes(&self.root)),
+            present: Some(probe(&self.root).is_available()),
+        }
+    }
+    fn can_install_assets(&self) -> bool {
+        true
     }
     fn install_assets(
         &self,

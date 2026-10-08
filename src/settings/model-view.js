@@ -1,4 +1,5 @@
     function renderModel(status, message, isError = false) {
+      latestModelStatus = status;
       const path = document.getElementById("model-path");
       const state = document.getElementById("model-state");
       const name = document.getElementById("model-name");
@@ -31,16 +32,19 @@
       wrap.hidden = false;
       messageEl.classList.remove("error");
 
-      if (progress.total) {
-        const pct = Math.min(100, Math.round((progress.downloaded / progress.total) * 100));
+      // Name the model actually being fetched, from the status the pane rendered,
+      // not a hardcoded id — a different model must not be labelled "base.en".
+      const label = `Downloading ${latestModelStatus.id}…`;
+      const pct = progressPercent(progress.downloaded, progress.total);
+      if (pct === null) {
+        wrap.classList.add("indeterminate");
+        bar.style.removeProperty("width");
+        messageEl.textContent = `${label} ${formatMb(progress.downloaded)} MB`;
+      } else {
         wrap.classList.remove("indeterminate");
         bar.style.width = `${pct}%`;
         messageEl.textContent =
-          `Downloading base.en… ${pct}% · ${formatMb(progress.downloaded)} / ${formatMb(progress.total)} MB`;
-      } else {
-        wrap.classList.add("indeterminate");
-        bar.style.removeProperty("width");
-        messageEl.textContent = `Downloading base.en… ${formatMb(progress.downloaded)} MB`;
+          `${label} ${pct}% · ${formatMb(progress.downloaded)} / ${formatMb(progress.total)} MB`;
       }
     }
 
@@ -50,4 +54,3 @@
       wrap.classList.remove("indeterminate");
       wrap.querySelector(".progress-bar").style.width = "0";
     }
-

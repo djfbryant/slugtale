@@ -36,15 +36,12 @@ pub(super) fn save_settings(
         // Validation rides the side-effect step: the worker must not start
         // without an engine that can run the wake checks.
         |settings| {
-            if enabled
-                && app
-                    .state::<slugtale_lib::TranscriptionEngineCatalogue>()
-                    .whisper_provider(settings)
-                    .is_none()
-            {
-                return Err("Voice activation needs the local Whisper model.".to_string());
-            }
-            sync_worker(app, settings.voice_activation_enabled)
+            let whisper_can_run = app
+                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+                .whisper_provider(settings)
+                .is_some();
+            slugtale_lib::validate_voice_activation(settings, whisper_can_run)
+                .and_then(|()| sync_worker(app, settings.voice_activation_enabled))
         },
     )
 }
@@ -157,7 +154,10 @@ fn stop_requested(receiver: &std::sync::mpsc::Receiver<VoiceActivationCommand>) 
 
 /// The macOS half of the Voice Activation adapter: it owns the app handle and
 /// answers the listen loop's questions. Every decision lives in
-/// `slugtale_lib::run_listen_loop`; nothing here but app reads and effects.
+/// `slugtale_lib::run_listen_loop`; nothing here but app reads and effects. One
+/// object is all three roles the loop needs — transport, capture, wake — so it
+/// implements each of them and [`slugtale_lib::WakeListener`] composes them into
+/// the port the loop is handed.
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 struct AppWakeListener {
     app: tauri::AppHandle,
@@ -182,7 +182,7 @@ impl AppWakeListener {
 }
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
-impl slugtale_lib::WakeListener for AppWakeListener {
+impl slugtale_lib::ListenTransport for AppWakeListener {
     fn next_command(&mut self) -> Option<slugtale_lib::ListenerCommand> {
         self.receiver.recv().ok().map(|command| match command {
             VoiceActivationCommand::Listen => slugtale_lib::ListenerCommand::Listen,
@@ -201,7 +201,10 @@ impl slugtale_lib::WakeListener for AppWakeListener {
     fn dictating(&self) -> bool {
         target_is_dictating(&self.app)
     }
+}
 
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+impl slugtale_lib::WakeCapture for AppWakeListener {
     fn engine_ready(&self) -> bool {
         whisper_ready(&self.app)
     }
@@ -232,7 +235,10 @@ impl slugtale_lib::WakeListener for AppWakeListener {
             .map(|chunk| chunk.samples)
             .map_err(|error| error.to_string())
     }
+}
 
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+impl slugtale_lib::WakeTrigger for AppWakeListener {
     fn wake_check(&mut self, samples: Vec<f32>) -> slugtale_lib::WakeCheck {
         let audio = slugtale_lib::CapturedAudio::mono_16khz(samples);
         // Wake checks always use greedy decoding. The user's wider beam is
@@ -262,6 +268,9 @@ impl slugtale_lib::WakeListener for AppWakeListener {
         trigger_start(&self.app);
     }
 }
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
+impl slugtale_lib::WakeListener for AppWakeListener {}
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 fn run_worker(app: tauri::AppHandle, receiver: std::sync::mpsc::Receiver<VoiceActivationCommand>) {

@@ -1,7 +1,28 @@
+    // The window's wiring, grouped by what each group of controls does. `init`
+    // runs them once and then does the two startup actions; every group attaches
+    // exactly the listeners it did when this was one function.
     function init() {
+      setupRail();
+      setupPaneIcons();
+      setupSearch();
+      setupAppearance();
+      setupModelButtons();
+      setupHotkeyControls();
+      setupActivationModes();
+      setupQualityControls();
+      setupDictationBarControls();
+      setupSecondOpinionMode();
+      setupGeneralToggles();
+      setupUsageControls();
+      setupRefreshHooks();
+
+      selectPane("shortcut");
+      refreshSetup();
+    }
+
+    function setupRail() {
       PANES.forEach((pane) => {
         const button = document.getElementById(`rail-${pane.id}`);
-        document.getElementById(`rail-icon-${pane.id}`).innerHTML = iconSvg(pane.icon, 13);
         button.addEventListener("click", () => {
           const search = document.getElementById("settings-search");
           search.value = "";
@@ -9,12 +30,20 @@
           selectPane(pane.id, { byUser: true });
         });
       });
+    }
+
+    function setupPaneIcons() {
+      PANES.forEach((pane) => {
+        document.getElementById(`rail-icon-${pane.id}`).innerHTML = iconSvg(pane.icon, 13);
+      });
       document.querySelectorAll(".pane-heading-icon").forEach((icon) => {
         const pane = PANES.find((entry) => entry.id === icon.dataset.group);
         if (pane) icon.innerHTML = iconSvg(pane.icon, 11);
       });
-
       document.getElementById("search-icon").innerHTML = iconSvg("search", 14);
+    }
+
+    function setupSearch() {
       const search = document.getElementById("settings-search");
       search.addEventListener("input", () => setSearchQuery(search.value));
       search.addEventListener("keydown", (event) => {
@@ -22,12 +51,16 @@
         search.value = "";
         setSearchQuery("");
       });
+    }
 
-      // There is no in-app theme choice: the window follows the system, and the
-      // General pane says which way it currently is.
+    // There is no in-app theme choice: the window follows the system, and the
+    // General pane says which way it currently is.
+    function setupAppearance() {
       renderAppearance();
       window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", renderAppearance);
+    }
 
+    function setupModelButtons() {
       document.getElementById("clear-hotkey-button").textContent = "Clear";
       setButton(document.getElementById("download-model-button"), "download", "Download");
       setButton(document.getElementById("reveal-model-button"), "folder", "Reveal");
@@ -36,7 +69,9 @@
       document.getElementById("download-model-button").addEventListener("click", downloadModel);
       document.getElementById("reveal-model-button").addEventListener("click", revealModel);
       document.getElementById("delete-model-button").addEventListener("click", deleteModel);
+    }
 
+    function setupHotkeyControls() {
       document.getElementById("hotkey-record-button").addEventListener("click", () => {
         if (capturingHotkey) {
           stopHotkeyCapture();
@@ -64,14 +99,18 @@
       document.getElementById("hotkey-input").addEventListener("blur", () => {
         if (capturingHotkey) stopHotkeyCapture();
       });
+    }
 
+    function setupActivationModes() {
       ["toggle", "hold"].forEach((mode) => {
         document.getElementById(`mode-${mode}`).addEventListener("click", () => {
           if (mode === currentSettings.activation_mode) return;
           saveHotkeySettings(currentSettings.hotkey, mode);
         });
       });
+    }
 
+    function setupQualityControls() {
       ["fast", "balanced", "accurate"].forEach((profile) => {
         document.getElementById(`speed-${profile}`).addEventListener("click", () => {
           if (profile === currentSettings.speed_profile) return;
@@ -88,11 +127,13 @@
 
       TRANSCRIPT_CLEANUP_MODES.forEach((mode) => {
         document.getElementById(`cleanup-${mode}`).addEventListener("click", () => {
-          if (mode === (currentSettings.transcript_cleanup || "basic")) return;
+          if (mode === currentSettings.transcript_cleanup) return;
           saveTranscriptCleanupSettings(mode);
         });
       });
+    }
 
+    function setupDictationBarControls() {
       BAR_POSITIONS.forEach((position) => {
         document.getElementById(`position-${position}`).addEventListener("click", () => {
           if (position === currentSettings.bar_position) return;
@@ -109,19 +150,23 @@
 
       document.getElementById("bar-display").addEventListener("change", (event) => {
         const display = displayFromBarDisplayKey(event.target.value);
-        if (barDisplayKey(display) === barDisplayKey(currentSettings.bar_display || "primary")) {
+        if (barDisplayKey(display) === barDisplayKey(currentSettings.bar_display)) {
           return;
         }
         saveDictationBarSettings({ barDisplay: display });
       });
+    }
 
+    function setupSecondOpinionMode() {
       SECOND_OPINION_MODES.forEach((mode) => {
         document.getElementById(`second-opinion-${mode}`).addEventListener("click", () => {
           if (mode === currentSettings.second_opinion) return;
           saveEngineSettings({ secondOpinion: mode });
         });
       });
+    }
 
+    function setupGeneralToggles() {
       document.getElementById("launch-at-login-toggle").addEventListener("change", (event) => {
         saveLaunchAtLogin(event.target.checked);
       });
@@ -137,7 +182,9 @@
         checkForAppUpdate();
       });
       document.getElementById("app-update-release-button").addEventListener("click", openAppUpdateRelease);
+    }
 
+    function setupUsageControls() {
       document.getElementById("usage-store-toggle").addEventListener("change", (event) => {
         setUsageStoring(event.target.checked);
       });
@@ -153,7 +200,9 @@
       document.getElementById("usage-estimate-input").addEventListener("keydown", (event) => {
         if (event.key === "Enter") saveTypingEstimate();
       });
+    }
 
+    function setupRefreshHooks() {
       // The only push Usage gets: a Counted Segment landed, or the Typing
       // Challenge window changed the baseline every number here is read against.
       const listen = tauriEvent();
@@ -169,9 +218,6 @@
           loadUsage();
         }
       });
-
-      selectPane("shortcut");
-      refreshSetup();
     }
 
     init();

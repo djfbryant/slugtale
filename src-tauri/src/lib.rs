@@ -107,6 +107,12 @@ pub use apple_speech::*;
 mod second_opinion;
 pub use second_opinion::*;
 
+/// The Second Opinion worker: the thread, the channel, and the shared
+/// in-flight gate that let one engine answer off the dictation thread. Split
+/// from the router so the escalation policy has no concurrency in it, and the
+/// transport has no opinion about engines.
+mod second_opinion_transport;
+
 /// Dictation Segments and the Segment Pause that ends one (CONTEXT.md,
 /// ADR-0015): the rule that decides when the speech so far is worth inserting
 /// while the microphone is still running.
@@ -128,9 +134,10 @@ pub use dictation_runtime::*;
 /// The dictation lifecycle host (slugtale-30i): everything between an
 /// activation input saying "start" and the Dictation Runtime receiving the
 /// captured audio. It owns the recording-feedback state machine, the focus
-/// target, the audio capture session, and the runtime handle, and reaches the
-/// rest of the app only through the `DictationSurface` port — implemented by
-/// the Tauri shell in the binary tier and by a fake in tests.
+/// target, the audio capture session, and the runtime handle, and it reaches the
+/// rest of the app only through two ports — `DictationEffects` for what the user
+/// sees and hears, `DictationParts` for the machinery a segment runs on —
+/// implemented by the Tauri shell in the binary tier and by a fake in tests.
 mod dictation_host;
 pub use dictation_host::*;
 
@@ -168,7 +175,8 @@ pub use wake_word::*;
 /// The Voice Activation listen loop (slugtale-e95): the always-listening state
 /// machine — dictation suppression, engine readiness, capture retry,
 /// report-once microphone problems, and the wake trigger — with every OS touch
-/// behind the `WakeListener` port so all platforms test and run it unchanged.
+/// behind three roles (`ListenTransport`, `WakeCapture`, `WakeTrigger`) that
+/// `WakeListener` composes, so all platforms test and run it unchanged.
 mod listen_loop;
 pub use listen_loop::*;
 
