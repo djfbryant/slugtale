@@ -2,8 +2,10 @@
 //! input saying "start" and the Dictation Runtime receiving the captured audio.
 //! It owns the recording-feedback state machine, the focus target, the audio
 //! capture session, and the runtime handle, and it reaches the rest of the app
-//! only through [`DictationSurface`] — one port implemented once by the Tauri
-//! shell, and by a fake in tests.
+//! only through two ports: [`DictationEffects`] for everything the user sees and
+//! hears because of a dictation, and [`DictationParts`] for the machinery a
+//! Dictation Segment runs on. Both are implemented once by the Tauri shell, and
+//! by a fake in tests.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -41,12 +43,13 @@ struct DictationSession {
     target_pid: Option<i32>,
 }
 
-/// Everything the dictation lifecycle needs from the rest of the app: Settings
-/// reads, diagnostics, the Dictation Bar surface, and failure notifications.
-/// Every method is named for a dictation effect, not for a transport detail,
-/// so the implementation stays replaceable and the tests stay honest about
-/// what the lifecycle actually asked for.
-pub trait DictationSurface: Send + Sync {
+/// Everything the dictation lifecycle needs the rest of the app to do on the
+/// user's behalf: Settings reads, diagnostics, the Dictation Bar surface, the
+/// audio level, failure notifications, and the audible cues. Every method is
+/// named for a dictation effect, not for a transport detail, so the
+/// implementation stays replaceable and the tests stay honest about what the
+/// lifecycle actually asked for.
+pub trait DictationEffects: Send + Sync {
     fn settings(&self) -> crate::Settings;
     fn record_diagnostic_event(&self, event: crate::DiagnosticEvent);
     fn show_dictation_bar(&self, phase: DictationPhase, settings: &crate::Settings);
@@ -54,14 +57,29 @@ pub trait DictationSurface: Send + Sync {
     fn emit_dictation_audio_level(&self, level: f32);
     fn notify_capture_failure(&self, error: &str);
     fn play_dictation_sound(&self, sound: crate::DictationSound);
-    fn diagnostic_log(
-        &self,
-        settings: &crate::Settings,
-    ) -> crate::SharedDiagnosticLog<crate::FileDiagnosticSink>;
+}
+
+/// The machinery one Dictation Segment runs on: the Local Diagnostic Log, the
+/// transcription engine stack, and the Text Insertion and Insertion Rescue it
+/// types through.
+///
+/// These are asked for rather than built, because all three reach live app
+/// state — the engines the catalogue resolved, the log file under the config
+/// directory, the app the user is typing into. Splitting them from
+/// [`DictationEffects`] is what lets a test supply machinery of its own, and
+/// what keeps the log and the engines a detail of the implementation that
+/// supplies them rather than something the lifecycle names.
+pub trait DictationParts: Send + Sync {
+    /// The Local Diagnostic Log, as [`crate::ErasedDiagnosticLog`]: the port
+    /// names a log, never the sink behind it, so an implementation that logs to
+    /// something other than the app's file can satisfy it.
+    fn diagnostic_log(&self, settings: &crate::Settings) -> crate::ErasedDiagnosticLog;
+
     fn dictation_stack(
         &self,
         settings: &crate::Settings,
-    ) -> Result<crate::DictationStack<crate::FileDiagnosticSink>, String>;
+    ) -> Result<crate::DictationStack<crate::BoxedDiagnosticSink>, String>;
+
     /// The Text Insertion and Insertion Rescue for one Dictation Segment, aimed
     /// at `target_pid`. Focus restoration repeats for every Segment Pause
     /// (ADR-0015), so the pair is asked for per segment rather than once per
@@ -74,13 +92,14 @@ pub trait DictationSurface: Send + Sync {
 /// The dictation lifecycle's one owner of state: recording feedback, the focus
 /// target, the audio capture session, the pinned dictation session, and the
 /// runtime handle. The locks are private so the ordering rules stay inside this
-/// module. No method reaches a [`DictationSurface`] while holding one.
+/// module. No method reaches a port while holding one.
 /// [`Self::prepare_capture`] is the one exception and it is deliberate: it calls
 /// the operating system to discover the input device, and doing that once while
 /// idle is cheaper than holding no lock and racing another caller onto the same
 /// device.
 pub struct DictationHost<R = crate::CpalAudioRecorder> {
-    surface: Arc<dyn DictationSurface>,
+    effects: Arc<dyn DictationEffects>,
+    parts: Arc<dyn DictationParts>,
     feedback: Mutex<crate::RecordingFeedback>,
     /// The operating-system call that names the app the user is typing into. A
     /// field rather than a direct call so the target policy is decided by tests
@@ -105,20 +124,26 @@ impl<R> DictationHost<R>
 where
     R: crate::DictationRecorder,
 {
-    pub fn new(surface: Arc<dyn DictationSurface>, usage: Arc<crate::UsageQueue>) -> Self
+    pub fn new(
+        effects: Arc<dyn DictationEffects>,
+        parts: Arc<dyn DictationParts>,
+        usage: Arc<crate::UsageQueue>,
+    ) -> Self
     where
         R: Default,
     {
-        Self::with_recorder(surface, R::default(), usage)
+        Self::with_recorder(effects, parts, R::default(), usage)
     }
 
     pub fn with_recorder(
-        surface: Arc<dyn DictationSurface>,
+        effects: Arc<dyn DictationEffects>,
+        parts: Arc<dyn DictationParts>,
         recorder: R,
         usage: Arc<crate::UsageQueue>,
     ) -> Self {
         Self::with_recorder_and_focus_target_source(
-            surface,
+            effects,
+            parts,
             recorder,
             usage,
             Arc::new(crate::capture_text_target),
@@ -127,14 +152,16 @@ where
 
     /// [`Self::with_recorder`] with the frontmost-application lookup injected.
     pub fn with_recorder_and_focus_target_source(
-        surface: Arc<dyn DictationSurface>,
+        effects: Arc<dyn DictationEffects>,
+        parts: Arc<dyn DictationParts>,
         recorder: R,
         usage: Arc<crate::UsageQueue>,
         focus_target_source: Arc<dyn Fn() -> Option<i32> + Send + Sync>,
     ) -> Self {
         let voice_watermark = recorder.voice_watermark_cell();
         Self {
-            surface,
+            effects,
+            parts,
             feedback: Mutex::new(crate::RecordingFeedback::default()),
             focus_target_source,
             capture: Mutex::new(crate::AudioCaptureSession::new(recorder)),
@@ -205,7 +232,7 @@ where
         event: crate::DictationEvent,
         mut activation: Option<crate::DictationActivation>,
     ) -> Result<(), String> {
-        self.surface
+        self.effects
             .record_diagnostic_event(crate::DiagnosticEvent::hotkey_transition(event));
 
         match event {
@@ -218,7 +245,7 @@ where
                 // dictation pins below.
                 let settings = match activation.take() {
                     Some(activation) => activation.settings,
-                    None => self.surface.settings(),
+                    None => self.effects.settings(),
                 };
                 // Open the dictation before capture starts: the level callback
                 // installed below stamps every Pause Flush with this session, and
@@ -248,7 +275,7 @@ where
             // update is this Stop press's own activation, so read Settings once here.
             crate::DictationEvent::Stop => {
                 self.advance_recording_feedback(event)?;
-                let settings = self.surface.settings();
+                let settings = self.effects.settings();
                 self.handle_audio_capture_event_with_settings(event, Some(&settings))?;
             }
             // Cancel clears the bar immediately and discards the audio. It also
@@ -281,7 +308,7 @@ where
         };
 
         if let Some(sound) = effect.sound {
-            self.surface.play_dictation_sound(sound);
+            self.effects.play_dictation_sound(sound);
         }
 
         Ok(effect)
@@ -301,14 +328,14 @@ where
             let settings = match settings {
                 Some(settings) => settings,
                 None => {
-                    owned = self.surface.settings();
+                    owned = self.effects.settings();
                     &owned
                 }
             };
-            self.surface
+            self.effects
                 .show_dictation_bar(DictationPhase::Recording, settings);
         } else {
-            self.surface.hide_dictation_bar();
+            self.effects.hide_dictation_bar();
         }
 
         Ok(())
@@ -373,11 +400,11 @@ where
             Ok(outcome) => outcome,
             Err(error) => {
                 self.clear_dictation_audio_level_callback();
-                self.surface.hide_dictation_bar();
-                self.surface
+                self.effects.hide_dictation_bar();
+                self.effects
                     .record_diagnostic_event(crate::DiagnosticEvent::audio_capture_failed(&error));
                 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-                self.surface.notify_capture_failure(&error.to_string());
+                self.effects.notify_capture_failure(&error.to_string());
                 return Err(error.to_string());
             }
         };
@@ -399,28 +426,28 @@ where
                     Some(settings) => settings,
                     // Only this path pays for a Settings reload (slugtale-g1o.6).
                     None => {
-                        owned = self.surface.settings();
+                        owned = self.effects.settings();
                         &owned
                     }
                 };
-                self.surface
+                self.effects
                     .show_dictation_bar(DictationPhase::Transcribing, bar_settings);
                 let queued = self.runtime().send_last(audio);
                 if !queued {
                     eprintln!("dictation segment worker is unavailable; dropping final segment");
-                    self.surface.hide_dictation_bar();
+                    self.effects.hide_dictation_bar();
                 }
             }
             Some(crate::AudioCaptureOutcome::Discarded) => {
                 self.clear_dictation_audio_level_callback();
                 eprintln!("discarded dictation audio");
-                self.surface.hide_dictation_bar();
+                self.effects.hide_dictation_bar();
             }
             // No active session to drain. A terminal event still clears any bar left
             // on screen (e.g. Stop with nothing captured); Start has none to hide.
             None => {
                 if matches!(event, crate::DictationEvent::Stop) {
-                    self.surface.hide_dictation_bar();
+                    self.effects.hide_dictation_bar();
                 }
             }
         }
@@ -431,10 +458,10 @@ where
     /// The Segment Pause detector lives inside the Dictation Runtime, which
     /// re-arms it on every begin(), so each dictation starts unable to flush.
     fn dictation_audio_level_callback(&self) -> crate::AudioLevelCallback {
-        let surface = self.surface.clone();
+        let effects = self.effects.clone();
         let runtime = self.runtime();
         Arc::new(move |level| {
-            surface.emit_dictation_audio_level(level);
+            effects.emit_dictation_audio_level(level);
             runtime.on_voice_level(level);
         })
     }
@@ -443,7 +470,7 @@ where
         if let Ok(mut guard) = self.capture.lock() {
             guard.set_level_callback(None);
         }
-        self.surface.emit_dictation_audio_level(0.0);
+        self.effects.emit_dictation_audio_level(0.0);
     }
 
     /// Transcribe and insert one Dictation Segment, start to finish.
@@ -464,10 +491,10 @@ where
     ) -> Result<crate::DictationSegmentOutcome, String> {
         let pinned = self.pinned_session(session)?;
         let settings = &pinned.settings;
-        let stack = self.surface.dictation_stack(settings)?;
+        let stack = self.parts.dictation_stack(settings)?;
 
         let runtime = self.runtime();
-        let mut prepared = self.surface.prepared_insertion(pinned.target_pid)?;
+        let mut prepared = self.parts.prepared_insertion(pinned.target_pid)?;
         // Scope every effect this segment would have on the user — the keystrokes,
         // the focus work before them, and the clipboard rescue if insertion fails
         // — to the session that owns them. The runtime decides each one at the
@@ -503,7 +530,7 @@ where
         match completed {
             Ok(outcome) => {
                 record_insertion_diagnostics(
-                    self.surface.as_ref(),
+                    self.effects.as_ref(),
                     outcome.insertion_failure.as_ref(),
                     outcome.rescued,
                 );
@@ -511,7 +538,7 @@ where
             }
             Err(error) => {
                 record_insertion_diagnostics(
-                    self.surface.as_ref(),
+                    self.effects.as_ref(),
                     error.insertion_failure(),
                     false,
                 );
@@ -570,18 +597,18 @@ where
 /// Report how one segment's Text Insertion went. A rescued segment is the case
 /// where insertion failed and the transcription was preserved anyway, so it is
 /// the one that produces both lines. The Dictation Workflow has no Local
-/// Diagnostic Log of its own, which is why this is asked of the surface here
-/// rather than from inside it.
+/// Diagnostic Log of its own, which is why this is asked of the effects role
+/// here rather than from inside it.
 fn record_insertion_diagnostics(
-    surface: &dyn DictationSurface,
+    effects: &dyn DictationEffects,
     insertion_failure: Option<&crate::TextInsertionError>,
     rescued: bool,
 ) {
     if let Some(error) = insertion_failure {
-        surface.record_diagnostic_event(crate::DiagnosticEvent::insertion_failed(error));
+        effects.record_diagnostic_event(crate::DiagnosticEvent::insertion_failed(error));
     }
     if rescued {
-        surface.record_diagnostic_event(crate::DiagnosticEvent::insertion_rescued());
+        effects.record_diagnostic_event(crate::DiagnosticEvent::insertion_rescued());
     }
 }
 
@@ -618,10 +645,10 @@ where
     /// new bar alone (slugtale-cbxb).
     ///
     /// The runtime has already decided this, under the same lock that a newer
-    /// Start takes, so this method only mutates the surface — the decision and the
-    /// hide cannot come apart.
+    /// Start takes, so this method only reaches the effects role — the decision
+    /// and the hide cannot come apart.
     fn last_job_settled(&self, _session: u64) {
-        self.surface.hide_dictation_bar();
+        self.effects.hide_dictation_bar();
     }
 }
 
@@ -629,12 +656,12 @@ where
 mod tests {
     use super::*;
     use crate::{
-        AudioCaptureError, CapturedAudio, CountedSegment, DictationEvent, DictationRecorder,
-        DictationRuntime, DictationRuntimeHost, DictationSegmentOutcome, DictationSegmentPosition,
-        EngineAssetLifecycle, EngineAvailability, EngineConfidence, EngineMetadata,
-        EngineTranscriber, EngineTranscription, FileDiagnosticSink, FinalTranscription,
+        AudioCaptureError, BoxedDiagnosticSink, CapturedAudio, CountedSegment, DictationEvent,
+        DictationRecorder, DictationRuntime, DictationRuntimeHost, DictationSegmentOutcome,
+        DictationSegmentPosition, EngineAssetLifecycle, EngineAvailability, EngineConfidence,
+        EngineMetadata, EngineTranscriber, EngineTranscription, FinalTranscription,
         InsertionRescue, InsertionRescueError, PreparedInsertion, SettledTextInsertion,
-        SharedDiagnosticLog, TextInsertion, TextInsertionError, TranscriptionProvider, VOICE_LEVEL,
+        TextInsertion, TextInsertionError, TranscriptionProvider, VOICE_LEVEL,
     };
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -675,6 +702,10 @@ mod tests {
         /// than the product default's five; a test can change it mid-dictation
         /// to stand in for a save.
         settings: Arc<std::sync::Mutex<crate::Settings>>,
+        /// Every Local Diagnostic Log line the segment path logged. The fake's
+        /// sink is a buffer rather than the app's file, which is the whole point
+        /// of the port naming no sink: a test can read what was logged.
+        log_lines: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl Default for FakeSurface {
@@ -690,6 +721,7 @@ mod tests {
                     segment_pause_secs: TEST_SEGMENT_PAUSE_SECS,
                     ..crate::Settings::default()
                 })),
+                log_lines: Arc::default(),
             }
         }
     }
@@ -784,9 +816,21 @@ mod tests {
             surface.decoding = Some(Arc::clone(&gate));
             (Arc::new(surface), gate)
         }
+
+        /// Every Local Diagnostic Log line the segment path logged.
+        fn log_lines(&self) -> Vec<String> {
+            self.log_lines.lock().unwrap().clone()
+        }
+
+        /// Turn the user's `diagnostic_logging` preference on, the way a save
+        /// does, so the next dictation pins a log that records.
+        fn with_diagnostic_logging(self: &Arc<Self>) -> Arc<Self> {
+            self.settings.lock().unwrap().diagnostic_logging = true;
+            self.clone()
+        }
     }
 
-    impl DictationSurface for FakeSurface {
+    impl DictationEffects for FakeSurface {
         fn settings(&self) -> crate::Settings {
             self.record(Call::ReadSettings);
             self.settings.lock().unwrap().clone()
@@ -828,18 +872,25 @@ mod tests {
             };
             self.record(Call::PlaySound(name));
         }
+    }
 
-        fn diagnostic_log(
-            &self,
-            _settings: &crate::Settings,
-        ) -> SharedDiagnosticLog<FileDiagnosticSink> {
-            SharedDiagnosticLog::new(false, FileDiagnosticSink::unavailable())
+    impl DictationParts for FakeSurface {
+        /// The port names a log, not a sink, so the fake supplies one of its
+        /// own: a buffer a test can read back.
+        fn diagnostic_log(&self, settings: &crate::Settings) -> crate::ErasedDiagnosticLog {
+            let lines = Arc::clone(&self.log_lines);
+            crate::ErasedDiagnosticLog::new(
+                settings.diagnostic_logging,
+                BoxedDiagnosticSink::new(move |line: &str| {
+                    lines.lock().unwrap().push(line.to_string());
+                }),
+            )
         }
 
         fn dictation_stack(
             &self,
-            _settings: &crate::Settings,
-        ) -> Result<crate::DictationStack<FileDiagnosticSink>, String> {
+            settings: &crate::Settings,
+        ) -> Result<crate::DictationStack<BoxedDiagnosticSink>, String> {
             let gate = self.decoding.clone();
             let engine: Arc<dyn TranscriptionProvider> = Arc::new(FakeEngine {
                 text: self.next_transcription(),
@@ -848,7 +899,7 @@ mod tests {
             let router = crate::SecondOpinionRouter::single(engine);
             Ok(crate::DictationStack::new(
                 router,
-                SharedDiagnosticLog::new(false, FileDiagnosticSink::unavailable()),
+                self.diagnostic_log(settings),
             ))
         }
 
@@ -1229,8 +1280,11 @@ mod tests {
             let (cut_sender, cuts) = mpsc::channel();
             recorder.cuts = cut_sender;
             let (counted_tx, counted) = mpsc::channel();
+            let effects: Arc<dyn DictationEffects> = surface.clone();
+            let parts: Arc<dyn DictationParts> = surface.clone();
             let host = Arc::new(DictationHost::with_recorder_and_focus_target_source(
-                surface.clone(),
+                effects,
+                parts,
                 recorder,
                 crate::UsageQueue::start(Arc::new(
                     move |_: crate::LocalDate, segment: CountedSegment| {
@@ -1340,8 +1394,11 @@ mod tests {
         surface: &Arc<FakeSurface>,
         recorder: FakeRecorder,
     ) -> DictationHost<FakeRecorder> {
+        let effects: Arc<dyn DictationEffects> = surface.clone();
+        let parts: Arc<dyn DictationParts> = surface.clone();
         let host = DictationHost::with_recorder_and_focus_target_source(
-            surface.clone(),
+            effects,
+            parts,
             recorder,
             discarding_usage_queue(),
             focus_target_source(),
@@ -1359,6 +1416,38 @@ mod tests {
             .as_ref()
             .expect("a dictation is running")
             .session
+    }
+
+    #[test]
+    fn a_segment_logs_through_whatever_sink_the_parts_role_supplies() {
+        // The construction port names a Local Diagnostic Log and never the sink
+        // behind it, so the implementation is free to supply one of its own. The
+        // fake's is a buffer, and the segment's diagnostics have to land in it —
+        // which is how a port that named the app's file sink would make this
+        // test impossible to write.
+        let secret = "do not log these dictated words";
+        let surface = Arc::new(FakeSurface::default())
+            .transcribing_as(&[secret])
+            .with_diagnostic_logging();
+        let host = host_with(&surface, FakeRecorder::healthy());
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+        let session = running_session(&host);
+
+        host.run_dictation_segment(
+            session,
+            CapturedAudio::mono_16khz(vec![0.0, 0.25]),
+            DictationSegmentPosition::First,
+        )
+        .expect("insertion succeeded");
+
+        let lines = surface.log_lines();
+        assert!(
+            lines.iter().any(|line| line.contains("asr:")),
+            "the segment's diagnostics went nowhere: {lines:?}"
+        );
+        for line in &lines {
+            assert!(!line.contains(secret), "leaked transcript text: {line}");
+        }
     }
 
     #[test]

@@ -6,7 +6,10 @@ use std::sync::Arc;
 
 use tauri::{Emitter, Manager};
 
-use slugtale_lib::{DictationHost, DictationPhase, DictationSurface, WindowLabel};
+use slugtale_lib::{
+    BoxedDiagnosticSink, DictationEffects, DictationHost, DictationParts, DictationPhase,
+    WindowLabel,
+};
 
 use crate::dictation_bar_window::{hide_dictation_bar, show_dictation_bar};
 use crate::hotkey_registration::{request_escape_registration, HotkeyRegistrationState};
@@ -153,14 +156,15 @@ impl slugtale_lib::BeginHost for TauriBeginHost<'_> {
     }
 }
 
-/// The Tauri adapter for the dictation lifecycle's surface: the bar window,
-/// Settings reads, diagnostics, and failure notifications, reached through the
-/// one AppHandle.
+/// The Tauri adapter for the dictation lifecycle's two ports: the bar window,
+/// Settings reads, diagnostics, and failure notifications for the effects role,
+/// and the app's own log, engines, and Text Insertion for the parts role. Both
+/// are reached through the one AppHandle.
 pub(crate) struct TauriSurface {
     pub(crate) app: tauri::AppHandle,
 }
 
-impl DictationSurface for TauriSurface {
+impl DictationEffects for TauriSurface {
     fn settings(&self) -> slugtale_lib::Settings {
         load_current_settings(&self.app)
     }
@@ -191,18 +195,25 @@ impl DictationSurface for TauriSurface {
     fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound) {
         let _ = slugtale_lib::play_dictation_sound(sound);
     }
+}
 
+impl DictationParts for TauriSurface {
+    /// The app's one Local Diagnostic Log, handed on with its sink's type
+    /// erased: the lifecycle names a log, and this module is the only place that
+    /// knows it is a file.
     fn diagnostic_log(
         &self,
         settings: &slugtale_lib::Settings,
-    ) -> slugtale_lib::SharedDiagnosticLog<slugtale_lib::FileDiagnosticSink> {
-        app_files(&self.app).diagnostic_log(settings.diagnostic_logging)
+    ) -> slugtale_lib::ErasedDiagnosticLog {
+        app_files(&self.app)
+            .diagnostic_log(settings.diagnostic_logging)
+            .erased()
     }
 
     fn dictation_stack(
         &self,
         settings: &slugtale_lib::Settings,
-    ) -> Result<slugtale_lib::DictationStack<slugtale_lib::FileDiagnosticSink>, String> {
+    ) -> Result<slugtale_lib::DictationStack<BoxedDiagnosticSink>, String> {
         let diagnostic_log = self.diagnostic_log(settings);
         self.app
             .state::<slugtale_lib::TranscriptionEngineCatalogue>()
