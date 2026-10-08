@@ -22,8 +22,8 @@
 //!    result — it can never lose the dictation.
 
 use crate::{
-    captured_audio_duration, AsrError, CapturedAudio, EngineTranscription, TranscriptionEngine,
-    TranscriptionProvider,
+    captured_audio_duration, second_opinion_transport, AsrError, CapturedAudio, EngineTranscriber,
+    EngineTranscription, TranscriptionEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -302,15 +302,19 @@ impl EscalationPolicy {
 /// Boolean. `Default` starts unowned.
 #[derive(Clone, Default)]
 pub struct SecondOpinionCoordinator {
-    gate: Arc<std::sync::atomic::AtomicBool>,
+    gate: second_opinion_transport::InFlightGate,
 }
 
 /// Runs the primary engine and, when its result trips a rule, one second
 /// opinion. Owns the escalation budget and the guarantee that exactly one
 /// transcript comes out.
+///
+/// It holds [`EngineTranscriber`] and nothing else: a router that decides
+/// whether to ask another engine has no business being able to install or
+/// delete one.
 pub struct SecondOpinionRouter {
-    primary: Arc<dyn TranscriptionProvider>,
-    second: Option<Arc<dyn TranscriptionProvider>>,
+    primary: Arc<dyn EngineTranscriber>,
+    second: Option<Arc<dyn EngineTranscriber>>,
     mode: SecondOpinionMode,
     policy: EscalationPolicy,
     /// Shared in-flight state; see [`SecondOpinionCoordinator`]. Set while a
@@ -325,7 +329,7 @@ pub struct SecondOpinionRouter {
 impl SecondOpinionRouter {
     /// A router that only ever runs one engine. This is the shape the app uses
     /// when Second Opinion is Off, and it costs nothing beyond the primary call.
-    pub fn single(primary: Arc<dyn TranscriptionProvider>) -> Self {
+    pub fn single(primary: Arc<dyn EngineTranscriber>) -> Self {
         Self {
             primary,
             second: None,
@@ -337,8 +341,8 @@ impl SecondOpinionRouter {
     }
 
     pub fn new(
-        primary: Arc<dyn TranscriptionProvider>,
-        second: Arc<dyn TranscriptionProvider>,
+        primary: Arc<dyn EngineTranscriber>,
+        second: Arc<dyn EngineTranscriber>,
         mode: SecondOpinionMode,
     ) -> Self {
         Self {
@@ -430,7 +434,9 @@ impl SecondOpinionRouter {
             total_latency: latency,
         };
 
-        let Some(second) = self.second_opinion_within_budget(second_provider, audio) else {
+        let Some(second) =
+            self.second_opinion_within_budget(second_provider, audio, &self.coordinator.gate)
+        else {
             return Ok(unavailable(started.elapsed()));
         };
 
@@ -468,63 +474,28 @@ impl SecondOpinionRouter {
     /// The second engine, if it is configured and can actually run right now.
     /// Availability is checked before decoding rather than after, so an engine
     /// whose assets were removed costs nothing.
-    fn available_second_opinion(&self) -> Option<Arc<dyn TranscriptionProvider>> {
+    fn available_second_opinion(&self) -> Option<Arc<dyn EngineTranscriber>> {
         let second = self.second.as_ref()?;
         second.availability().is_available().then(|| second.clone())
     }
 
     /// Run the second engine, giving up at the budget.
     ///
-    /// The work runs on its own thread so the router can stop waiting; a wedged
-    /// engine keeps its thread until it returns, but it can no longer hold up
-    /// the user's dictation, and the shared in-flight gate stops a second one
-    /// from piling on behind it — including from a *later segment's* router,
-    /// which is why the gate is shared for the catalogue lifetime rather than
-    /// owned per router. The recording is cloned because the thread outlives
-    /// this call — that allocation is the price of a bounded wait, and it only
-    /// happens on the escalation path, which is rare by design.
+    /// The escalation policy above owns the budget; the thread, the channel, and
+    /// the gate belong to [`crate::second_opinion_transport`], which is the only
+    /// place this module knows how to run an engine off the caller's thread.
     fn second_opinion_within_budget(
         &self,
-        provider: Arc<dyn TranscriptionProvider>,
+        provider: Arc<dyn EngineTranscriber>,
         audio: &CapturedAudio,
+        gate: &second_opinion_transport::InFlightGate,
     ) -> Option<EngineTranscription> {
-        use std::sync::atomic::Ordering;
-
-        if self
-            .coordinator
-            .gate
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return None;
-        }
-
-        let in_flight = self.coordinator.gate.clone();
-        let audio = audio.clone();
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            // A panicking engine must not hold the shared gate forever: catch
-            // the panic at this module edge, release, and report it as an
-            // unavailable second opinion like any other failure.
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    provider.transcribe(&audio)
-                }))
-                .unwrap_or_else(|_| {
-                    Err(AsrError::Runtime(
-                        "second opinion engine panicked".to_string(),
-                    ))
-                });
-            in_flight.store(false, Ordering::Release);
-            // A full channel means the router already gave up and moved on;
-            // dropping the late result is exactly what should happen.
-            let _ = sender.try_send(result);
-        });
-
-        receiver
-            .recv_timeout(self.policy.second_opinion_budget)
-            .ok()
-            .and_then(|result| result.ok())
+        second_opinion_transport::run_within_budget(
+            provider,
+            audio,
+            gate,
+            self.policy.second_opinion_budget,
+        )
     }
 }
 
@@ -588,8 +559,8 @@ fn has_repeated_phrase(text: &str, minimum_run: usize) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        EngineAssets, EngineAvailability, EngineConfidence, EngineMetadata, EngineUnavailable,
-        FinalTranscription,
+        EngineAssetLifecycle, EngineAssets, EngineAvailability, EngineConfidence, EngineMetadata,
+        EngineTranscriber, EngineUnavailable, FinalTranscription,
     };
 
     #[test]
@@ -909,7 +880,7 @@ mod tests {
         calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
-    impl TranscriptionProvider for PanickingProvider {
+    impl EngineTranscriber for PanickingProvider {
         fn engine(&self) -> TranscriptionEngine {
             TranscriptionEngine::Parakeet
         }
@@ -922,16 +893,18 @@ mod tests {
             EngineAvailability::Available
         }
 
+        fn transcribe(&self, _audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            panic!("fake engine panic");
+        }
+    }
+
+    impl EngineAssetLifecycle for PanickingProvider {
         fn assets(&self) -> EngineAssets {
             EngineAssets {
                 installed_bytes: None,
                 present: Some(true),
             }
-        }
-
-        fn transcribe(&self, _audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            panic!("fake engine panic");
         }
     }
 
@@ -1109,11 +1082,10 @@ mod tests {
         }
     }
 
-    impl TranscriptionProvider for FakeProvider {
+    impl EngineTranscriber for FakeProvider {
         fn engine(&self) -> TranscriptionEngine {
             self.engine
         }
-
         fn metadata(&self) -> EngineMetadata {
             EngineMetadata {
                 engine: self.engine,
@@ -1135,13 +1107,6 @@ mod tests {
             self.availability.clone()
         }
 
-        fn assets(&self) -> EngineAssets {
-            EngineAssets {
-                installed_bytes: None,
-                present: Some(true),
-            }
-        }
-
         fn transcribe(&self, _audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             if let Some(delay) = self.delay {
@@ -1160,6 +1125,17 @@ mod tests {
                 },
                 latency: Duration::from_millis(200),
             })
+        }
+    }
+
+    /// What this fake owns on disk. The router never asks, which is the point:
+    /// a router that could see this could act on it.
+    impl EngineAssetLifecycle for FakeProvider {
+        fn assets(&self) -> EngineAssets {
+            EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
         }
     }
 }

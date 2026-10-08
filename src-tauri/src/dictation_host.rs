@@ -631,10 +631,10 @@ mod tests {
     use crate::{
         AudioCaptureError, CapturedAudio, CountedSegment, DictationEvent, DictationRecorder,
         DictationRuntime, DictationRuntimeHost, DictationSegmentOutcome, DictationSegmentPosition,
-        EngineAvailability, EngineConfidence, EngineMetadata, EngineTranscription,
-        FileDiagnosticSink, FinalTranscription, InsertionRescue, InsertionRescueError,
-        PreparedInsertion, SettledTextInsertion, SharedDiagnosticLog, TextInsertion,
-        TextInsertionError, TranscriptionProvider, VOICE_LEVEL,
+        EngineAssetLifecycle, EngineAvailability, EngineConfidence, EngineMetadata,
+        EngineTranscriber, EngineTranscription, FileDiagnosticSink, FinalTranscription,
+        InsertionRescue, InsertionRescueError, PreparedInsertion, SettledTextInsertion,
+        SharedDiagnosticLog, TextInsertion, TextInsertionError, TranscriptionProvider, VOICE_LEVEL,
     };
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -883,7 +883,7 @@ mod tests {
         gate: Option<Arc<DecodeGate>>,
     }
 
-    impl TranscriptionProvider for FakeEngine {
+    impl EngineTranscriber for FakeEngine {
         fn engine(&self) -> crate::TranscriptionEngine {
             crate::TranscriptionEngine::Whisper
         }
@@ -909,13 +909,6 @@ mod tests {
             EngineAvailability::Available
         }
 
-        fn assets(&self) -> crate::EngineAssets {
-            crate::EngineAssets {
-                installed_bytes: None,
-                present: Some(true),
-            }
-        }
-
         fn transcribe(
             &self,
             _audio: &CapturedAudio,
@@ -939,6 +932,15 @@ mod tests {
                 confidence: EngineConfidence::unreported(),
                 latency: Duration::ZERO,
             })
+        }
+    }
+
+    impl EngineAssetLifecycle for FakeEngine {
+        fn assets(&self) -> crate::EngineAssets {
+            crate::EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
         }
     }
 

@@ -107,6 +107,12 @@ pub use apple_speech::*;
 mod second_opinion;
 pub use second_opinion::*;
 
+/// The Second Opinion worker: the thread, the channel, and the shared
+/// in-flight gate that let one engine answer off the dictation thread. Split
+/// from the router so the escalation policy has no concurrency in it, and the
+/// transport has no opinion about engines.
+mod second_opinion_transport;
+
 /// Dictation Segments and the Segment Pause that ends one (CONTEXT.md,
 /// ADR-0015): the rule that decides when the speech so far is worth inserting
 /// while the microphone is still running.

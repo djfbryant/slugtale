@@ -419,14 +419,14 @@ impl Default for TranscriptionEngineCatalogue {
 mod tests {
     use super::*;
     use crate::{
-        AsrRuntime, EngineAssets, EngineConfidence, EngineMetadata, EngineTranscription,
-        FinalTranscription,
+        AsrRuntime, EngineAssetLifecycle, EngineAssets, EngineConfidence, EngineMetadata,
+        EngineTranscriber, EngineTranscription, FinalTranscription,
     };
     use std::time::Duration;
 
     struct FakeProvider(TranscriptionEngine);
 
-    impl TranscriptionProvider for FakeProvider {
+    impl EngineTranscriber for FakeProvider {
         fn engine(&self) -> TranscriptionEngine {
             self.0
         }
@@ -452,13 +452,6 @@ mod tests {
             EngineAvailability::Available
         }
 
-        fn assets(&self) -> EngineAssets {
-            EngineAssets {
-                installed_bytes: None,
-                present: Some(true),
-            }
-        }
-
         fn transcribe(
             &self,
             _audio: &crate::CapturedAudio,
@@ -473,6 +466,15 @@ mod tests {
                 confidence: EngineConfidence::unreported(),
                 latency: Duration::ZERO,
             })
+        }
+    }
+
+    impl EngineAssetLifecycle for FakeProvider {
+        fn assets(&self) -> EngineAssets {
+            EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
         }
     }
 
@@ -708,7 +710,7 @@ mod tests {
         warm_calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
-    impl TranscriptionProvider for WarmCountingProvider {
+    impl EngineTranscriber for WarmCountingProvider {
         fn engine(&self) -> TranscriptionEngine {
             TranscriptionEngine::Whisper
         }
@@ -719,13 +721,6 @@ mod tests {
 
         fn availability(&self) -> EngineAvailability {
             EngineAvailability::Available
-        }
-
-        fn assets(&self) -> EngineAssets {
-            EngineAssets {
-                installed_bytes: None,
-                present: Some(true),
-            }
         }
 
         fn transcribe(
@@ -741,6 +736,15 @@ mod tests {
             self.warm_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
+        }
+    }
+
+    impl EngineAssetLifecycle for WarmCountingProvider {
+        fn assets(&self) -> EngineAssets {
+            EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
         }
     }
 
