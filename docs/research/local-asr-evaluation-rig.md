@@ -48,6 +48,42 @@ long dictation, clean and noisy speech, hesitations, numbers, punctuation,
 names/jargon, and silence. The eight-entry example is deliberately only a smoke
 corpus. Duplicate and adapt its entries before the real benchmark.
 
+## Say where the audio came from
+
+Every clip records the provenance of its audio, because a synthesized voice and
+a person speaking into a microphone produce very different error rates for the
+same text:
+
+| Field | Values | Why |
+|---|---|---|
+| `provenance` | `human`, `synthetic`, `unknown` | Only `human` can back a claim about the accuracy a user experiences |
+| `speaker` | a local pseudonym such as `voice-1` | Counts distinct voices. Never a real name: the manifest is a file you may share or archive |
+| `probes` | `noise`, `leading-segment-edge`, `trailing-segment-edge`, `quiet-segment-ending` | Conditions that are invisible from the audio alone, so a clip has to declare that it covers them |
+
+A manifest written before these fields existed still loads. Each absent clip is
+then `provenance: unknown`, and `init` writes that unknown out explicitly so a
+later reader cannot mistake it for a voice. Annotate a legacy manifest by
+adding the fields; nothing has to be re-recorded.
+
+Two dimensions need no probe, because the rig derives them rather than trusting
+a label. A clip is a **non-speech** clip when its `expected_text` is empty, and
+it is a **names** clip when its reference text actually contains one of its own
+`proper_terms`. A term listed but never spoken does not inflate the names
+count.
+
+```sh
+# Add provenance, a speaker pseudonym and probes to a legacy corpus.
+$EDITOR "$RESEARCH_DIR/corpus.json"
+```
+
+`validate` prints the provenance split and every gap that currently blocks a
+real-voice claim, which is the cheapest moment to add a clip:
+
+```sh
+npm run asr:research -- validate \
+  --research-dir /absolute/private/path/slugtale-asr-corpus
+```
+
 Record the first missing clip. Enter starts and stops capture; after capture,
 choose keep, retry, delete, or quit. Running the same command later resumes at
 the first missing clip.
@@ -147,9 +183,64 @@ agreement, disagreement count and per-engine disagreement WER, plus oracle WER
 (the better whole hypothesis per clip). The scorer never merges words from two
 hypotheses and never emits clip-level content.
 
+## What a report is allowed to claim
+
+A rate over a corpus is only meaningful next to what that corpus contains, so
+the report leads with that rather than leaving it to the reader.
+
+- `claim_scope` is one sentence, first in the JSON, saying what this corpus can
+  and cannot be used to claim.
+- `coverage` counts the provenance split, the distinct human voices, and the
+  five dimensions the finding names — `human-voices`, `names`, `non-speech`,
+  `noise`, `segment-edges`. Every dimension is always present; a short one
+  carries `supported: false` and the reason, so an unmeasured condition cannot
+  be mistaken for a clean result.
+- `real_voice_accuracy_supported` opens only when at least one clip is `human`
+  and the corpus holds at least 100 clips. While it is closed, every
+  whole-corpus accuracy field — WER, term recall, punctuation, capitalization,
+  hallucination rate, calibration error — is `null`, and `gaps` says why. A
+  synthetic or unattributed corpus therefore cannot produce a headline rate at
+  all, however well it scored.
+- `provenance_slices` repeat the measurements per kind of audio, always all
+  three. `unknown` clips are counted but never scored: a number attached to
+  unattributed audio would be indistinguishable from a voice result at a
+  glance, which is what the label exists to prevent. Their per-clip hypotheses
+  are still in the sensitive run file for anyone who annotates the manifest.
+- `clips_complete` and `measurement_gaps` cover the other way a report overstates
+  itself. A run where the engine errored on some clips withholds the
+  whole-corpus rate rather than publishing one over the survivors.
+
+Latency is exempt, because it is a property of the machine and the model rather
+than of whose voice was recorded.
+
 The first clip's adapter latency includes model loading (cold); later clips use
 the same process (warm). Preserve clip order between runs. For an explicit cold
 distribution, run one-clip manifests in separate processes.
+
+## What is measured without a microphone
+
+Three of the example's own tests (`npm run test:asr-research`) record the parts
+of the audio path that a corpus cannot show you, because they do not need
+recorded speech at all. Each one drives the shipped production helpers
+(`audio_level_from_samples`, `is_digital_silence`, `voice_level_from_rms`,
+`is_voice_level`, `captured_audio_from_interleaved_input`,
+`SegmentPauseDetector`) with deterministic synthetic fixtures:
+
+- digital silence, a quiet room, speech and a steady fan are four different
+  things to the level pipeline, and the fan is indistinguishable from a voice;
+- the capture resampler keeps the 300 Hz speech band at its original amplitude
+  and attenuates a 12 kHz tone where point sampling would have folded it back
+  into the speech band — attenuated, not removed;
+- at the shipped five-second Segment Pause, a real pause ends exactly one
+  segment, while the same pause with a fan running never elapses at all, and a
+  final word a little below the threshold reads as silence so the segment edge
+  lands after it.
+
+These record where the current level threshold draws its line. They are not
+evidence about speech quality, and they are not evidence that a learned speech
+detector would draw the line better — that needs the corpus above, and adding
+such a detector is a separate decision (ADR-0027). Second Opinion stays off
+until the escalation thresholds have been measured on real dictations.
 
 ## Offline and resource checks
 

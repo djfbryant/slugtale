@@ -173,6 +173,14 @@ spoken by the maintainer, covering:
 Compare Whisper `base.en`, Distil-Whisper `small.en`, Parakeet TDT-CTC 110M,
 Parakeet TDT v2, Apple `SpeechTranscriber`, and Moonshine Small Streaming.
 
+Record each clip's provenance — `human` or `synthetic` — as it is recorded, and
+a speaker pseudonym so distinct voices can be counted. The published numbers in
+this document are priors from other people's audio on other people's hardware;
+only a corpus labelled with where it came from can turn them into a claim about
+this maintainer's dictation, and the rig in `local-asr-evaluation-rig.md`
+withholds a whole-corpus accuracy rate from any corpus that has no human-voice
+clips in it.
+
 Measure normalized WER, proper-term recall, punctuation/capitalization error,
 silence hallucinations, p50/p95 finalization latency, cold start, peak resident
 memory, system memory pressure, and energy impact. Generic leaderboard WER is

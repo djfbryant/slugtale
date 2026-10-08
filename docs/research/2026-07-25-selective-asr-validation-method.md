@@ -33,6 +33,26 @@ A) asks for at least 100 labelled clips covering:
   cover);
 - a silence/non-speech set, to measure hallucination rate.
 
+Record where each clip's audio came from, and mark the conditions that are
+invisible from the audio itself:
+
+- `human` for a person speaking into the microphone, `synthetic` for a
+  text-to-speech voice. Only `human` clips can support a claim about accuracy
+  as a user experiences it; a synthesized corpus is a pipeline check.
+- a speaker pseudonym (`voice-1`, never a real name) so distinct voices can be
+  counted;
+- `noise` on clips recorded with a fan, keyboard or traffic in the room;
+- `leading-segment-edge` / `trailing-segment-edge` on clips with silence around
+  the words, and `quiet-segment-ending` on clips whose last sound is quieter
+  than the Dictation Bar's level threshold.
+
+The machine-checkable version of this is the `asr_research` corpus manifest
+(`docs/research/asr-evaluation-manifest.example.json`) and the `coverage` block
+of its `score` report, which withholds every whole-corpus accuracy field for a
+corpus with no human-voice clips in it. Do not fill in the tables in section 5
+from a corpus that does not carry those labels: an unattributed or synthetic run
+cannot support any of these rows.
+
 Record each clip as its own file, then convert to the format the harness (and
 `decode_benchmark.rs`) require — 16 kHz mono 32-bit float WAV:
 
@@ -224,8 +244,15 @@ by hand, once.
 Fill in once `asr_eval.rs` has run against a maintainer-recorded corpus of at
 least 100 clips. Every cell below is a placeholder.
 
+A blank table here means unmeasured, not zero and not fine. Synthesized clips,
+unattributed clips and any corpus missing voices, names, silence, noise or
+segment edges do not fill these rows; the `asr_research` rig reports the same
+shortfalls in its `coverage` block rather than leaving them implicit.
+
 Hardware: _(fill in — chip, RAM, OS version)_
 Corpus: _(fill in — clip count, total duration, recording date)_
+Provenance: _(fill in — human clips, distinct voices, and which of voices,
+names, silence, noise and segment edges the corpus actually covers)_
 
 ### Per-engine (standalone, memory-isolated runs)
 
@@ -287,3 +314,15 @@ Whisper as primary, and what escalation thresholds
 (`EscalationPolicy::default()` in `second_opinion.rs`) the measured data
 actually supports — belongs in a dated results doc that cites this method
 doc and the real numbers, not in a rewrite of this file.
+
+Until those numbers exist, Second Opinion stays off. Its thresholds are
+placeholders rather than calibrated values, and an uncalibrated router spends
+latency on every dictation to rescue a few.
+
+Not decided here either: whether a learned speech detector or a stronger
+resampler beats the current level threshold and averaging resampler. Those are
+measurable against the same corpus — the audio-path measurements in
+`local-asr-evaluation-rig.md` record where the current rules draw their line, and
+a candidate has to beat those numbers, not an assumption, before it replaces
+them. Introducing a new ASR or voice-activity model is a separate decision with
+its own licence and packaging work (ADR-0027).
