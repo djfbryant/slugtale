@@ -33,24 +33,28 @@ impl EscapeArbiter {
         (should_arm != self.armed).then_some(should_arm)
     }
 
-    /// Resolve `command`, run `change` for the single OS registration change it
+    /// Resolve `command`, run `ask_os` for the single OS registration change it
     /// names, and commit the new armed state only once the OS accepted it.
     ///
-    /// A `change` that fails leaves the arbiter exactly where it was, so the
+    /// An `ask_os` that fails leaves the arbiter exactly where it was, so the
     /// same request stays retryable: the next Arm after a refused registration
     /// reaches the OS again instead of finding the fact already set.
     pub fn apply(
         &mut self,
         command: EscapeCommand,
-        change: impl FnOnce(bool) -> Result<(), String>,
+        ask_os: impl FnOnce(bool) -> Result<(), String>,
     ) -> Result<(), String> {
         let Some(should_register) = self.pending_registration(command) else {
             return Ok(());
         };
 
-        change(should_register)?;
-        self.armed = should_register;
+        ask_os(should_register)?;
+        self.record_os_accepted(should_register);
         Ok(())
+    }
+
+    fn record_os_accepted(&mut self, armed: bool) {
+        self.armed = armed;
     }
 }
 

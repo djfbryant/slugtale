@@ -18,6 +18,12 @@ impl DictationBarAppearance {
     }
 }
 
+struct MainThread(());
+
+fn hand_to_main_thread(app: &tauri::AppHandle, work: impl FnOnce(&MainThread) + Send + 'static) {
+    let _ = app.run_on_main_thread(move || work(&MainThread(())));
+}
+
 pub(super) fn show_dictation_bar(
     app: &tauri::AppHandle,
     phase: DictationPhase,
@@ -27,8 +33,8 @@ pub(super) fn show_dictation_bar(
         let appearance = DictationBarAppearance::from_settings(settings);
         let bar_display = settings.bar_display.clone();
         push_dictation_bar_render_state(&window, phase, &appearance);
-        let _ = app.run_on_main_thread(move || {
-            position_dictation_bar(&window, appearance.position, &bar_display);
+        hand_to_main_thread(app, move |main_thread| {
+            position_dictation_bar(main_thread, &window, appearance.position, &bar_display);
             let _ = window.set_ignore_cursor_events(true);
             let _ = window.show();
             if WindowLabel::DictationBar.takes_focus() {
@@ -38,24 +44,54 @@ pub(super) fn show_dictation_bar(
     }
 }
 
+enum RenderFact {
+    Phase(DictationPhase),
+    Appearance(DictationBarAppearance),
+    Visible(bool),
+}
+
+impl RenderFact {
+    fn push(&self, window: &tauri::WebviewWindow) {
+        let _ = match self {
+            RenderFact::Phase(phase) => window.emit("dictation-phase", phase.as_str()),
+            RenderFact::Appearance(appearance) => {
+                window.emit("dictation-appearance", appearance.clone())
+            }
+            RenderFact::Visible(visible) => window.emit("dictation-visibility", *visible),
+        };
+    }
+}
+
+fn render_state_in_push_order(
+    phase: DictationPhase,
+    appearance: &DictationBarAppearance,
+) -> [RenderFact; 3] {
+    [
+        RenderFact::Phase(phase),
+        RenderFact::Appearance(appearance.clone()),
+        RenderFact::Visible(true),
+    ]
+}
+
 fn push_dictation_bar_render_state(
     window: &tauri::WebviewWindow,
     phase: DictationPhase,
     appearance: &DictationBarAppearance,
 ) {
-    let _ = window.emit("dictation-phase", phase.as_str());
-    let _ = window.emit("dictation-appearance", appearance.clone());
-    let _ = window.emit("dictation-visibility", true);
+    for fact in render_state_in_push_order(phase, appearance) {
+        fact.push(window);
+    }
 }
 
 pub(super) fn hide_dictation_bar(app: &tauri::AppHandle) {
     if let Some(window) = WindowLabel::DictationBar.window(app) {
         let _ = window.hide();
-        let _ = window.emit("dictation-visibility", false);
+        RenderFact::Visible(false).push(&window);
     }
 }
 
 fn dictation_bar_monitor(
+    _main_thread: &MainThread,
     window: &tauri::WebviewWindow,
     display: &slugtale_lib::BarDisplay,
 ) -> Option<slugtale_lib::MonitorGeometry> {
@@ -87,11 +123,12 @@ fn dictation_bar_monitor(
 }
 
 fn position_dictation_bar(
+    main_thread: &MainThread,
     window: &tauri::WebviewWindow,
     position: slugtale_lib::BarPosition,
     display: &slugtale_lib::BarDisplay,
 ) {
-    let Some(monitor) = dictation_bar_monitor(window, display) else {
+    let Some(monitor) = dictation_bar_monitor(main_thread, window, display) else {
         return;
     };
     let Ok(size) = window.outer_size() else {
@@ -113,13 +150,37 @@ pub(super) fn apply_dictation_bar_appearance(
         return;
     };
     let appearance = DictationBarAppearance::from_settings(settings);
-    let _ = window.emit("dictation-appearance", appearance.clone());
+    RenderFact::Appearance(appearance.clone()).push(&window);
 
     if !window.is_visible().unwrap_or(false) {
         return;
     }
     let bar_display = settings.bar_display.clone();
-    let _ = app.run_on_main_thread(move || {
-        position_dictation_bar(&window, appearance.position, &bar_display);
+    hand_to_main_thread(app, move |main_thread| {
+        position_dictation_bar(main_thread, &window, appearance.position, &bar_display);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_state_is_pushed_phase_then_appearance_then_visibility() {
+        let appearance = DictationBarAppearance {
+            position: slugtale_lib::BarPosition::default(),
+            accent: slugtale_lib::AccentColor::default(),
+        };
+
+        let facts = render_state_in_push_order(DictationPhase::Transcribing, &appearance);
+
+        assert!(matches!(
+            facts,
+            [
+                RenderFact::Phase(DictationPhase::Transcribing),
+                RenderFact::Appearance(_),
+                RenderFact::Visible(true)
+            ]
+        ));
+    }
 }
