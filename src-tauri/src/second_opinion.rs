@@ -612,6 +612,39 @@ mod tests {
     }
 
     #[test]
+    fn routers_given_no_shared_coordinator_do_not_block_each_other() {
+        let slow = FakeProvider::new(TranscriptionEngine::Parakeet, "too late")
+            .slow(Duration::from_millis(600));
+        let first_segment = SecondOpinionRouter::new(
+            Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
+            Arc::new(slow),
+            SecondOpinionMode::Automatic,
+        )
+        .with_policy(EscalationPolicy::default().with_budget(Duration::from_millis(50)));
+        assert_eq!(
+            first_segment
+                .route(&speech_of_seconds(3.0))
+                .unwrap()
+                .selection,
+            SelectionReason::PrimaryKeptSecondOpinionUnavailable
+        );
+
+        let next_segment = SecondOpinionRouter::new(
+            Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
+            Arc::new(FakeProvider::new(TranscriptionEngine::AppleSpeech, "rescued")),
+            SecondOpinionMode::Automatic,
+        );
+
+        assert_eq!(
+            next_segment
+                .route(&speech_of_seconds(3.0))
+                .unwrap()
+                .selection,
+            SelectionReason::SecondOpinionSelected
+        );
+    }
+
+    #[test]
     fn the_shared_gate_opens_again_once_the_real_worker_ends() {
         let coordinator = SecondOpinionCoordinator::default();
         let slow = FakeProvider::new(TranscriptionEngine::Parakeet, "slow answer")

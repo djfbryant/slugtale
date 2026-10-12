@@ -107,19 +107,32 @@ fn target_is_safe(target: Option<i32>, focus: &dyn TextTargetFocus) -> bool {
     focus.activate(pid) && focus.frontmost_app() == Some(pid)
 }
 
+#[derive(Clone, Default)]
+struct RefusalRecord(Arc<AtomicBool>);
+
+impl RefusalRecord {
+    fn record(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    fn was_recorded(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 pub struct PreparedInsertion {
     pub insertion: SettledTextInsertion,
     pub rescue: Box<dyn InsertionRescue>,
-    refused: Arc<AtomicBool>,
+    refusal: RefusalRecord,
 }
 
 impl PreparedInsertion {
     pub fn new(insertion: SettledTextInsertion, rescue: Box<dyn InsertionRescue>) -> Self {
-        let refused = Arc::clone(&insertion.refused);
+        let refusal = insertion.refusal.clone();
         Self {
             insertion,
             rescue,
-            refused,
+            refusal,
         }
     }
 
@@ -131,26 +144,26 @@ impl PreparedInsertion {
         self.insertion.effects = Some(Arc::new(SessionScoped {
             session,
             effects: Arc::clone(&effects),
-            refused: Arc::clone(&self.refused),
+            refusal: self.refusal.clone(),
         }));
         self.insertion.session = session;
         self.rescue = Box::new(SessionScopedRescue {
             inner: std::mem::replace(&mut self.rescue, Box::new(UnreachableRescue)),
             session,
             scoped: Arc::clone(&effects),
-            refused: Arc::clone(&self.refused),
+            refusal: self.refusal.clone(),
         });
     }
 
     pub fn insertion_was_refused(&self) -> bool {
-        self.refused.load(Ordering::SeqCst)
+        self.refusal.was_recorded()
     }
 }
 
 struct SessionScoped {
     session: u64,
     effects: Arc<dyn SessionEffects>,
-    refused: Arc<AtomicBool>,
+    refusal: RefusalRecord,
 }
 
 impl SessionEffects for SessionScoped {
@@ -162,7 +175,7 @@ impl SessionEffects for SessionScoped {
         if self.effects.while_session_live(session, effect) {
             true
         } else {
-            self.refused.store(true, Ordering::SeqCst);
+            self.refusal.record();
             false
         }
     }
@@ -172,7 +185,16 @@ struct SessionScopedRescue {
     inner: Box<dyn InsertionRescue>,
     session: u64,
     scoped: Arc<dyn SessionEffects>,
-    refused: Arc<AtomicBool>,
+    refusal: RefusalRecord,
+}
+
+impl SessionScopedRescue {
+    fn refuse_preserving_nothing(&self) -> crate::InsertionRescueError {
+        self.refusal.record();
+        crate::InsertionRescueError::new(
+            "the dictation was cancelled before its transcription could be preserved",
+        )
+    }
 }
 
 impl InsertionRescue for SessionScopedRescue {
@@ -187,10 +209,7 @@ impl InsertionRescue for SessionScopedRescue {
             }
         });
         if !ran {
-            self.refused.store(true, Ordering::SeqCst);
-            return Err(crate::InsertionRescueError::new(
-                "the dictation was cancelled before its transcription could be preserved",
-            ));
+            return Err(self.refuse_preserving_nothing());
         }
         outcome
     }
@@ -214,7 +233,7 @@ pub struct SettledTextInsertion {
     focus: Arc<dyn TextTargetFocus>,
     effects: Option<Arc<dyn SessionEffects>>,
     session: u64,
-    refused: Arc<AtomicBool>,
+    refusal: RefusalRecord,
 }
 
 impl SettledTextInsertion {
@@ -243,7 +262,7 @@ impl SettledTextInsertion {
             focus,
             effects,
             session: 0,
-            refused: Arc::new(AtomicBool::new(false)),
+            refusal: RefusalRecord::default(),
         }
     }
 
@@ -265,7 +284,7 @@ impl TextInsertion for SettledTextInsertion {
             std::thread::sleep(remaining);
         }
 
-        let target_confirmed = target_is_safe(self.target, self.focus.as_ref());
+        let target_confirmed = self.restore_focus_outside_session_guard();
 
         if !self.still_mine(|| true) {
             return Ok(());
@@ -276,8 +295,21 @@ impl TextInsertion for SettledTextInsertion {
             ));
         }
 
+        self.type_within_session_guard(transcription)
+    }
+}
+
+impl SettledTextInsertion {
+    fn restore_focus_outside_session_guard(&self) -> bool {
+        target_is_safe(self.target, self.focus.as_ref())
+    }
+
+    fn type_within_session_guard(
+        &self,
+        transcription: &crate::FinalTranscription,
+    ) -> Result<(), crate::TextInsertionError> {
         let mut outcome = Ok(());
-        let ran = self.within_session(&mut || {
+        let ran = self.act_while_session_live(&mut || {
             outcome = self.inner.insert(transcription);
         });
         if !ran {
@@ -285,10 +317,8 @@ impl TextInsertion for SettledTextInsertion {
         }
         outcome
     }
-}
 
-impl SettledTextInsertion {
-    fn within_session(&self, work: &mut dyn FnMut()) -> bool {
+    fn act_while_session_live(&self, work: &mut dyn FnMut()) -> bool {
         match self.effects.as_ref() {
             None => {
                 work();
@@ -306,7 +336,7 @@ impl SettledTextInsertion {
         let mut work = Some(work);
         {
             let mut run = || verdict = work.take().expect("run once")();
-            if !self.within_session(&mut run) {
+            if !self.act_while_session_live(&mut run) {
                 return false;
             }
         }
@@ -931,6 +961,83 @@ mod tests {
         assert!(!prepared.insertion_was_refused());
         assert_eq!(typed.lock().unwrap().len(), 1, "the words reached the target");
         assert!(focus.activations().is_empty());
+    }
+
+    struct GuardHeld(Arc<std::sync::atomic::AtomicBool>);
+
+    impl SessionEffects for GuardHeld {
+        fn while_session_live(&self, _session: u64, effect: &mut dyn FnMut()) -> bool {
+            self.0.store(true, Ordering::SeqCst);
+            effect();
+            self.0.store(false, Ordering::SeqCst);
+            true
+        }
+    }
+
+    struct InsertionThatNotesTheGuard {
+        guard_held: Arc<std::sync::atomic::AtomicBool>,
+        held_while_typing: Arc<Mutex<Vec<bool>>>,
+    }
+
+    impl TextInsertion for InsertionThatNotesTheGuard {
+        fn insert(
+            &self,
+            _transcription: &crate::FinalTranscription,
+        ) -> Result<(), crate::TextInsertionError> {
+            self.held_while_typing
+                .lock()
+                .unwrap()
+                .push(self.guard_held.load(Ordering::SeqCst));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn typing_runs_inside_the_session_guard_and_focus_restore_runs_outside_it() {
+        let guard_held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let held_while_typing = Arc::new(Mutex::new(Vec::new()));
+        let held_while_restoring = Arc::new(Mutex::new(Vec::new()));
+        let focus = Arc::new(GuardWatchingFocus {
+            guard_held: Arc::clone(&guard_held),
+            held_while_restoring: Arc::clone(&held_while_restoring),
+        });
+        let prepared = scoped(
+            Box::new(InsertionThatNotesTheGuard {
+                guard_held: Arc::clone(&guard_held),
+                held_while_typing: Arc::clone(&held_while_typing),
+            }),
+            Box::new(UnreachableRescue),
+            focus,
+            Some(7),
+            Arc::new(GuardHeld(Arc::clone(&guard_held))),
+        );
+
+        prepared
+            .insertion
+            .insert(&crate::FinalTranscription::plain("guarded words".to_string()))
+            .unwrap();
+
+        assert_eq!(*held_while_typing.lock().unwrap(), [true]);
+        assert_eq!(*held_while_restoring.lock().unwrap(), [false]);
+    }
+
+    struct GuardWatchingFocus {
+        guard_held: Arc<std::sync::atomic::AtomicBool>,
+        held_while_restoring: Arc<Mutex<Vec<bool>>>,
+    }
+
+    impl TextTargetFocus for GuardWatchingFocus {
+        fn frontmost_app(&self) -> Option<i32> {
+            self.held_while_restoring
+                .lock()
+                .unwrap()
+                .push(self.guard_held.load(Ordering::SeqCst));
+            Some(7)
+        }
+
+        fn activate(&self, _pid: i32) -> bool {
+            true
+        }
     }
 
     #[test]
