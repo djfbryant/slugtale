@@ -1,17 +1,7 @@
-//! The dictation lifecycle host: everything that happens between an activation
-//! input saying "start" and the Dictation Runtime receiving the captured audio.
-//! It owns the recording-feedback state machine, the focus target, the audio
-//! capture session, and the runtime handle, and it reaches the rest of the app
-//! only through two ports: [`DictationEffects`] for everything the user sees and
-//! hears because of a dictation, and [`DictationParts`] for the machinery a
-//! Dictation Segment runs on. Both are implemented once by the Tauri shell, and
-//! by a fake in tests.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-/// What the Dictation Bar is currently doing, sent to its frontend so it can show
-/// the matching state. The bar stays on screen through transcription (slugtale-0t4).
 #[derive(Clone, Copy)]
 pub enum DictationPhase {
     Recording,
@@ -27,15 +17,6 @@ impl DictationPhase {
     }
 }
 
-/// Everything one dictation pinned when it began: the session number its
-/// Dictation Segments carry, the Settings they use, and the app their words
-/// belong to.
-///
-/// A job carries only the session number, so pinning the other two here is what
-/// stops a later Start — or a Settings change the user made while the model was
-/// working — from reaching into a job that is already running. Before this, each
-/// segment re-read both, so a slow decode could land its words in whichever app
-/// the user had since switched to (slugtale-cbxb, slugtale-7lq0).
 #[derive(Clone)]
 struct DictationSession {
     session: u64,
@@ -43,12 +24,6 @@ struct DictationSession {
     target_pid: Option<i32>,
 }
 
-/// Everything the dictation lifecycle needs the rest of the app to do on the
-/// user's behalf: Settings reads, diagnostics, the Dictation Bar surface, the
-/// audio level, failure notifications, and the audible cues. Every method is
-/// named for a dictation effect, not for a transport detail, so the
-/// implementation stays replaceable and the tests stay honest about what the
-/// lifecycle actually asked for.
 pub trait DictationEffects: Send + Sync {
     fn settings(&self) -> crate::Settings;
     fn record_diagnostic_event(&self, event: crate::DiagnosticEvent);
@@ -59,20 +34,7 @@ pub trait DictationEffects: Send + Sync {
     fn play_dictation_sound(&self, sound: crate::DictationSound);
 }
 
-/// The machinery one Dictation Segment runs on: the Local Diagnostic Log, the
-/// transcription engine stack, and the Text Insertion and Insertion Rescue it
-/// types through.
-///
-/// These are asked for rather than built, because all three reach live app
-/// state — the engines the catalogue resolved, the log file under the config
-/// directory, the app the user is typing into. Splitting them from
-/// [`DictationEffects`] is what lets a test supply machinery of its own, and
-/// what keeps the log and the engines a detail of the implementation that
-/// supplies them rather than something the lifecycle names.
 pub trait DictationParts: Send + Sync {
-    /// The Local Diagnostic Log, as [`crate::ErasedDiagnosticLog`]: the port
-    /// names a log, never the sink behind it, so an implementation that logs to
-    /// something other than the app's file can satisfy it.
     fn diagnostic_log(&self, settings: &crate::Settings) -> crate::ErasedDiagnosticLog;
 
     fn dictation_stack(
@@ -80,41 +42,18 @@ pub trait DictationParts: Send + Sync {
         settings: &crate::Settings,
     ) -> Result<crate::DictationStack<crate::BoxedDiagnosticSink>, String>;
 
-    /// The Text Insertion and Insertion Rescue for one Dictation Segment, aimed
-    /// at `target_pid`. Focus restoration repeats for every Segment Pause
-    /// (ADR-0015), so the pair is asked for per segment rather than once per
-    /// dictation.
     fn prepared_insertion(
         &self,
         target_pid: Option<i32>,
     ) -> Result<crate::PreparedInsertion, String>;
 }
-/// The dictation lifecycle's one owner of state: recording feedback, the focus
-/// target, the audio capture session, the pinned dictation session, and the
-/// runtime handle. The locks are private so the ordering rules stay inside this
-/// module. No method reaches a port while holding one.
-/// [`Self::prepare_capture`] is the one exception and it is deliberate: it calls
-/// the operating system to discover the input device, and doing that once while
-/// idle is cheaper than holding no lock and racing another caller onto the same
-/// device.
 pub struct DictationHost<R = crate::CpalAudioRecorder> {
     effects: Arc<dyn DictationEffects>,
     parts: Arc<dyn DictationParts>,
     feedback: Mutex<crate::RecordingFeedback>,
-    /// The operating-system call that names the app the user is typing into. A
-    /// field rather than a direct call so the target policy is decided by tests
-    /// with injected outcomes, and never by whatever happens to be in front on
-    /// the machine running them (slugtale-7lq0).
     focus_target_source: Arc<dyn Fn() -> Option<i32> + Send + Sync>,
     capture: Mutex<crate::AudioCaptureSession<R>>,
-    /// What the running dictation pinned at Start. Replaced by the next Start,
-    /// which is why a job must be checked against it rather than assumed current.
     session: Mutex<Option<DictationSession>>,
-    /// The capture ring's voiced-sample watermark, published by the recorder
-    /// into a cell it shares with this host. Reading it takes no lock, which is
-    /// what lets the level-emitter thread name a Pause Flush's cut while Stop or
-    /// Cancel holds the capture lock and is joining that very thread
-    /// (slugtale-xqzs).
     voice_watermark: Arc<std::sync::atomic::AtomicU64>,
     runtime_state: Mutex<Option<Arc<crate::DictationRuntime>>>,
     usage: Arc<crate::UsageQueue>,
@@ -150,7 +89,6 @@ where
         )
     }
 
-    /// [`Self::with_recorder`] with the frontmost-application lookup injected.
     pub fn with_recorder_and_focus_target_source(
         effects: Arc<dyn DictationEffects>,
         parts: Arc<dyn DictationParts>,
@@ -172,9 +110,6 @@ where
         }
     }
 
-    /// Install the runtime once setup has started it. Every lifecycle call
-    /// before this would find nothing able to record, so setup orders this
-    /// ahead of any activation input.
     pub fn set_runtime(&self, runtime: Arc<crate::DictationRuntime>) -> Result<(), String> {
         let mut guard = self
             .runtime_state
@@ -184,21 +119,10 @@ where
         Ok(())
     }
 
-    /// The capture ring's voiced-sample watermark, read when the Pause Flush is
-    /// due — the microphone half of the watermark cut (ADR-0026).
-    ///
-    /// Deliberately lock-free: the level-emitter thread asks this at the instant a
-    /// Segment Pause elapses, which can be while Stop or Cancel holds the capture
-    /// lock and is joining that thread. A locked read there leaves the two waiting
-    /// for each other and the app frozen (slugtale-xqzs).
     pub fn voice_watermark(&self) -> u64 {
         self.voice_watermark.load(Ordering::Acquire)
     }
 
-    /// Prepare audio capture while idle so the first Hotkey does not pay for
-    /// device discovery and ring allocation (slugtale-g1o.3). Preparation must
-    /// never prompt, so callers gate this on an already-granted microphone.
-    /// `settings` decides which microphone is prepared.
     pub fn prepare_capture(&self, settings: &crate::Settings) {
         if let Ok(mut guard) = self.capture.lock() {
             guard.set_prefer_built_in_microphone(settings.prefer_built_in_microphone);
@@ -206,8 +130,6 @@ where
         }
     }
 
-    /// The app's one Dictation Runtime.
-    ///
     /// # Panics
     /// Before setup has started the runtime; nothing reaches this module
     /// before that.
@@ -223,10 +145,6 @@ where
         self.handle_dictation_event_with(event, None)
     }
 
-    /// `activation` is the snapshot a Hotkey press built for its readiness gate;
-    /// Start consumes it so the rest of the activation reuses the same Settings
-    /// value instead of reloading (slugtale-g1o.6). Callers without one — Cancel
-    /// from the tray, tests — pass `None`.
     pub fn handle_dictation_event_with(
         &self,
         event: crate::DictationEvent,
@@ -237,26 +155,12 @@ where
 
         match event {
             crate::DictationEvent::Start => {
-                // Capture the app the user is dictating into before our own bar can
-                // take focus, so insertion can re-target it later (slugtale-squ).
                 let target_pid = self.frontmost_app();
-                // Resolved before capture: Settings choose the microphone as
-                // well as how the bar looks, and this snapshot is the one the
-                // dictation pins below.
                 let settings = match activation.take() {
                     Some(activation) => activation.settings,
                     None => self.effects.settings(),
                 };
-                // Open the dictation before capture starts: the level callback
-                // installed below stamps every Pause Flush with this session, and
-                // the detector is armed with this dictation's own Segment Pause,
-                // from the same Settings snapshot pinned just below — so the
-                // length it flushes at and the Settings its jobs read cannot
-                // come from different points in time (slugtale-cbxb).
                 let session = self.runtime().begin(crate::segment_pause_duration(&settings));
-                // Pin everything this dictation's jobs will need, so a segment
-                // decoding a second from now cannot pick up the next dictation's
-                // target or the user's latest Settings (slugtale-cbxb).
                 self.pin_session(DictationSession {
                     session,
                     settings: settings.clone(),
@@ -265,23 +169,14 @@ where
                 if let Ok(mut guard) = self.capture.lock() {
                     guard.set_prefer_built_in_microphone(settings.prefer_built_in_microphone);
                 }
-                // If the microphone cannot start, do not show a recording state.
                 self.handle_audio_capture_event(event)?;
                 self.apply_recording_feedback(event, Some(&settings))?;
             }
-            // Stop plays its cue but leaves the bar on screen: the audio-capture step
-            // switches it to a transcribing state and hides it once the workflow
-            // finishes, so the user sees the model working (slugtale-0t4). Its bar
-            // update is this Stop press's own activation, so read Settings once here.
             crate::DictationEvent::Stop => {
                 self.advance_recording_feedback(event)?;
                 let settings = self.effects.settings();
                 self.handle_audio_capture_event_with_settings(event, Some(&settings))?;
             }
-            // Cancel clears the bar immediately and discards the audio. It also
-            // drops any Dictation Segment still queued, so nothing further is typed
-            // after the user asks Slugtale to stop. Text inserted by an earlier
-            // Segment Pause is not undone (ADR-0014). It reads no Settings at all.
             crate::DictationEvent::Cancel => {
                 self.runtime().abandon();
                 self.apply_recording_feedback(event, None)?;
@@ -292,9 +187,6 @@ where
         Ok(())
     }
 
-    /// Advance the recording-feedback state machine and play its audible cue without
-    /// touching the Dictation Bar window. Callers that own the bar's visibility (Stop,
-    /// which keeps it up for transcription) use this directly.
     fn advance_recording_feedback(
         &self,
         event: crate::DictationEvent,
@@ -322,8 +214,6 @@ where
         let effect = self.advance_recording_feedback(event)?;
 
         if effect.bar_visible {
-            // Only the visible branch needs Settings; Cancel passes `None` and
-            // never pays for a read.
             let owned;
             let settings = match settings {
                 Some(settings) => settings,
@@ -341,23 +231,16 @@ where
         Ok(())
     }
 
-    /// The app that has focus right now, as the operating system reports it.
     fn frontmost_app(&self) -> Option<i32> {
         (self.focus_target_source)()
     }
 
-    /// Record what this dictation pinned, replacing whatever the previous one
-    /// pinned. A running job that still holds the older session's number is then
-    /// visibly out of date instead of quietly adopting the new dictation's
-    /// Settings and text target (slugtale-cbxb).
     fn pin_session(&self, pinned: DictationSession) {
         if let Ok(mut guard) = self.session.lock() {
             *guard = Some(pinned);
         }
     }
 
-    /// What `session` pinned when it began, or an error naming the session that
-    /// no longer owns it.
     fn pinned_session(&self, session: u64) -> Result<DictationSession, String> {
         self.session
             .lock()
@@ -373,17 +256,11 @@ where
         self.handle_audio_capture_event_with_settings(event, None)
     }
 
-    /// `bar_settings` is needed only when a Stop completes and the bar switches to
-    /// its transcribing state; passing it in spares that path a Settings reload
-    /// (slugtale-g1o.6).
     fn handle_audio_capture_event_with_settings(
         &self,
         event: crate::DictationEvent,
         bar_settings: Option<&crate::Settings>,
     ) -> Result<(), String> {
-        // Built before the capture lock is taken: the level callback closes over
-        // the runtime, and reading it under the capture lock would nest one
-        // host lock inside another on the Dictation Bar's hottest path.
         let level_callback = matches!(event, crate::DictationEvent::Start)
             .then(|| self.dictation_audio_level_callback());
         let outcome = {
@@ -417,14 +294,9 @@ where
                     audio.samples.len(),
                     audio.sample_rate_hz
                 );
-                // Keep the bar on screen in a transcribing state while the model runs,
-                // then hide it once insertion completes (slugtale-0t4). The worker
-                // hides it, so it stays up until every earlier Segment Pause has
-                // landed too, not just this last one.
                 let owned;
                 let bar_settings = match bar_settings {
                     Some(settings) => settings,
-                    // Only this path pays for a Settings reload (slugtale-g1o.6).
                     None => {
                         owned = self.effects.settings();
                         &owned
@@ -443,8 +315,6 @@ where
                 eprintln!("discarded dictation audio");
                 self.effects.hide_dictation_bar();
             }
-            // No active session to drain. A terminal event still clears any bar left
-            // on screen (e.g. Stop with nothing captured); Start has none to hide.
             None => {
                 if matches!(event, crate::DictationEvent::Stop) {
                     self.effects.hide_dictation_bar();
@@ -455,8 +325,6 @@ where
         Ok(())
     }
 
-    /// The Segment Pause detector lives inside the Dictation Runtime, which
-    /// re-arms it on every begin(), so each dictation starts unable to flush.
     fn dictation_audio_level_callback(&self) -> crate::AudioLevelCallback {
         let effects = self.effects.clone();
         let runtime = self.runtime();
@@ -473,16 +341,6 @@ where
         self.effects.emit_dictation_audio_level(0.0);
     }
 
-    /// Transcribe and insert one Dictation Segment, start to finish.
-    ///
-    /// Runs synchronously on the Dictation Segment worker thread, as part of
-    /// `session`. The Settings and the text target come from what that session
-    /// pinned at Start, never from a re-read: a decode long enough for the user
-    /// to change either must not land its words somewhere else (slugtale-cbxb).
-    ///
-    /// The session is asked about once more at the insertion boundary itself,
-    /// through the prepared pair's gate. Checking only before the decode started
-    /// is what let a cancelled dictation still type (slugtale-cbxb).
     pub fn run_dictation_segment(
         &self,
         session: u64,
@@ -495,11 +353,6 @@ where
 
         let runtime = self.runtime();
         let mut prepared = self.parts.prepared_insertion(pinned.target_pid)?;
-        // Scope every effect this segment would have on the user — the keystrokes,
-        // the focus work before them, and the clipboard rescue if insertion fails
-        // — to the session that owns them. The runtime decides each one at the
-        // moment it happens rather than once here, because the decode that has
-        // just finished can have been overtaken (slugtale-cbxb).
         prepared.guard_with_session(session, runtime.session_effects());
 
         let completed = crate::DictationWorkflow::new(
@@ -510,11 +363,6 @@ where
         )
         .complete(audio, position);
 
-        // A refused insertion reaches the Dictation Workflow as an adapter that
-        // declined to type, which it reports as a plain success. Only this module
-        // knows the refusal meant "the user cancelled", so the segment is put
-        // back to what actually happened: nothing was typed, nothing was
-        // rescued, and it must not count or take the dictation's first position.
         let completed = match completed {
             Ok(outcome) if prepared.insertion_was_refused() => {
                 Ok(crate::DictationSegmentOutcome {
@@ -547,10 +395,6 @@ where
         }
     }
 
-    /// Take the speech captured so far as a Dictation Segment, leaving the
-    /// microphone running. Called only from the worker thread. `cut` is the sample
-    /// watermark the Pause Flush was queued with: the segment ends there (plus a
-    /// small acoustic guard), whatever else has arrived since.
     pub fn take_dictation_segment(
         &self,
         session: u64,
@@ -561,9 +405,6 @@ where
             .lock()
             .map_err(|_| "audio capture mutex poisoned".to_string())
             .and_then(|mut guard| {
-                // The capture lock is held, so this is the last moment a newer
-                // Start can be beginning a capture: if the ring is no longer this
-                // session's, nothing may be drained from it (slugtale-cbxb).
                 if !self.owns_capture(session) {
                     return Ok(None);
                 }
@@ -579,12 +420,6 @@ where
         }
     }
 
-    /// Whether `session` is the dictation the capture ring currently belongs to.
-    ///
-    /// The session pinned at Start is the capture's identity, which is what makes
-    /// "is this audio still ours" answerable at all: audio alone carries no
-    /// session, so a job that drained late would otherwise take the next
-    /// recording's speech (slugtale-cbxb).
     fn owns_capture(&self, session: u64) -> bool {
         self.session
             .lock()
@@ -594,11 +429,6 @@ where
     }
 }
 
-/// Report how one segment's Text Insertion went. A rescued segment is the case
-/// where insertion failed and the transcription was preserved anyway, so it is
-/// the one that produces both lines. The Dictation Workflow has no Local
-/// Diagnostic Log of its own, which is why this is asked of the effects role
-/// here rather than from inside it.
 fn record_insertion_diagnostics(
     effects: &dyn DictationEffects,
     insertion_failure: Option<&crate::TextInsertionError>,
@@ -612,12 +442,6 @@ fn record_insertion_diagnostics(
     }
 }
 
-/// The Dictation Host is the Dictation Runtime's host, so the Tauri shell needs
-/// no adapter of its own: the microphone cut, the Dictation Workflow, the
-/// Usage handoff, and the Dictation Bar hide that follows the final job are all
-/// answers this module already had. The recorder is `Send` because the worker
-/// thread reaches this host while the level-emitter thread and the app handle
-/// still hold it.
 impl<R> crate::DictationRuntimeHost for DictationHost<R>
 where
     R: crate::DictationRecorder + Send,
@@ -639,14 +463,6 @@ where
         self.usage.record(segment);
     }
 
-    /// `session`'s final job has settled, whatever way it settled. Only that
-    /// dictation's own bar may be hidden: Cancel cleared its bar at the moment the
-    /// user pressed Escape, and a dictation a newer Start replaced must leave the
-    /// new bar alone (slugtale-cbxb).
-    ///
-    /// The runtime has already decided this, under the same lock that a newer
-    /// Start takes, so this method only reaches the effects role — the decision
-    /// and the hide cannot come apart.
     fn last_job_settled(&self, _session: u64) {
         self.effects.hide_dictation_bar();
     }
@@ -666,7 +482,6 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    /// Every effect the lifecycle asked of its surface, in the order it asked.
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Call {
         Diagnostic(&'static str),
@@ -676,35 +491,18 @@ mod tests {
         ClearAudioLevel,
         ReadSettings,
         NotifyCaptureFailure,
-        /// The text target the Dictation Workflow aimed at for a segment, so a
-        /// test can see which app a segment was pinned to.
         PreparedInsertion(Option<i32>),
     }
 
     #[derive(Clone)]
     struct FakeSurface {
         calls: Arc<std::sync::Mutex<Vec<Call>>>,
-        /// What the fake Transcription Engine answers with, one entry per
-        /// segment and the last one repeating, so a test names only the
-        /// segments it reads.
         transcriptions: Arc<std::sync::Mutex<Vec<String>>>,
         inserted: Arc<std::sync::Mutex<Vec<String>>>,
         rescued: Arc<std::sync::Mutex<Vec<String>>>,
-        /// Set by a test that needs Text Insertion to fail, so the Insertion
-        /// Rescue is the path the segment takes.
         insertion_fails: Arc<std::sync::atomic::AtomicBool>,
-        /// Held while a segment's Transcription runs, so a test can keep a decode
-        /// in flight across a Cancel and a new Start.
         decoding: Option<Arc<DecodeGate>>,
-        /// The Settings this surface answers with. Defaults to
-        /// [`TEST_SEGMENT_PAUSE_SECS`], the shortest Segment Pause the Settings
-        /// File accepts, so a Pause Flush test waits two real seconds rather
-        /// than the product default's five; a test can change it mid-dictation
-        /// to stand in for a save.
         settings: Arc<std::sync::Mutex<crate::Settings>>,
-        /// Every Local Diagnostic Log line the segment path logged. The fake's
-        /// sink is a buffer rather than the app's file, which is the whole point
-        /// of the port naming no sink: a test can read what was logged.
         log_lines: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
@@ -726,8 +524,6 @@ mod tests {
         }
     }
 
-    /// The gate a blocking Transcription waits on: `entered` is closed when the
-    /// decode starts, `release` is opened when the test lets it finish.
     #[derive(Default)]
     struct DecodeGate {
         entered: Arc<(Mutex<bool>, std::sync::Condvar)>,
@@ -735,7 +531,6 @@ mod tests {
     }
 
     impl DecodeGate {
-        /// Wait until some segment's Transcription has actually started.
         fn wait_until_decoding(&self) {
             let (lock, condvar) = &*self.entered;
             let mut decoding = lock.lock().unwrap();
@@ -751,7 +546,6 @@ mod tests {
             }
         }
 
-        /// Let the blocked decode finish.
         fn release(&self) {
             let (lock, condvar) = &*self.release;
             *lock.lock().unwrap() = true;
@@ -801,15 +595,10 @@ mod tests {
             self.clone()
         }
 
-        /// Change what this surface's Settings answer with, the way a save
-        /// does: the next dictation pins the new value and the one in progress
-        /// keeps what it pinned at Start.
         fn set_segment_pause_secs(&self, secs: i64) {
             self.settings.lock().unwrap().segment_pause_secs = secs;
         }
 
-        /// Hold every Transcription until [`DecodeGate::release`], so a test can
-        /// cancel and restart while a decode is genuinely in flight.
         fn blocking_transcription(self: &Arc<Self>) -> (Arc<Self>, Arc<DecodeGate>) {
             let gate = Arc::new(DecodeGate::default());
             let mut surface = (**self).clone();
@@ -817,13 +606,10 @@ mod tests {
             (Arc::new(surface), gate)
         }
 
-        /// Every Local Diagnostic Log line the segment path logged.
         fn log_lines(&self) -> Vec<String> {
             self.log_lines.lock().unwrap().clone()
         }
 
-        /// Turn the user's `diagnostic_logging` preference on, the way a save
-        /// does, so the next dictation pins a log that records.
         fn with_diagnostic_logging(self: &Arc<Self>) -> Arc<Self> {
             self.settings.lock().unwrap().diagnostic_logging = true;
             self.clone()
@@ -875,8 +661,6 @@ mod tests {
     }
 
     impl DictationParts for FakeSurface {
-        /// The port names a log, not a sink, so the fake supplies one of its
-        /// own: a buffer a test can read back.
         fn diagnostic_log(&self, settings: &crate::Settings) -> crate::ErasedDiagnosticLog {
             let lines = Arc::clone(&self.log_lines);
             crate::ErasedDiagnosticLog::new(
@@ -925,10 +709,6 @@ mod tests {
         }
     }
 
-    /// A Transcription Engine that answers with the text it was handed, so the
-    /// Dictation Workflow downstream of it is the real one. With a gate, the
-    /// decode blocks inside `transcribe`, which is the window a Cancel and a new
-    /// Start used to slip through.
     struct FakeEngine {
         text: String,
         gate: Option<Arc<DecodeGate>>,
@@ -1027,35 +807,19 @@ mod tests {
         }
     }
 
-    /// The microphone a test speaks into. `level` hands back the level publisher
-    /// the host installed, so a test reaches the Segment Pause detector through
-    /// the same callback the audio emitter thread calls.
     #[derive(Clone, Default)]
     struct FakeMicrophone {
-        /// Every cut the recorder was asked for, so a test can prove the
-        /// microphone was never touched rather than inferring it from what came
-        /// back.
         cuts: Arc<std::sync::Mutex<Vec<u64>>>,
         level: Arc<std::sync::Mutex<Option<crate::AudioLevelCallback>>>,
-        /// The ring position of the last voiced sample, moved forward whenever
-        /// speech is heard so a Pause Flush has a cut worth queueing.
         watermark: Arc<std::sync::atomic::AtomicU64>,
-        /// Set once a recorder has joined the level thread it drove, so a test can
-        /// say the pairing completed rather than infer it from a Stop returning.
         joined_the_level_thread: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeMicrophone {
-        /// A level the Dictation Bar treats as speech, which both flexes the
-        /// waveform and holds a Segment Pause open.
         fn speaking() -> f32 {
             VOICE_LEVEL + 0.2
         }
 
-        /// Speak, then stay quiet long enough for the Segment Pause to elapse.
-        /// The pause is a real clock, so the fixture's Settings ask for the
-        /// shortest length the Settings File accepts and the test waits that
-        /// plus scheduler slop.
         fn speak_then_pause(&self) {
             self.voice(Self::speaking());
             std::thread::sleep(TEST_PAUSE + PAUSE_SLOP);
@@ -1074,27 +838,14 @@ mod tests {
         }
     }
 
-    /// A recorder that never touches a device. `fail_start` simulates a
-    /// microphone that cannot open, `silent_stop` the digital silence of a
-    /// denied macOS microphone, and `fail_cut` a capture that breaks exactly
-    /// when a Pause Flush asks it for a segment. `join_the_level_thread_on_stop`
-    /// reproduces the production order that used to freeze the app: the level
-    /// thread is joined while the Dictation Host still holds the capture lock.
     struct FakeRecorder {
         fail_start: bool,
         silent_stop: bool,
         fail_cut: bool,
         microphone: FakeMicrophone,
-        /// Every cut a Pause Flush asked the microphone for. A channel rather
-        /// than a shared log so a test can wait for the cut instead of racing
-        /// the Stop that would end the dictation first.
         cuts: mpsc::Sender<u64>,
-        /// The microphone preference in force when `start` last ran.
         started_preferring_built_in: Arc<Mutex<Option<bool>>>,
         prefer_built_in: bool,
-        /// Whether `stop` drives a level callback to completion itself, the way a
-        /// real recorder joins its level emitter while the caller holds the
-        /// capture lock.
         join_the_level_thread_on_stop: bool,
     }
 
@@ -1117,9 +868,6 @@ mod tests {
             self
         }
 
-        /// Stand in for the level emitter's own thread while `stop` runs: the
-        /// callback is driven on another thread and waited for here, which is
-        /// exactly the pairing that froze the app (slugtale-xqzs).
         fn join_the_level_thread(&self) {
             if !self.join_the_level_thread_on_stop {
                 return;
@@ -1129,9 +877,6 @@ mod tests {
             };
             std::thread::spawn(move || {
                 callback(FakeMicrophone::speaking());
-                // Long enough for the armed Segment Pause to elapse while Stop
-                // waits: the watermark probe at that moment is the path that
-                // used to want the same capture lock Stop held.
                 std::thread::sleep(TEST_PAUSE + PAUSE_SLOP);
                 callback(0.0);
             })
@@ -1207,27 +952,16 @@ mod tests {
         }
     }
 
-    /// A Segment Pause short enough for a test to sit through. The rule under it
-    /// is the one the five-second default drives.
-    /// The shortest Segment Pause the Settings File accepts. The fixture's
-    /// Settings ask for it, so a Pause Flush test waits two real seconds rather
-    /// than the product default's five.
     const TEST_SEGMENT_PAUSE_SECS: i64 = 2;
     const TEST_PAUSE: Duration = Duration::from_secs(TEST_SEGMENT_PAUSE_SECS as u64);
-    /// Scheduler slop past the armed pause before the quiet level that ends a
-    /// segment, so a loaded machine cannot race the flush.
     const PAUSE_SLOP: Duration = Duration::from_millis(300);
 
-    /// The app a test dictates into, reported by the injected focus lookup
-    /// rather than by whatever is in front on the machine running the tests.
     fn focus_target_source() -> Arc<dyn Fn() -> Option<i32> + Send + Sync> {
         Arc::new(|| Some(TEST_TARGET_PID))
     }
 
     const TEST_TARGET_PID: i32 = 4_242;
 
-    /// A runtime host that reaches nothing, for the tests that only exercise the
-    /// lifecycle events and never reach a Dictation Segment.
     struct UnreachableRuntimeHost;
 
     impl DictationRuntimeHost for UnreachableRuntimeHost {
@@ -1249,8 +983,6 @@ mod tests {
         fn last_job_settled(&self, _session: u64) {}
     }
 
-    /// The Usage handoff these tests never read: a writer thread that discards
-    /// every Counted Segment.
     fn discarding_usage_queue() -> Arc<crate::UsageQueue> {
         crate::UsageQueue::start(Arc::new(|_: crate::LocalDate, _: CountedSegment| {}))
             .expect("the usage writer starts")
@@ -1263,9 +995,6 @@ mod tests {
         )
     }
 
-    /// A dictation whose Dictation Segments are real: the worker runs, the
-    /// segment path reaches the host, and Counted Segments come back to
-    /// `counted` so a test can wait for one.
     struct Dictating {
         host: Arc<DictationHost<FakeRecorder>>,
         surface: Arc<FakeSurface>,
@@ -1294,9 +1023,6 @@ mod tests {
                 .expect("the usage writer starts"),
                 focus_target_source(),
             ));
-            // The watermark the runtime probes is the host's own read of the
-            // microphone, so a queued flush carries the position the capture
-            // session reported rather than a number the test made up.
             let runtime_host: Arc<dyn DictationRuntimeHost> = host.clone();
             let watermark_host = Arc::clone(&host);
             let runtime = DictationRuntime::start(runtime_host, move || {
@@ -1315,8 +1041,6 @@ mod tests {
             }
         }
 
-        /// Speak, pause, and wait until that Dictation Segment has been inserted
-        /// or rescued.
         fn pause_flush(&self) -> CountedSegment {
             self.microphone.speak_then_pause();
             self.counted
@@ -1343,23 +1067,16 @@ mod tests {
                 .expect("start succeeds");
         }
 
-        /// Every cut the microphone was asked for, whether or not a test read it off
-        /// the channel.
         fn drain_cuts(&self) -> Vec<u64> {
             self.microphone.cuts.lock().unwrap().clone()
         }
 
-        /// Whether Stop's own join of the level thread ran to the end. Stop
-        /// returning at all proves it, so this says the same thing more plainly.
         fn joined_the_level_thread(&self) -> bool {
             self.microphone
                 .joined_the_level_thread
                 .load(std::sync::atomic::Ordering::SeqCst)
         }
 
-        /// Wait for the worker to reach the end of the queue. Every job is
-        /// ordered, so once the Dictation Bar has been hidden the earlier
-        /// segments have been dealt with, whichever way they turned out.
         fn settle(&self) -> Vec<Call> {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
@@ -1375,14 +1092,10 @@ mod tests {
             }
         }
 
-        /// Every cut not yet read back by `cut_reached_the_microphone`, in order.
         fn cuts(&self) -> Vec<u64> {
             self.cuts.try_iter().collect()
         }
 
-        /// Wait until the worker has asked the microphone for its segment. Stop
-        /// ends the dictation, so a test that has to see a cut happen first
-        /// cannot afford to guess whether the worker got there in time.
         fn cut_reached_the_microphone(&self) -> u64 {
             self.cuts
                 .recv_timeout(Duration::from_secs(5))
@@ -1407,8 +1120,6 @@ mod tests {
         host
     }
 
-    /// The session the host has pinned, which is what a Dictation Segment job for
-    /// the running dictation would carry.
     fn running_session(host: &DictationHost<FakeRecorder>) -> u64 {
         host.session
             .lock()
@@ -1420,11 +1131,6 @@ mod tests {
 
     #[test]
     fn a_segment_logs_through_whatever_sink_the_parts_role_supplies() {
-        // The construction port names a Local Diagnostic Log and never the sink
-        // behind it, so the implementation is free to supply one of its own. The
-        // fake's is a buffer, and the segment's diagnostics have to land in it —
-        // which is how a port that named the app's file sink would make this
-        // test impossible to write.
         let secret = "do not log these dictated words";
         let surface = Arc::new(FakeSurface::default())
             .transcribing_as(&[secret])
@@ -1452,10 +1158,6 @@ mod tests {
 
     #[test]
     fn a_rescued_segment_records_both_the_failure_and_the_rescue() {
-        // Text Insertion failed and the Insertion Rescue preserved the
-        // transcription anyway. Both facts belong in the Local Diagnostic Log,
-        // because "insertion failed" alone reads as lost text and "rescued"
-        // alone hides why the path was taken at all (ADR-0019).
         let secret = "do not log these dictated words";
         let surface = Arc::new(FakeSurface::default()).transcribing_as(&[secret]);
         let surface = surface.with_failing_insertion();
@@ -1482,7 +1184,6 @@ mod tests {
                 Call::Diagnostic("insertion_rescued"),
             ]
         );
-        // The recorded events are reasons, never the text they were about.
         for event in [
             crate::DiagnosticEvent::InsertionFailed {
                 reason: "text insertion failed: fake insertion failure".to_string(),
@@ -1511,8 +1212,6 @@ mod tests {
         )
         .expect("insertion succeeded");
 
-        // No Settings read and no diagnostic: the segment used what the dictation
-        // pinned, and insertion worked.
         assert_eq!(
             surface.calls(),
             vec![Call::PreparedInsertion(Some(TEST_TARGET_PID))]
@@ -1527,8 +1226,6 @@ mod tests {
 
         host.handle_dictation_event(DictationEvent::Cancel).unwrap();
 
-        // Cancel reads no Settings at all (CONTEXT.md: Cancel discards), and a
-        // hidden bar means no sound and exactly one hide.
         assert_eq!(
             surface.calls(),
             vec![Call::Diagnostic("hotkey_transition"), Call::HideBar,]
@@ -1542,10 +1239,6 @@ mod tests {
 
         host.handle_dictation_event(DictationEvent::Stop).unwrap();
 
-        // A hold-mode key release arriving after the bar went down must not
-        // replay the stop sound or re-end the session (ADR-0014). The Stop
-        // path still reads Settings before discovering nothing was active —
-        // pinned here as the price of the shared event handler.
         assert_eq!(
             surface.calls(),
             vec![
@@ -1565,8 +1258,6 @@ mod tests {
 
         let calls = surface.calls();
         assert_eq!(calls[0], Call::Diagnostic("hotkey_transition"));
-        // If the microphone cannot start, no recording state is shown — so the
-        // cue must come after capture opened, immediately before the bar.
         let sound = calls
             .iter()
             .position(|call| *call == Call::PlaySound("start"))
@@ -1581,7 +1272,6 @@ mod tests {
 
     #[test]
     fn start_opens_the_microphone_the_settings_prefer() {
-        // The press's own Settings decide the microphone, before it opens.
         let surface = Arc::new(FakeSurface::default());
         let recorder = FakeRecorder::healthy();
         let started = recorder.started_preferring_built_in.clone();
@@ -1609,16 +1299,12 @@ mod tests {
         host.handle_dictation_event(DictationEvent::Stop).unwrap();
 
         let calls = surface.calls();
-        // The bar stays on screen for transcription (slugtale-0t4): shown again
-        // as transcribing, never hidden between the two shows.
         let transcribing = calls
             .iter()
             .position(|call| *call == Call::ShowBar("transcribing"))
             .expect("stop shows the transcribing state");
         assert!(!calls[recording..transcribing].contains(&Call::HideBar));
         assert!(calls.contains(&Call::PlaySound("stop")));
-        // Start reads Settings once (no activation snapshot) and Stop reads it
-        // once more; nothing else pays for a read.
         assert_eq!(
             calls.iter().filter(|c| **c == Call::ReadSettings).count(),
             2
@@ -1667,8 +1353,6 @@ mod tests {
 
         let result = host.handle_dictation_event(DictationEvent::Stop);
 
-        // Digital silence is how a denied macOS microphone fails (slugtale-d3k):
-        // the bar hides and the user is told, rather than a "You" transcription.
         assert!(result.is_err());
         let calls = surface.calls();
         assert!(calls.contains(&Call::ShowBar("recording")));
@@ -1684,10 +1368,6 @@ mod tests {
 
         host.handle_dictation_event(DictationEvent::Cancel).unwrap();
 
-        // Cancel clears the bar immediately and discards the audio (CONTEXT.md:
-        // Cancel discards): no stop cue, no transcribing state, and the capture
-        // session's Discarded outcome hides the bar a second time after the
-        // feedback state machine already dropped it.
         assert_eq!(
             surface.calls(),
             vec![
@@ -1703,13 +1383,9 @@ mod tests {
         );
     }
 
-    // ---- Pause Flush, from a voice level to inserted text (ADR-0026) ----
 
     #[test]
     fn a_segment_pause_reaches_the_text_target_while_the_dictation_runs_on() {
-        // The whole middle of the chain, over the real interfaces: a level from
-        // the microphone, the Segment Pause, the worker, the capture session cut,
-        // and the Dictation Workflow's Immediate Insertion.
         let surface = Arc::new(FakeSurface::default());
         let surface = surface.transcribing_as(&["first words", "last words"]);
         let dictation = Dictating::recording(
@@ -1723,27 +1399,16 @@ mod tests {
         let segment = dictation.pause_flush();
         assert!(segment.starts_dictation, "the first words of the dictation");
 
-        // The segment ends at the watermark the flush was queued with, read off
-        // the microphone through the capture session.
         assert_eq!(dictation.cuts(), [8_000]);
 
-        // The dictation carried on and ended on digital silence, which the
-        // flushed segment is what allows: a user who pauses and then presses
-        // Stop says nothing in between.
         let calls = dictation.stop();
 
-        // Both segments were inserted, in the order they were spoken: the
-        // paused one first, and the one the user stopped with appended after it,
-        // which is what a continuation carries.
         assert_eq!(surface.inserted(), ["First words", " last words"]);
         assert!(calls.contains(&Call::ShowBar("transcribing")));
     }
 
     #[test]
     fn a_capture_failure_while_cutting_a_segment_takes_no_segment() {
-        // Capture can break at the cut rather than at Start. The dictation must
-        // carry on to its Stop instead of losing the user's speech to a panic or
-        // to a segment that silently never arrives.
         let surface = Arc::new(FakeSurface::default());
         let surface = surface.transcribing_as(&["last words"]);
         let dictation = Dictating::recording(
@@ -1758,28 +1423,14 @@ mod tests {
         assert_eq!(dictation.cut_reached_the_microphone(), 8_000);
         let calls = dictation.stop();
 
-        // The cut failed at the queued watermark, so the segment it would have
-        // carried was never inserted, and nothing else was asked for one. The
-        // failed capture is not reported as a microphone the user has to fix.
         assert!(dictation.cuts().is_empty());
         assert_eq!(surface.inserted(), ["Last words"]);
         assert!(!calls.contains(&Call::NotifyCaptureFailure));
     }
 
-    // ---- one dictation, one session, checked at the boundaries ----
 
     #[test]
     fn stop_joins_the_level_thread_without_freezing_on_its_watermark_probe() {
-        // The lock order that froze the app (slugtale-xqzs): Stop holds the
-        // capture lock and joins the voice-level thread, while that thread asks
-        // for the capture ring's watermark the moment a Segment Pause elapses.
-        // Both used to want the same lock, so each waited for the other and Stop
-        // never returned.
-        //
-        // The recorder here joins the level thread inside `stop`, exactly where a
-        // real recorder joins its level emitter, so the old order is forced
-        // rather than raced for. Stop runs on its own thread and the test bounds
-        // it, so a regression fails as a timeout rather than as a hung suite.
         let surface = Arc::new(FakeSurface::default()).transcribing_as(&["words"]);
         let recorder = FakeRecorder::healthy().joining_the_level_thread_on_stop();
         let dictating = Dictating::recording(&surface, recorder);
@@ -1805,9 +1456,6 @@ mod tests {
 
     #[test]
     fn a_segment_keeps_the_target_and_settings_its_dictation_pinned() {
-        // A job reads the Settings and the text target its own dictation pinned.
-        // Re-reading them per segment is what let a decode that outlived the user's
-        // switch land in a different app (slugtale-cbxb, slugtale-7lq0).
         let surface = Arc::new(FakeSurface::default()).transcribing_as(&["first dictation"]);
         let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
         surface.clear_calls();
@@ -1844,24 +1492,14 @@ mod tests {
 
     #[test]
     fn each_dictation_arms_the_pause_its_own_settings_snapshot_holds() {
-        // The Segment Pause is part of what a dictation pins at Start: the
-        // length is derived from the same Settings snapshot its jobs read, so a
-        // save landing while it runs cannot retarget it, and the next dictation
-        // arms from the newest saved length. A save used to publish
-        // asynchronously to the runtime after persisting, where a delayed older
-        // save could overwrite a newer one and the next dictation would flush
-        // at a length the Settings File no longer held (slugtale-cbxb).
         let surface = Arc::new(FakeSurface::default());
         let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
 
-        // The fixture's Settings ask for the shortest accepted pause.
         assert_eq!(
             dictating.host.runtime().armed_pause(),
             Duration::from_secs(TEST_SEGMENT_PAUSE_SECS as u64)
         );
 
-        // Two overlapping saves land while this dictation runs; the newest is
-        // the one the Settings store serialised last.
         surface.set_segment_pause_secs(5);
         surface.set_segment_pause_secs(8);
         assert_eq!(
@@ -1870,7 +1508,6 @@ mod tests {
             "the dictation in progress keeps the pause it armed with at Start"
         );
 
-        // The next dictation pins the length the Settings File now holds.
         dictating.start_another_dictation();
         assert_eq!(
             dictating.host.runtime().armed_pause(),
@@ -1881,11 +1518,6 @@ mod tests {
 
     #[test]
     fn an_old_pause_flush_drains_no_audio_from_a_newer_dictations_capture() {
-        // The interleaving that used to take the new recording's speech: the
-        // worker's liveness check passed, and Cancel plus a newer Start landed
-        // before the drain. The session travels to the capture lock, which is the
-        // lock a concurrent Start holds while it begins capturing, so the ring is
-        // asked whether it is still this job's before anything is taken from it.
         let surface = Arc::new(FakeSurface::default()).transcribing_as(&["words"]);
         let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
         let stale = running_session(&dictating.host);
@@ -1902,7 +1534,6 @@ mod tests {
             "nothing has been cut yet"
         );
 
-        // The old job reaching the drain boundary now.
         let taken = dictating.host.take_dictation_segment(stale, 8_000);
 
         assert!(
@@ -1914,8 +1545,6 @@ mod tests {
             "the microphone was never asked to cut anything"
         );
 
-        // And the live session can still drain its own audio, so the guard refuses
-        // by session rather than refusing everything.
         assert!(
             dictating
                 .host
@@ -1927,30 +1556,21 @@ mod tests {
 
     #[test]
     fn an_old_dictations_completion_never_hides_the_bar_a_new_dictation_showed() {
-        // Forced interleaving, the one the review names: the old dictation's final
-        // job settles exactly while the replacement dictation is showing its own
-        // bar. Deciding to hide and hiding are one operation under the runtime's
-        // effects lock, which every lifecycle event also takes, so the hide cannot
-        // slip into the gap between the check and the mutation (slugtale-cbxb).
         let (surface, gate) = Arc::new(FakeSurface::default())
             .transcribing_as(&["words from the replaced dictation"])
             .blocking_transcription();
         let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
 
-        // Stop queues the final segment and its decode blocks in the model.
         dictating
             .host
             .handle_dictation_event(DictationEvent::Stop)
             .expect("stop succeeds");
         gate.wait_until_decoding();
 
-        // The user starts dictating again before that decode returns.
         dictating.start_another_dictation();
         surface.clear_calls();
         gate.release();
 
-        // The replacement dictation's own segment settles after the old one,
-        // because the worker is single and ordered.
         dictating.microphone.speak_then_pause();
         dictating
             .counted
@@ -1966,11 +1586,6 @@ mod tests {
 
     #[test]
     fn a_cancelled_dictation_that_a_new_one_replaced_inserts_nothing_at_all() {
-        // The whole of slugtale-cbxb in one run: the dictation's final segment is
-        // decoding when the user presses Escape and starts dictating again, the
-        // decode finishes afterwards, and nothing it would have done may happen —
-        // no words, no clipboard rescue, no Usage count, and no bar hide that
-        // would take the new dictation's bar down with it.
         let (surface, gate) = Arc::new(FakeSurface::default())
             .transcribing_as(&[
                 "words from the cancelled dictation",
@@ -1979,7 +1594,6 @@ mod tests {
             .blocking_transcription();
         let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
 
-        // Stop queues the final segment and the decode goes into the model.
         dictating
             .host
             .handle_dictation_event(DictationEvent::Stop)
@@ -1990,9 +1604,6 @@ mod tests {
         dictating.start_another_dictation();
         gate.release();
 
-        // The replacement dictation's own segment settles after the old one,
-        // because the worker is single and ordered — so by the time it arrives the
-        // cancelled dictation's job has run to its end.
         dictating.microphone.speak_then_pause();
         let counted = dictating
             .counted

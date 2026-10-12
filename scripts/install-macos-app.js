@@ -97,8 +97,6 @@ function requireMacosCodeSigningIdentity(identity) {
   process.exit(1);
 }
 
-// The bundle is Slugtale.app but the executable inside it is `slugtale`, so
-// process-name matching has to use the lowercase name.
 const macosExecutableName = "slugtale";
 
 function quitRunningSlugtale() {
@@ -116,13 +114,8 @@ if (process.platform !== "darwin") {
 
 requireMacosCodeSigningIdentity(macosSignIdentity);
 
-// Printed because a Transcription Engine that was not compiled in shows up in
-// Settings as an unexplained "Unavailable" row, and this line is the only place
-// the answer is visible before the build starts.
 console.log(`Building with Cargo features: ${runtimeFeatures}`);
 
-// This command installs one local .app. It never publishes an updater archive,
-// so a release key inherited from the shell must not open a password prompt.
 const buildArgs = withoutUnsignedUpdaterArtifacts(
   ["build", "--features", runtimeFeatures, "--bundles", "app"],
   { environment: {} },

@@ -1,6 +1,3 @@
-//! App update commands: the manual check against the fixed GitHub Release
-//! endpoint, and opening the compiled-in release page. There is deliberately no
-//! install command — the app never replaces itself.
 
 #[tauri::command]
 pub(crate) async fn check_for_app_update(

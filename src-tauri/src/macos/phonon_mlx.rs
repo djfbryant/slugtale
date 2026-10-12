@@ -59,17 +59,10 @@ fn install_stamp() -> String {
 
 pub(crate) struct MlxProvider {
     root: PathBuf,
-    /// Serialises install and removal. It is held across downloads and setup,
-    /// so `shutdown` and `unload` never take it.
     install_gate: Mutex<()>,
-    /// Held only to swap, take, or check the worker, never across a download
-    /// or setup step. `changing` is written under this lock as well.
     worker: Mutex<Option<Worker>>,
-    /// Set while assets are being installed or removed, so a decode cannot
-    /// start a worker from partial files.
     changing: AtomicBool,
     availability: Mutex<EngineAvailability>,
-    /// Owns the running install step. Shutdown closes it under its own lock.
     stop: Stop,
 }
 
@@ -138,7 +131,7 @@ impl MlxProvider {
         let result = operation(slot.as_mut().expect("worker was loaded"));
         if result.is_err() {
             slot.take();
-        } // Kill/reap; next request can restart cleanly.
+        }
         result
     }
 
@@ -185,7 +178,6 @@ fn directory_bytes(root: &Path) -> u64 {
     entries
         .filter_map(Result::ok)
         .map(|entry| {
-            // Do not follow Python's symlinks or count the interpreter twice.
             let Ok(kind) = entry.file_type() else {
                 return 0;
             };
@@ -242,10 +234,6 @@ impl EngineTranscriber for MlxProvider {
     }
 }
 
-/// Phonon-2 MLX is the one engine whose assets Slugtale installs from Settings:
-/// a private Python runtime plus the weights, downloaded and set up on demand.
-/// Installing and removing is the engine's own job, so it lives here and not on
-/// the transcriber above.
 impl EngineAssetLifecycle for MlxProvider {
     fn assets(&self) -> EngineAssets {
         EngineAssets {
@@ -275,7 +263,6 @@ impl EngineAssetLifecycle for MlxProvider {
     }
 }
 
-/// Owns a process group, including pip if setup times out. Always reap it.
 struct Process(Child);
 impl Drop for Process {
     fn drop(&mut self) {
@@ -293,9 +280,6 @@ impl Drop for Process {
     }
 }
 
-/// The one Python process that an install step runs. Spawn, reap, and close
-/// share a lock, so a PID is never signalled after it is reaped, and no step
-/// starts once shutdown has closed this.
 #[derive(Default)]
 struct Stop {
     state: Mutex<StopState>,
@@ -327,7 +311,6 @@ impl Stop {
         Ok(())
     }
 
-    /// Reaps the step once it has exited, so its PID is never signalled later.
     fn poll(&self) -> Result<Option<ExitStatus>, String> {
         let mut state = lock(&self.state);
         let Some(child) = state.child.as_mut() else {
@@ -347,8 +330,6 @@ impl Stop {
         lock(&self.state).child.take();
     }
 
-    /// Refuses further steps and kills and reaps the running one before it
-    /// returns. Never waits for the installer thread or its locks.
     fn close(&self) {
         let mut state = lock(&self.state);
         state.closed = true;
@@ -418,7 +399,6 @@ impl Worker {
         let deadline = Instant::now() + START_TIMEOUT;
         let channel = self.channel.get_mut();
         write_until(channel, &(samples.len() as u32).to_le_bytes(), deadline)?;
-        // Bounded scratch space, including long clips; no audio file on disk.
         let mut bytes = Vec::with_capacity(64 * 1024);
         for chunk in samples.chunks(16 * 1024) {
             bytes.clear();
@@ -433,7 +413,6 @@ impl Worker {
 
 type Channel = BufReader<UnixStream>;
 
-/// Returns the parent end of a worker socket, and the child's stdin and stdout.
 fn socket_pair() -> Result<(Channel, OwnedFd, OwnedFd), AsrError> {
     let (parent, child) = UnixStream::pair().map_err(|_| runtime_error())?;
     parent
@@ -486,8 +465,6 @@ fn read_reply<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Starts the installed runtime once. Its process stays in `stop` during the
-/// handshake, so shutdown can stop it, and it is reaped before this returns.
 fn check_runtime(root: &Path, stop: &Stop) -> Result<(), AsrError> {
     let (mut channel, input, output) = socket_pair()?;
     let mut command = offline_command(root);
@@ -680,7 +657,6 @@ fn install(
         total: None,
     });
     std::fs::write(root.join("requirements.lock"), REQUIREMENTS).map_err(io_error)?;
-    // Start fresh after any interrupted pip install; no half-ready packages.
     if root.join("site").exists() {
         std::fs::remove_dir_all(root.join("site")).map_err(io_error)?;
     }
@@ -695,7 +671,6 @@ fn install(
         .env("DO_NOT_TRACK", "1");
     cancelled(stop)?;
     run_setup(&mut cmd, Duration::from_secs(960), stop)?;
-    // Test the actual sandboxed runtime before declaring the install ready.
     cancelled(stop)?;
     check_runtime(root, stop)
         .map_err(|_| "Phonon-2 MLX could not load. Try Install again.".to_string())?;
@@ -789,7 +764,6 @@ mod tests {
     #[test]
     fn stalled_or_crashed_worker_returns_a_fixed_content_free_error() {
         let (mut worker, mut peer) = fake_worker();
-        // A live process which never replies has a bounded wait.
         assert!(worker
             .response::<FinalTranscription>(Instant::now() + Duration::from_millis(20))
             .is_err());
@@ -924,8 +898,6 @@ mod tests {
         assert_eq!(transcription.text, "hello there");
     }
 
-    /// A stand-in runtime: real worker.py, with stub numpy and fermion packages
-    /// that answer from the samples alone. No model, network, or sandbox.
     fn stub_runtime(name: &str) -> PathBuf {
         let root = root(name);
         let site = root.join("site");
@@ -1037,8 +1009,6 @@ def load(path, *, profile, backend, quiet):
         }
     }
 
-    /// Starts an install that is parked inside its first download, with no
-    /// network involved. Send on the returned channel to let the download fail.
     fn blocked_install(
         provider: &Arc<MlxProvider>,
     ) -> (

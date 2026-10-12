@@ -1,23 +1,9 @@
-//! The two microphone seams, and the level publisher they share.
-//!
-//! [`DictationRecorder`] is what a dictation drives: prepare ahead of the first
-//! Hotkey, record, end, and cut a Dictation Segment off it at a watermark.
-//! [`VoiceActivationRecorder`] is the smaller half the always-listening
-//! microphone uses — start, cancel, and take a chunk of what it has already
-//! heard — so no test double pays for methods it never calls.
-//!
-//! These traits are the boundary the rest of the app and every test double
-//! speak. The cpal implementation lives in
-//! [`crate::audio_capture::cpal_recorder`], and which module owns it is an
-//! implementation detail.
 
 use crate::{AudioCaptureError, CapturedAudio};
 use std::sync::Arc;
 
 pub type AudioLevelCallback = std::sync::Arc<dyn Fn(f32) + Send + Sync + 'static>;
 
-/// The microphone a Dictation drives: prepare it ahead of the first Hotkey,
-/// record, end, and cut a Dictation Segment off it at a watermark.
 pub trait DictationRecorder {
     /// Do the safe part of starting capture ahead of the first Hotkey.
     ///
@@ -55,11 +41,6 @@ pub trait DictationRecorder {
     /// The cell holding the ring position of the most recent voiced sample —
     /// the watermark a queued Pause Flush should carry as its cut. `0` when
     /// nothing voiced has been captured since the ring was cleared.
-    ///
-    /// A shared cell rather than a locked read, because the level-emitter thread
-    /// asks for it while Stop or Cancel may hold this recorder's lock and be
-    /// joining that very thread: a locked read there leaves two threads waiting
-    /// for each other, and the app freezes at a pause boundary (slugtale-xqzs).
     /// The cell belongs to the recorder for its whole life, so a caller may hold
     /// it and read the watermark without touching the recorder at all.
     fn voice_watermark_cell(&self) -> Arc<std::sync::atomic::AtomicU64>;
@@ -75,11 +56,6 @@ pub trait DictationRecorder {
     fn set_prefer_built_in_microphone(&mut self, _prefer: bool) {}
 }
 
-/// The microphone the Voice Activation listener drives. The listener is always
-/// on and asks only for a chunk of what it has already heard, to run a wake
-/// check on. It never prepares, never ends a recording, and never cuts a
-/// Dictation Segment, so it asks for none of the Dictation Session's half and no
-/// test double pays for methods it never calls.
 pub trait VoiceActivationRecorder {
     fn start(&mut self) -> Result<(), AudioCaptureError>;
     fn cancel(&mut self) -> Result<(), AudioCaptureError>;

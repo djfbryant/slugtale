@@ -1,6 +1,3 @@
-//! Dictation lifecycle commands: the recording surface adapter, the activation
-//! entry point shared by the Hotkey and Voice Activation, Stop/Cancel from the
-//! Dictation Bar, and the bar's pointer hit-test and display choice.
 
 use std::sync::Arc;
 
@@ -17,11 +14,6 @@ use crate::hotkey_registration::{request_escape_registration, HotkeyRegistration
 use super::settings::{build_activation_snapshot_for, report_not_ready};
 use super::{app_files, dictation_input_is_inert, load_current_settings, record_diagnostic_event};
 
-/// Drive the recording surface (ADR-0014) from a dictation lifecycle event:
-/// play the start/stop sound and show or hide the Dictation Bar. The bar's Stop
-/// and Cancel controls route here; the global hotkey lifecycle routes the
-/// configured activation hotkey and Escape here while preserving text-target
-/// focus.
 #[tauri::command]
 pub(crate) fn dictation_event(app: tauri::AppHandle, event: String) -> Result<(), String> {
     match event.as_str() {
@@ -35,8 +27,6 @@ pub(crate) fn dictation_event(app: tauri::AppHandle, event: String) -> Result<()
     }
 }
 
-/// Stop from the Dictation Bar and reset the shared control at the same time.
-/// Voice Activation can then trigger again without a stale active state.
 fn stop_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
     end_active_dictation(
         app,
@@ -45,9 +35,6 @@ fn stop_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
     )
 }
 
-/// Cancel through the same lifecycle bridge used by the global Escape handler
-/// so a click on the Dictation Bar cannot leave toggle/hold state believing a
-/// discarded dictation is still active.
 fn cancel_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
     end_active_dictation(
         app,
@@ -56,10 +43,6 @@ fn cancel_active_dictation(app: &tauri::AppHandle) -> Result<(), String> {
     )
 }
 
-/// End the active dictation through the shared lifecycle bridge, disarming bare
-/// Escape while the registration lock is held. When no lifecycle answered — no
-/// registration yet, or nothing active — the fallback event still runs so a
-/// leftover Dictation Bar never outlives its dictation.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn end_active_dictation(
     app: &tauri::AppHandle,
@@ -74,9 +57,6 @@ fn end_active_dictation(
             .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
         let event = end(&mut registration.control);
         if event.is_some() {
-            // Disarm failures only matter when the worker is gone entirely,
-            // which means the app is shutting down; dropping the request is
-            // then the honest outcome.
             let _ = request_escape_registration(&registration, false);
         }
         event
@@ -88,26 +68,12 @@ fn end_active_dictation(
     }
 }
 
-/// Begin a dictation from any activation input — a Hotkey press or a Voice
-/// Activation wake phrase — through one readiness-gated sequence.
-///
-/// The sequence itself is not here: it belongs to the core Dictation Control
-/// ([`slugtale_lib::begin_activation`]), which owns the order — transition, arm
-/// Escape, record — and the rollback when a step fails. This adapter supplies
-/// the host that sequence reaches: the shared control behind its registration
-/// lock, the caller's Escape arming, and the dictation host that records. The
-/// hotkey worker and Voice Activation differ only in how they arm Escape, which
-/// is exactly what `arm_escape` is.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn begin_dictation(
     app: &tauri::AppHandle,
     input: slugtale_lib::DictationInput,
     arm_escape: &mut dyn FnMut(bool) -> Result<(), String>,
 ) -> Result<(), String> {
-    // The Typing Challenge rule runs before any readiness snapshot is paid for
-    // or lifecycle state moves: the user is typing a passage, so this input
-    // does nothing at all and releasing it later resumes nothing. One rule,
-    // consulted by the hotkey worker as well.
     if dictation_input_is_inert(app) {
         return Ok(());
     }
@@ -120,8 +86,6 @@ pub(crate) fn begin_dictation(
     slugtale_lib::begin_activation(&mut TauriBeginHost { app, arm_escape }, activation)
 }
 
-/// The `BeginHost` the Tauri tier supplies: the shared control, the caller's
-/// Escape arming, and the dictation host that starts the recording.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 struct TauriBeginHost<'a> {
     app: &'a tauri::AppHandle,
@@ -134,10 +98,6 @@ impl slugtale_lib::BeginHost for TauriBeginHost<'_> {
         &mut self,
         step: &mut dyn FnMut(&mut slugtale_lib::DictationControl) -> R,
     ) -> Option<R> {
-        // The guard lives no longer than this call, so recording, transcription
-        // and window work never run with the shared registration lock held —
-        // they must not be able to stall the shortcut handler on the main
-        // thread (slugtale-pil).
         let state = self.app.state::<HotkeyRegistrationState>();
         let mut registration = state.0.lock().ok()?;
         Some(step(&mut registration.control))
@@ -156,10 +116,6 @@ impl slugtale_lib::BeginHost for TauriBeginHost<'_> {
     }
 }
 
-/// The Tauri adapter for the dictation lifecycle's two ports: the bar window,
-/// Settings reads, diagnostics, and failure notifications for the effects role,
-/// and the app's own log, engines, and Text Insertion for the parts role. Both
-/// are reached through the one AppHandle.
 pub(crate) struct TauriSurface {
     pub(crate) app: tauri::AppHandle,
 }
@@ -198,9 +154,6 @@ impl DictationEffects for TauriSurface {
 }
 
 impl DictationParts for TauriSurface {
-    /// The app's one Local Diagnostic Log, handed on with its sink's type
-    /// erased: the lifecycle names a log, and this module is the only place that
-    /// knows it is a file.
     fn diagnostic_log(
         &self,
         settings: &slugtale_lib::Settings,
@@ -229,15 +182,10 @@ impl DictationParts for TauriSurface {
     }
 }
 
-/// The app's one dictation lifecycle host, managed by setup before any
-/// activation input can arrive.
 pub(crate) fn dictation_host(app: &tauri::AppHandle) -> Arc<DictationHost> {
     app.state::<Arc<DictationHost>>().inner().clone()
 }
 
-/// Hand the pointer to whichever of Slugtale and the app underneath it is
-/// actually over, and tell the bar which one that is.
-///
 /// The bar window is permanently sized for the expanded pill because a Tauri
 /// window cannot grow on hover, so while collapsed most of it is transparent —
 /// and a transparent window still swallows clicks. The frontend polls this while
@@ -271,9 +219,6 @@ pub(crate) fn dictation_bar_pointer_over(
     Ok(over)
 }
 
-/// One selectable display in the Settings UI. The stable monitor name is stored
-/// in the Settings File; its label adds resolution so similarly named displays
-/// remain distinguishable.
 #[derive(serde::Serialize)]
 pub(crate) struct DictationBarDisplayOption {
     value: slugtale_lib::BarDisplay,

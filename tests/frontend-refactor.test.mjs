@@ -4,9 +4,6 @@ import test from "node:test";
 
 import { runPage } from "./harness.mjs";
 
-// The settings window is a set of classic scripts that share one global scope;
-// `runPage` loads index.html the way a browser does and lets a test name the
-// handles it wants to drive directly.
 function src(name) {
   return readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
 }
@@ -16,7 +13,6 @@ function load(exports) {
   return { ...api, elements };
 }
 
-// --- Criterion 1: one home for the low-level Tauri invoke ------------------
 
 test("the low-level invoke has one home, and the standalone pages use it", () => {
   const bridge = src("settings/tauri-bridge.js");
@@ -26,8 +22,6 @@ test("the low-level invoke has one home, and the standalone pages use it", () =>
     "tauri-bridge.js owns the shared safe invoke",
   );
 
-  // Neither standalone page may define its own invoke/tauriInvoke any more; both
-  // reach Tauri only through the bridge.
   for (const page of ["dictation-bar.js", "typing-challenge.js"]) {
     assert.equal(
       /\bfunction\s+(?:invoke|tauriInvoke)\s*\(/.test(src(page)),
@@ -36,21 +30,16 @@ test("the low-level invoke has one home, and the standalone pages use it", () =>
     );
   }
 
-  // Both pages load the bridge before their own script, so the shared handle is
-  // in scope by the time theirs runs.
   assert.match(src("dictation-bar.html"), /settings\/tauri-bridge\.js[\s\S]*dictation-bar\.js/);
   assert.match(src("typing-challenge.html"), /settings\/tauri-bridge\.js[\s\S]*typing-challenge\.js/);
 });
 
-// --- Criterion 2: one owner of settings defaults ----------------------------
 
 test("a partial settings answer is filled from one defaults home", () => {
   const { applySettingsDefaults } = load(["applySettingsDefaults"]);
 
   const merged = applySettingsDefaults({ hotkey: "Cmd+K" });
   assert.equal(merged.hotkey, "Cmd+K");
-  // Every omitted key lands on its default from the single home, so no renderer
-  // re-applies one inline.
   assert.equal(merged.activation_mode, "toggle");
   assert.equal(merged.speed_profile, "balanced");
   assert.equal(merged.segment_pause_secs, 5);
@@ -63,7 +52,6 @@ test("a partial settings answer is filled from one defaults home", () => {
   assert.equal(applySettingsDefaults(undefined).prefer_built_in_microphone, true);
 });
 
-// --- Criterion 3: single-source vocabularies, consumed everywhere -----------
 
 test("panes, positions, accents and second-opinion share one source with the markup", () => {
   const html = src("index.html");
@@ -71,7 +59,6 @@ test("panes, positions, accents and second-opinion share one source with the mar
     "BAR_POSITIONS", "ACCENT_COLORS", "SECOND_OPINION_MODES", "PANES"
   ]);
 
-  // The pane list drives the rail, the icons, the badges and the sections.
   const railIds = [...html.matchAll(/data-pane="([a-z-]+)"/g)].map((match) => match[1]);
   assert.deepEqual(railIds, [...PANES].map((pane) => pane.id));
   for (const pane of PANES) {
@@ -80,7 +67,6 @@ test("panes, positions, accents and second-opinion share one source with the mar
     }
   }
 
-  // Each segmented control's buttons are exactly the vocabularies, spelled once.
   const positions = [...html.matchAll(/id="position-(bottom-[\w-]+)"/g)].map((match) => match[1]);
   assert.deepEqual([...positions].sort(), [...BAR_POSITIONS].sort());
   const accents = [...html.matchAll(/id="accent-([\w-]+)"/g)].map((match) => match[1]);
@@ -89,7 +75,6 @@ test("panes, positions, accents and second-opinion share one source with the mar
   assert.deepEqual([...opinions].sort(), [...SECOND_OPINION_MODES].sort());
 });
 
-// --- Criterion 5: one progress-percent rule ---------------------------------
 
 test("both progress bars round, clamp and treat no-total the same way", () => {
   const { progressPercent } = load(["progressPercent"]);
@@ -102,7 +87,6 @@ test("both progress bars round, clamp and treat no-total the same way", () => {
   assert.equal(progressPercent(200, 100), 100, "never runs past 100");
 });
 
-// --- Criterion 5: the download labels the model it is actually fetching ------
 
 test("the download progress names the model it is actually fetching", () => {
   const { elements, renderModel, showProgress } = load(["renderModel", "showProgress"]);
@@ -113,14 +97,12 @@ test("the download progress names the model it is actually fetching", () => {
   assert.match(elements.get("model-message").textContent, /Downloading parakeet… 50%/);
   assert.equal(elements.get("model-progress").querySelector(".progress-bar").style.width, "50%");
 
-  // With no total it is indeterminate, and it still names the model, not "base.en".
   showProgress({ downloaded: 20 * 1024 * 1024, total: null });
   assert.ok(elements.get("model-progress").classList.contains("indeterminate"));
   assert.match(elements.get("model-message").textContent, /Downloading parakeet… 20 MB/);
   assert.doesNotMatch(elements.get("model-message").textContent, /base\.en/);
 });
 
-// --- Criterion 4: derived state lives in the model, not the renderer ---------
 
 test("the engine ordering rule lives in the model", () => {
   const { orderEngines } = load(["orderEngines"]);
@@ -134,7 +116,6 @@ test("the engine ordering rule lives in the model", () => {
     [...orderEngines(engines)].map((engine) => engine.id),
     ["apple-speech", "parakeet", "whisper", "phonon"],
   );
-  // Ordering must not mutate the caller's list.
   assert.equal(engines[0].id, "whisper");
 });
 

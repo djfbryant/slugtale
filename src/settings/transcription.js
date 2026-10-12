@@ -87,9 +87,6 @@
       }
     }
 
-    // Position, accent, and display save together: all describe where and how
-    // the Dictation Bar appears, and the backend applies them to a bar already
-    // on screen so the user can judge the choice while making it.
     async function saveDictationBarSettings({ barPosition, accentColor, barDisplay }) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };

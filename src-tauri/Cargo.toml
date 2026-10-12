@@ -4,40 +4,19 @@ version = "0.1.1"
 edition = "2021"
 license = "MIT"
 
-# Every Transcription Engine past Whisper is opt-in at build time (slugtale-vjs).
-# Each one drags in a native toolchain — ONNX Runtime for Parakeet, the Swift
-# compiler for Apple SpeechTranscriber — that a plain `cargo test` on any
-# platform should not need. With none of them enabled the app behaves exactly as
-# it did before: one engine, no router, no extra work on the dictation path.
 [features]
 default = []
 local-whisper-runtime = ["dep:whisper-rs", "dep:num_cpus"]
 local-whisper-runtime-metal = ["local-whisper-runtime", "whisper-rs/metal"]
-# NVIDIA Parakeet TDT v2 0.6B via ONNX Runtime (slugtale-vjs.1). Portable across
-# macOS, Windows, and Linux, unlike the Core ML/Swift path the original design
-# assumed, so the Linux port inherits it for free.
 local-parakeet-runtime = ["dep:parakeet-rs"]
-# Private Fermion MLX worker on Apple silicon macOS 14+. Other targets and
-# older macOS keep the ONNX provider. Setup downloads the pinned runtime.
 local-phonon-mlx = []
-# Parakeet on the Apple Neural Engine / GPU through ONNX Runtime's Core ML
-# execution provider. macOS-only; the CPU provider stays the portable default.
 local-parakeet-runtime-coreml = ["local-parakeet-runtime", "parakeet-rs/coreml"]
-# Apple SpeechTranscriber (slugtale-vjs.2). macOS 26+ only, and gated by
-# `cfg(target_os = "macos")` on top of this feature so enabling it on Linux or
-# Windows is a no-op rather than a build failure.
 apple-speech-runtime = []
-# Voice Activation spike (slugtale-e95). An always-on microphone listener that
-# scores rolling windows against the wake phrase using the managed Whisper
-# model, so it needs the same runtime as dictation itself. macOS-only in code.
 voice-activation = ["local-whisper-runtime"]
 
 [lib]
 name = "slugtale_lib"
 
-# Strip symbols during compilation so Tauri signs and packages an already
-# stripped executable (slugtale-g1o.8). The bead's baseline measured a copy of
-# the 17,030,480-byte executable at 13,663,936 bytes after stripping (-19.77%).
 [profile.release]
 strip = "symbols"
 
@@ -45,10 +24,6 @@ strip = "symbols"
 name = "decode_benchmark"
 required-features = ["local-whisper-runtime"]
 
-# The selective-ASR measurement harness (slugtale-vjs.5). Requires Whisper
-# because that is the baseline every other engine is measured against; Parakeet
-# and Apple SpeechTranscriber are added on top with their own features when the
-# run needs them.
 [[example]]
 name = "asr_eval"
 required-features = ["local-whisper-runtime"]
@@ -69,8 +44,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Local calendar dates for Daily Usage Records (ADR-0025). Only `Local::now()`
-# is used: a Counted Segment belongs to the local date it landed on, and getting
 # that right needs the OS timezone database. Already in the dependency tree via
 # Tauri, so this makes an existing crate a direct dependency rather than a new
 # one. `default-features = false` keeps out serde and oldtime.
@@ -88,18 +61,13 @@ parakeet-rs = { version = "0.3.6", optional = true }
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-autostart = "2.5.1"
-# Opens the compiled-in GitHub Releases page from a Rust command. This library
-# exposes no webview command or permission.
 open = "5.4.2"
-# Manual update checks read latest.json from GitHub Releases (ADR-0022).
-# The signed artifacts remain available for version checks and future work.
 tauri-plugin-updater = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
 objc2 = "0.6.4"
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = [
-    # Platform Adapter microphone authorization (src/macos.rs AVCaptureDevice).
     "AVCaptureDevice",
     # objc2 0.3.2: AVMediaTypeAudio lives in AVMediaFormat.
     "AVMediaFormat",
@@ -107,11 +75,6 @@ objc2-av-foundation = { version = "0.3.2", default-features = false, features = 
     # ObjC block, which the generator only emits with block2 enabled.
     "block2",
 ] }
-# The macOS Platform Adapter uses only NSWorkspace (frontmost app), and
-# NSRunningApplication with its activation options (target activation). Tauri's
-# own windowing crates already enable their AppKit features additively, so the
-# union stays correct while Slugtale stops pulling in the rest of AppKit
-# (slugtale-g1o.7).
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     # NSRunningApplication::activateWithOptions takes these options
     # (src/macos.rs target activation).
@@ -122,21 +85,12 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     # only with libc enabled (pid_t in the generated signatures).
     "libc",
 ] }
-# NSCalendar only: locale week start for Daily Usage Records (ADR-0025,
 # src/macos.rs week_start). objc2 0.3.2 generates NSCalendar behind this
 # feature; NSDate/NSString prerequisites come through the feature graph.
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSCalendar",
 ] }
 
-# Windows Platform Adapter (ADR-0021, PRD slugtale-5pc). Mirrors the macOS
-# native-dependency block so neither platform pulls the other's crates. The
-# windows-sys features cover the Win32 surface the follow-on Windows issues
-# fill: SendInput + clipboard (DataExchange/Memory/Ole for CF_UNICODETEXT) for
-# text insertion (5pc.3/5pc.4), the microphone
-# ConsentStore registry read for readiness (5pc.2), GetForegroundWindow/
-# SetForegroundWindow for focus targeting (5pc.5), and PlaySoundW for audible
-# feedback (5pc.6). winreg/clipboard-win are folded into windows-sys here.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
@@ -147,12 +101,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_Media_Audio",
-    # GetLocaleInfoEx, for the locale's first day of the week (ADR-0025).
     "Win32_Globalization",
 ] }
 
-# Linux Platform Adapter — X11 slice (ADR-0021, ADR-0023, PRD slugtale-8ul).
-# Mirrors the macOS/Windows native-dependency blocks so no platform pulls
 # another's crates. enigo synthesizes text/keystrokes over XTEST (text
 # insertion + Ctrl+V paste, 8ul.3); arboard owns the X11 clipboard selection
 # for the paste fallback and the insertion rescue (8ul.3/8ul.4); x11rb reads

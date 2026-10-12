@@ -18,8 +18,6 @@
       bytes: null
     };
 
-    // Shown only outside the desktop app (no Tauri bridge), so the pane is never
-    // blank. Mirrors what a fresh install's Whisper-only Settings File reports.
     const fallbackEngines = [
       {
         id: "whisper",
@@ -45,6 +43,4 @@
       }
     ];
 
-    // BAR_POSITIONS, ACCENT_COLORS and SECOND_OPINION_MODES live in vocab.js so
-    // the Settings window and the Dictation Bar spell them from one home.
 

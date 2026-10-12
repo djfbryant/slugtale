@@ -1,24 +1,8 @@
-//! The Voice Activation listen loop (slugtale-e95): the always-listening state
-//! machine that turns captured microphone speech into wake checks and, when the
-//! user says the wake phrase, a dictation trigger.
-//!
-//! The loop decides; the host acts. Every operating-system touch — the capture
-//! session, the transcription engine, notifications, the dictation trigger —
-//! sits behind the ports below, so the suppression, retry, report-once, and
-//! rebuild rules are unit-testable on every platform without audio hardware
-//! (ADR-0021: the Windows and Linux ports reuse this loop unchanged).
-//!
-//! Those ports are three roles, not one long list: [`ListenTransport`] is how
-//! the loop is driven, [`WakeCapture`] is the microphone and the engine behind
-//! it, and [`WakeTrigger`] is the wake check and what the user sees because of
-//! one. [`WakeListener`] composes them, because one adapter answers all three.
 
 use crate::{wake_phrase_score, SpeechWindowBuffer, WakeWordConfig, WakeWordDetector};
 use std::time::Duration;
 
-/// How often the loop polls its commands while listening.
 pub const LISTEN_POLL: Duration = Duration::from_millis(250);
-/// How long the loop waits before trying the microphone again after a failure.
 pub const LISTEN_CAPTURE_RETRY: Duration = Duration::from_secs(2);
 
 const MIN_NEW_SAMPLES: usize = 32_000;
@@ -27,17 +11,12 @@ const SPEECH_FRAME_SAMPLES: usize = 320;
 const MINIMUM_SPEECH_RMS: f32 = 0.006;
 const SPEECH_CONTRAST_RATIO: f32 = 1.5;
 
-/// The commands the loop understands. Transport (a channel, a test) is the
-/// adapter's business; these are the meanings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListenerCommand {
     Listen,
     Stop,
 }
 
-/// What the wake check made of one window of speech. `EngineUnavailable`
-/// means the resolved engine cannot run right now — the loop treats the
-/// microphone as unusable until it comes back.
 #[derive(Debug, PartialEq)]
 pub enum WakeCheck {
     EngineUnavailable,
@@ -45,71 +24,41 @@ pub enum WakeCheck {
     Transcript(String),
 }
 
-/// How the loop is driven: what it should do next, whether it has been told to
-/// stop, how long it may wait before looking again, and whether a dictation has
-/// taken the microphone. Transport (a channel, a test) is the adapter's
-/// business; these are the meanings.
 pub trait ListenTransport {
-    /// Block until the next command arrives. `None` ends the worker.
     fn next_command(&mut self) -> Option<ListenerCommand>;
 
-    /// Whether a Stop has arrived without waiting.
     fn stop_requested(&self) -> bool;
 
-    /// Wait up to `timeout` for a Stop. `true` keeps listening.
     fn wait(&mut self, timeout: Duration) -> bool;
 
-    /// Whether a dictation is active; the listener must stand down while it is.
     fn dictating(&self) -> bool;
 }
 
-/// The capture session and the two things that decide whether it may open: an
-/// engine that can run wake checks, and a microphone the user has granted. The
-/// rebuild and close doors are here because a broken capture is the loop's most
-/// common failure and it must be able to recover without waiting for the OS to
-/// notice.
 pub trait WakeCapture {
-    /// Whether the wake-check engine can actually run right now.
     fn engine_ready(&self) -> bool;
 
     fn microphone_granted(&self) -> bool;
 
     fn capture_is_open(&self) -> bool;
     fn start_capture(&mut self) -> Result<(), String>;
-    /// Drop the capture session so the next start opens it fresh.
     fn rebuild_capture(&mut self);
     fn close_capture(&mut self);
     fn take_segment(&mut self) -> Result<Vec<f32>, String>;
 }
 
-/// The wake check itself, and the two things the user sees because of one: a
-/// microphone the loop cannot hear, and the dictation a detected wake phrase
-/// starts.
 pub trait WakeTrigger {
     /// Run one wake check over a window of speech. Always greedy decoding:
     /// the user's wider beam is useful for dictation text, but wasteful for a
     /// two-word phrase.
     fn wake_check(&mut self, samples: Vec<f32>) -> WakeCheck;
 
-    /// Tell the user the microphone cannot be heard.
     fn report_microphone_problem(&mut self);
 
-    /// Begin a dictation from the wake phrase.
     fn trigger_wake(&mut self);
 }
 
-/// One port, three roles. [`run_listen_loop`] is handed the composition because
-/// one adapter is all three — the macOS tier answers every role against the app
-/// handle, and a test answers them all against a fake — but the roles are what
-/// the loop actually depends on, named separately so an implementation can be
-/// read, and replaced, one concern at a time.
 pub trait WakeListener: ListenTransport + WakeCapture + WakeTrigger {}
 
-/// Run the always-listening worker until its channel closes.
-///
-/// Failure branches share one shape — drop what is broken, wait, try again —
-/// so a capture failure, a missing engine, and digital silence all travel the
-/// same rebuild-and-retry path instead of six hand copies.
 pub fn run_listen_loop(listener: &mut dyn WakeListener) {
     while let Some(command) = listener.next_command() {
         if command == ListenerCommand::Stop {
@@ -126,8 +75,6 @@ pub fn run_listen_loop(listener: &mut dyn WakeListener) {
                 break;
             }
 
-            // Dictations own the microphone while they run; stand down and
-            // drop anything half-heard.
             if listener.dictating() {
                 if listener.capture_is_open() {
                     listener.rebuild_capture();
@@ -245,7 +192,6 @@ pub fn run_listen_loop(listener: &mut dyn WakeListener) {
                         continue;
                     }
                     let score = wake_phrase_score(&text);
-                    // Scores are safe to log. Transcript text and audio are not.
                     eprintln!("voice activation: score {score:.2}");
                     if detector.on_transcript(&text, unix_ms()).is_some() {
                         if listener.stop_requested() {
@@ -276,9 +222,6 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// One fake drives every scenario: counters for each port plus scripted
-    /// segments and transcripts, so tests assert on the actions the loop took.
-    /// A finite wait budget guarantees every run terminates.
     struct FakeListener {
         commands: RefCell<Vec<Option<ListenerCommand>>>,
         dictating: bool,
@@ -319,8 +262,6 @@ mod tests {
         }
     }
 
-    /// One second that classifies as Speech: a quiet room floor for most
-    /// frames, then a loud burst — the contrast gate needs both.
     fn speech_chunk() -> Vec<f32> {
         let frame = 320;
         let mut samples = vec![0.0; 32_000];
@@ -330,16 +271,12 @@ mod tests {
         samples
     }
 
-    /// One second of pure zeros: classifies as DigitalSilence.
     fn silence_chunk() -> Vec<f32> {
         vec![0.0; 32_000]
     }
 
     impl ListenTransport for FakeListener {
         fn next_command(&mut self) -> Option<ListenerCommand> {
-            // Exactly one Listen per run; the wait budget ends the listen
-            // loop, and None ends the worker. Returning Some forever would
-            // spin this test to infinity.
             let mut commands = self.commands.borrow_mut();
             if commands.is_empty() {
                 None
@@ -475,7 +412,6 @@ mod tests {
     #[test]
     fn digital_silence_reports_once_and_travels_the_retry_path() {
         let mut listener = FakeListener::default();
-        // Two silent seconds, then more of the same from the fallback.
         *listener.segments.borrow_mut() = vec![
             Ok(silence_chunk()),
             Ok(silence_chunk()),
@@ -489,10 +425,6 @@ mod tests {
 
     #[test]
     fn quiet_audio_keeps_listening_without_a_wake_check_or_a_rebuild() {
-        // A chunk that is quiet but not digitally silent is hard to synthesise
-        // cheaply here; the observable contract under test is that ordinary
-        // listening performs no wake checks while nothing is said, which the
-        // default silence fallback already covers.
         let mut listener = FakeListener::default();
         run_listen_loop(&mut listener);
         assert_eq!(*listener.checks.borrow(), 0);
@@ -510,9 +442,7 @@ mod tests {
         ];
         run_listen_loop(&mut listener);
         assert_eq!(*listener.checks.borrow(), 2);
-        // The unavailable engine sent the loop down the retry path...
         assert!(*listener.rebuilds.borrow() >= 1);
-        // ...and it recovered enough to keep listening afterwards.
         assert_eq!(*listener.closes.borrow(), 1);
     }
 }

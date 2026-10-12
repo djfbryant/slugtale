@@ -1,8 +1,4 @@
 
-    // One line of a Transcription Engine's compliance surface: model identity,
-    // pinned revision, size, source, licence, attribution, and modifications.
-    // Built from `EngineMetadata` rather than retyped, so the CC BY 4.0 wording
-    // Parakeet requires can only ever change in one place (parakeet.rs).
     function engineDetailLines(engine) {
       const meta = engine.metadata;
       const lines = [];
@@ -56,9 +52,6 @@
       }
 
       if (meta.system_managed) {
-        // Apple SpeechTranscriber only: state plainly that macOS owns these
-        // assets so nothing here can be read as Slugtale bundling or shipping
-        // Apple's model.
         const systemLine = document.createElement("p");
         systemLine.className = "engine-detail-line";
         systemLine.textContent =
@@ -101,9 +94,6 @@
       head.append(radio, name, pill);
       row.append(head);
 
-      // What the engine is good at, asked of the engine itself rather than
-      // retyped here — so a fifth engine brings its own copy without a
-      // JavaScript change.
       if (engine.metadata.capability) {
         const blurb = document.createElement("p");
         blurb.className = "engine-blurb";
@@ -127,9 +117,6 @@
       const actions = document.createElement("div");
       actions.className = "engine-actions";
 
-      // Only a missing-assets engine earns an Install button (mirrors
-      // `EngineUnavailable::is_user_resolvable` — an unsupported OS or a build
-      // without the feature has nothing here to fix).
       if (engine.installable) {
         const installButton = document.createElement("button");
         installButton.type = "button";
@@ -175,10 +162,6 @@
       const list = document.getElementById("engine-list");
       const messageEl = document.getElementById("engine-message");
 
-      // So the user reads in one glance what they would otherwise hunt for — the
-      // selected engine first, then the engines they can switch to with another
-      // click of the radio, then any engine that cannot run right now. The rule
-      // lives in engine-model.js, out of this DOM builder.
       const sorted = orderEngines(engines);
 
       list.replaceChildren(...sorted.map(buildEngineItem));
@@ -203,10 +186,6 @@
       }
     }
 
-    // The primary engine and Second Opinion mode are one Settings File update
-    // (`set_transcription_engines`), so changing either one sends the pair —
-    // the other rides along at its current value, same discipline as
-    // `saveDictationBarSettings` above.
     async function saveEngineSettings({ primaryEngine, secondOpinion } = {}) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };

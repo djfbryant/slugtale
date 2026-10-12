@@ -1,24 +1,3 @@
-//! Local speech recognition: the domain types every engine answers in, the
-//! Whisper engine that speaks them, and the caches and transports that make
-//! loading a model once.
-//!
-//! Six concerns live here and each has its own module, because they change for
-//! different reasons:
-//!
-//! - [`TranscriptSegment`], [`FinalTranscription`], [`AsrError`], and
-//!   [`AsrRuntime`] are the vocabulary every local engine speaks. No I/O, no
-//!   threads, no dependencies.
-//! - [`crate::asr::machine_probe`] asks the machine how to decode.
-//! - [`crate::asr::whisper_ffi`] is the whisper.cpp boundary: every binding in
-//!   Slugtale, and nothing else.
-//! - [`crate::asr::whisper_runtime`] owns the loaded model and its lifetime.
-//! - [`crate::asr::whisper_cache`] is the one-model-per-path cache that owns
-//!   when that lifetime ends.
-//! - [`crate::asr::whisper_engine`] and [`crate::asr::whisper_assets`] present
-//!   Whisper through the Transcription Engine boundary: the dictation half and
-//!   the Settings-only asset half.
-//!
-//! Everything is re-exported, so `slugtale_lib::*` call sites are unchanged.
 
 mod machine_probe;
 mod whisper_assets;
@@ -34,10 +13,6 @@ pub use whisper_runtime::LocalWhisperRuntime;
 use crate::CapturedAudio;
 use serde::{Deserialize, Serialize};
 
-/// One recognized segment of a local Whisper transcription: the recognized
-/// text plus its start/end timing. Ordered segments are preserved through ASR
-/// so Transcript Cleanup can decide later whether pauses imply line breaks,
-/// instead of the runtime flattening them away immediately (slugtale-cqy).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptSegment {
     pub text: String,
@@ -57,8 +32,6 @@ pub struct FinalTranscription {
 }
 
 impl FinalTranscription {
-    /// Segmentless construction for engines that expose no segment timing and
-    /// for tests where timing is irrelevant.
     pub fn plain(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -96,9 +69,6 @@ pub enum AsrError {
         engine: crate::TranscriptionEngine,
         reason: crate::EngineUnavailable,
     },
-    /// A second opinion ran past its bounded budget. The router keeps the first
-    /// usable transcript when this happens, so the user never waits on a slow
-    /// engine (slugtale-vjs.3).
     Timeout {
         engine: crate::TranscriptionEngine,
     },
@@ -139,9 +109,6 @@ pub fn transcribe_captured_audio(
     runtime.transcribe(audio)
 }
 
-/// One directory per test, so two tests running in parallel cannot find each
-/// other's model file. Shared by every test module under `asr/`, because they
-/// all need a place a model file is not.
 #[cfg(test)]
 pub(crate) fn unique_test_dir(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(

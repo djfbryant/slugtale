@@ -1,38 +1,11 @@
-// The Swift half of the Apple SpeechTranscriber Transcription Engine
-// (slugtale-vjs.2).
-//
 // Why this file exists at all: macOS 26's `SpeechAnalyzer` / `SpeechTranscriber`
 // API is Swift-only. It is not exported to Objective-C, so no `objc2-*` crate
 // can reach it — `objc2-speech` only binds the legacy `SFSpeechRecognizer`,
 // which is a different, older engine with a server fallback we explicitly do
 // not want. The only supported route from Rust is a small Swift library with a
-// C ABI, which is what this is. `build.rs` compiles it into a static archive
-// and links it into the Rust binary; `src/apple_speech.rs` declares the same
-// five functions and owns every policy decision above them.
-//
-// Design rules this file follows, in order of importance:
-//
 //  1. **Nothing leaves the device.** `SpeechAnalyzer` has no server mode at all
 //     — unlike `SFSpeechRecognizer` there is no `requiresOnDeviceRecognition`
 //     switch to get wrong, because there is no remote path to switch away from.
-//     On top of that, `transcribe` refuses to run unless
-//     `AssetInventory.status(forModules:)` reports `.installed`, so a machine
-//     that is still fetching assets is reported unavailable rather than being
-//     allowed to reach for anything else.
-//  2. **Nothing is logged.** No `print`, no `os_log`, no `NSLog` anywhere in
-//     this file. Transcripts, alternatives, confidence, and the audio itself
-//     exist only in the buffers handed straight back to Rust. Detail strings
-//     returned alongside a status describe the machine, never the speech.
-//  3. **Apple's assets stay Apple's.** Nothing here reads, copies, or exports
-//     model files; installation goes through `AssetInventory`'s own request
-//     object, and only when Rust calls `slugtale_apple_speech_install_assets`
-//     from an explicit user action.
-//  4. **The ABI is boring on purpose.** Only `Int32`, `Double`, and
-//     `malloc`-owned C strings cross the boundary. Swift struct layout is not
-//     guaranteed to match a Rust `#[repr(C)]` struct, so this file passes no
-//     structs — every value comes back through its own out-parameter, and every
-//     string is freed by `slugtale_apple_speech_free`.
-//
 // The whole Speech API used here is annotated `@available(macOS 26.0, *)`, so
 // the library is compiled against an older deployment target and every entry
 // point checks `#available` first. That is what lets one build of Slugtale run
@@ -42,43 +15,20 @@ import AVFoundation
 import Foundation
 import Speech
 
-// MARK: - Status codes
 
-// These are the contract with `apple_speech.rs`; the Rust side maps each one to
-// an `EngineUnavailable` variant. Add cases at the end, never renumber.
 
-/// The call succeeded.
 private let STATUS_OK: Int32 = 0
-/// This machine runs a macOS older than 26, where the API does not exist.
-/// Detail: the detected OS version, e.g. `macOS 15.3.1`.
 private let STATUS_UNSUPPORTED_OS: Int32 = 1
-/// `SpeechTranscriber` cannot transcribe the requested Dictation Language.
-/// Detail: the locale identifier that was asked for.
 private let STATUS_UNSUPPORTED_LOCALE: Int32 = 2
-/// The locale is supported but its system assets are not installed yet. This is
-/// the one recoverable status; Rust turns it into an install action.
 private let STATUS_ASSETS_MISSING: Int32 = 3
-/// Probing or transcription failed for a reason none of the others cover.
 private let STATUS_FAILED: Int32 = 4
-/// macOS is new enough but this hardware cannot run the on-device transcriber.
 private let STATUS_UNSUPPORTED_HARDWARE: Int32 = 5
 
-/// Written to the confidence out-parameters when `SpeechTranscriber` reported no
-/// confidence at all. A silent engine is not a low-confidence engine, and the
-/// Second Opinion router has to be able to tell the two apart, so the sentinel
-/// sits outside the valid 0.0...1.0 range rather than at its floor.
 private let CONFIDENCE_UNREPORTED: Double = -1.0
 
-/// Separates whole-transcript alternatives in the single string handed back to
-/// Rust. ASCII RS (0x1E) is a control character no transcriber emits, which
-/// keeps the ABI to one owned pointer instead of an array of arrays.
 private let ALTERNATIVE_SEPARATOR = "\u{1E}"
 
-// MARK: - C ABI
 
-/// Decide whether this machine can transcribe `localeIdentifier` right now,
-/// without recording or decoding anything.
-///
 /// Returns one of the `STATUS_*` codes. When `outDetail` is non-null it is set
 /// to a `malloc`-owned C string the caller must release with
 /// `slugtale_apple_speech_free`, or to null when there is nothing to add. The
@@ -112,8 +62,6 @@ public func slugtale_apple_speech_probe(
     return outcome.status
 }
 
-/// Transcribe one complete recording and return its final text.
-///
 /// `samples` is `sampleCount` mono 32-bit float samples at `sampleRateHz` — the
 /// same Captured Audio the Whisper engine receives. The buffer is only read for
 /// the duration of the call and is never copied anywhere but the audio buffers
@@ -187,9 +135,6 @@ public func slugtale_apple_speech_transcribe(
     return STATUS_OK
 }
 
-/// Ask macOS to download and install the system speech assets for
-/// `localeIdentifier`, blocking until it finishes.
-///
 /// Slugtale never calls this on its own: it is reachable only from an explicit
 /// user action in Settings, because it spends the user's bandwidth and disk.
 /// The assets stay owned by macOS — nothing here unpacks, copies, or caches
@@ -231,10 +176,7 @@ public func slugtale_apple_speech_free(_ pointer: UnsafeMutablePointer<CChar>?) 
     free(pointer)
 }
 
-// MARK: - Speech work
 
-/// What one bridged call produced. Purely internal — it never crosses the C
-/// boundary, so it can be an ordinary Swift struct.
 private struct Outcome {
     var status: Int32
     var text: String = ""
@@ -248,7 +190,6 @@ private struct Outcome {
     }
 }
 
-/// Resolve `identifier` against the locales `SpeechTranscriber` can actually
 /// transcribe. Apple matches loosely — asking for `en-GB` may legitimately land
 /// on a broader English asset — so this goes through
 /// `supportedLocale(equivalentTo:)` rather than comparing identifiers itself.
@@ -257,14 +198,9 @@ private func resolveLocale(_ identifier: String) async -> Locale? {
     await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: identifier))
 }
 
-/// The transcriber Slugtale asks for, in both the probe and the real run.
-///
 /// `.alternativeTranscriptions` and `.transcriptionConfidence` are requested
 /// because the Second Opinion router is built on exactly those two signals; a
 /// transcriber configured without them would look silent rather than confident.
-/// `.volatileResults` is deliberately absent — Slugtale inserts one final
-/// transcription and has no Live Preview (ADR-0005), so partial results would
-/// be work with nowhere to go.
 @available(macOS 26.0, *)
 private func makeTranscriber(locale: Locale) -> SpeechTranscriber {
     SpeechTranscriber(
@@ -300,8 +236,6 @@ private func probeLocale(_ identifier: String) async -> Outcome {
     case .unsupported:
         return .failure(STATUS_UNSUPPORTED_LOCALE, identifier)
     @unknown default:
-        // A future macOS could add a state. Treat it as "not ready" rather than
-        // guessing, so the router falls back instead of transcribing blind.
         return .failure(
             STATUS_ASSETS_MISSING,
             "macOS reports an unrecognised state for this language's speech assets.")
@@ -323,7 +257,6 @@ private func installAssets(_ identifier: String) async -> Outcome {
         let modules = [makeTranscriber(locale: locale)]
         guard let request = try await AssetInventory.assetInstallationRequest(supporting: modules)
         else {
-            // No request means macOS has nothing left to fetch.
             return Outcome(status: STATUS_OK)
         }
         try await request.downloadAndInstall()
@@ -420,8 +353,6 @@ private func transcribeSamples(
     }
 }
 
-/// Wrap Slugtale's Captured Audio in the format the analyzer asked for,
-/// converting only when the two differ.
 @available(macOS 26.0, *)
 private func makeBuffer(
     _ samples: [Float],
@@ -484,8 +415,6 @@ private func makeBuffer(
     return converted
 }
 
-/// One `SpeechTranscriber.Result`: a stretch of the recording the engine
-/// finalized in one go, plus the readings it considered for that stretch.
 private struct Segment {
     let text: String
     /// Ranked best-first, and — as observed on macOS 26.5 — the chosen reading
@@ -493,28 +422,8 @@ private struct Segment {
     let alternatives: [String]
 }
 
-/// How many whole-transcript alternatives to hand back. The Second Opinion
-/// router picks between complete transcripts, and a handful of near-misses is
-/// all a selection policy can meaningfully weigh; the cross-product of every
-/// segment's readings would be unbounded on a long dictation and would cost real
-/// memory on the 8 GB reference machine.
 private let MAX_ALTERNATIVES = 8
 
-/// Turn Apple's *per-segment* alternatives into the *whole-transcript*
-/// alternatives the Transcription Engine boundary carries.
-///
-/// `SpeechTranscriber` finalizes a recording in several results and offers
-/// competing readings for each one separately — "Slugtail" vs "Slug tail" for
-/// the first second of speech, and nothing at all for the rest. Slugtale selects
-/// between complete transcripts rather than merging words, so each alternative
-/// here is the full transcription with exactly one segment swapped for one of
-/// its other readings. Substituting one segment at a time (rather than taking
-/// the cross product) keeps the list short, keeps every entry a reading the
-/// engine actually proposed, and keeps the mapping inspectable.
-///
-/// Ordering is by rank first, then by position: every segment's second-best
-/// reading comes before any segment's third-best, so the list stays roughly
-/// best-first the way the boundary promises.
 private func wholeTranscriptAlternatives(_ segments: [Segment]) -> [String] {
     let parts = segments.map(\.text)
     let primary = parts.joined()
@@ -535,13 +444,6 @@ private func wholeTranscriptAlternatives(_ segments: [Segment]) -> [String] {
     return alternatives
 }
 
-/// Reduce `SpeechTranscriber`'s per-run confidence attributes to the two numbers
-/// the Transcription Engine boundary carries.
-///
-/// Runs are weighted by how many characters they cover: a one-word run and a
-/// twelve-word run are not equally informative about the whole transcription.
-/// The minimum stays unweighted — a single badly heard name is exactly the
-/// signal the Second Opinion router escalates on, however short it is.
 @available(macOS 26.0, *)
 private func confidenceOf(_ text: AttributedString) -> (mean: Double, minimum: Double) {
     var weightedTotal = 0.0
@@ -561,7 +463,6 @@ private func confidenceOf(_ text: AttributedString) -> (mean: Double, minimum: D
     return (weightedTotal / weight, minimum)
 }
 
-// MARK: - Plumbing
 
 private struct BridgeError: Error, CustomStringConvertible {
     let description: String
@@ -586,8 +487,6 @@ private func readString(_ pointer: UnsafePointer<CChar>?) -> String? {
     return String(cString: pointer)
 }
 
-/// Copy a Swift string into a `malloc`-owned C string. Every string this library
-/// hands out goes through here so there is exactly one allocator to free with.
 private func copyToC(_ value: String) -> UnsafeMutablePointer<CChar> {
     strdup(value)!
 }
@@ -606,21 +505,11 @@ private final class Box<Value>: @unchecked Sendable {
     }
 }
 
-/// Run an async operation and return its result synchronously, giving up after
-/// `timeoutSeconds` and returning nil.
-///
 /// Rust calls this library from an ordinary thread — the dictation worker, never
 /// a Swift cooperative-pool thread — so blocking it cannot deadlock the pool
-/// that is executing the operation. Slugtale transcribes a whole recording at
-/// once and has no Live Preview, so there is nothing to gain from an async Rust
-/// signature and a callback ABI to match it.
-///
 /// The timeout is what keeps a wedged system service from wedging a dictation
 /// with it. Rust cannot interrupt a blocking FFI call, so the ceiling has to
 /// live on this side. Giving up abandons the operation rather than killing it:
-/// the detached task keeps running, writes into the box nobody is reading any
-/// more, and signals a semaphore with no waiter — all harmless, and much safer
-/// than trying to tear down work inside Apple's framework.
 private func runBlocking<Value>(
     timeoutSeconds: Double,
     _ operation: @escaping @Sendable () async -> Value
@@ -632,25 +521,14 @@ private func runBlocking<Value>(
         finished.signal()
     }
     guard finished.wait(timeout: .now() + timeoutSeconds) == .success else { return nil }
-    // Safe: the semaphore is only signalled after `value` has been written.
     return box.value
 }
 
-/// How long to wait for a question about the machine — OS version, hardware,
-/// locale support, asset inventory. Generous by orders of magnitude: a probe is
-/// tens of milliseconds in practice, so anything near this is a fault, not load.
 private let PROBE_TIMEOUT_SECONDS: Double = 30
 
-/// How long to wait for a decode: a fixed floor for model load plus a multiple
-/// of the recording's own length, so a long dictation is not cut off on a slow
-/// machine while a wedged one still gives up.
 private func transcriptionTimeoutSeconds(sampleCount: Int, sampleRateHz: Double) -> Double {
     let recordedSeconds = sampleRateHz > 0 ? Double(sampleCount) / sampleRateHz : 0
     return 60 + recordedSeconds * 10
 }
 
-/// Installing assets is a download the user asked for and may legitimately take
-/// many minutes on a slow connection, so it gets a ceiling measured in hours
-/// rather than seconds — present only so a stuck request cannot hold a thread
-/// forever.
 private let INSTALL_TIMEOUT_SECONDS: Double = 2 * 60 * 60

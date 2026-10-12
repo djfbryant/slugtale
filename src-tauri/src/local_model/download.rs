@@ -1,16 +1,3 @@
-//! Getting the Local Model's bytes onto disk and proving them: the HTTP
-//! download, the SHA-256 check, and the install and removal that follow.
-//!
-//! The whole pipeline is one rule with a name: only a file that matches a
-//! pinned digest may become the active Local Model. Every validation failure
-//! deletes the staged file, so a truncated or corrupt download can never be
-//! opened by a transcription engine. The staged file is written beside the
-//! model rather than over it, so a download interrupted halfway leaves the
-//! installed model exactly as it was.
-//!
-//! Progress reporting lives here too, because it is the download's own concern:
-//! [`throttled_progress`] is what turns a 64 KiB-chunked 140 MB transfer into a
-//! handful of IPC messages (slugtale-dtl).
 
 use super::{
     default_model_path, local_model_status, LocalModelStatus, DEFAULT_MODEL_DOWNLOAD_URL,
@@ -137,10 +124,6 @@ fn copy_with_progress(
     Ok(downloaded)
 }
 
-/// How much new data must arrive before the frontend hears about it again.
-/// A progress bar reads smoothly at a handful of updates per second; at 64 KiB
-/// chunks a ~140 MB model would otherwise flood the IPC channel with thousands
-/// of messages (slugtale-dtl).
 const PROGRESS_THROTTLE_BYTES: u64 = 1024 * 1024;
 
 /// Wrap a progress sink so it hears the initial zero-byte update and the final
@@ -354,8 +337,6 @@ mod tests {
                 total
             })
         );
-        // 200_000 bytes over 64 KiB chunks reports the initial update plus one
-        // per chunk, so the bar advances rather than jumping straight to done.
         assert!(updates.len() >= 4);
     }
 
@@ -450,8 +431,6 @@ mod tests {
         let mut sent = Vec::new();
         {
             let mut throttle = throttled_progress(|update| sent.push(update));
-            // The initial update, then a trickle of sub-threshold steps, then
-            // the final complete byte count.
             for downloaded in [0, 1, 500_000, 999_999, 2 * PROGRESS_THROTTLE_BYTES] {
                 throttle(DownloadProgress { downloaded, total });
             }
@@ -476,16 +455,12 @@ mod tests {
 
     #[test]
     fn throttled_progress_sends_intermediate_updates_once_per_threshold() {
-        // No total: the first test pins the completion path, this one isolates
-        // the byte-threshold path.
         let total = None;
         let mut sent = Vec::new();
         {
             let mut throttle = throttled_progress(|update| sent.push(update));
             let mut updates = vec![0u64];
             for megabyte in 1..=3u64 {
-                // A step just past each megabyte boundary, plus one that lands
-                // short of the next boundary and must be swallowed.
                 updates.push(megabyte * PROGRESS_THROTTLE_BYTES + 1);
                 updates.push((megabyte + 1) * PROGRESS_THROTTLE_BYTES - 1);
             }

@@ -4,34 +4,17 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-/// The five facts every readiness answer is built from. Both callers — the
-/// Settings pane's report and an activation's snapshot — probe through this one
-/// interface, so their answers cannot drift apart (slugtale-g1o.6: each probe is
-/// paid for exactly once per snapshot).
 pub trait ReadinessProbes {
-    /// The Settings value this snapshot sees. Loaded once and shared.
     fn settings(&self) -> Settings;
     fn microphone_granted(&self) -> bool;
     fn insertion_granted(&self) -> bool;
-    /// The Local Model this dictation would open, resolved from the same
-    /// Settings and the same model directory the engines resolve it from. The
-    /// answer is [`LocalModelRef::is_present`], not a second opinion about the
-    /// default path, so readiness and Engine Availability cannot disagree.
     fn local_model(&self, settings: &Settings) -> Option<LocalModelRef>;
-    /// Asked of the same providers the dictation path uses, so the report and
-    /// the engine decision cannot disagree.
     fn engine_availability(
         &self,
         settings: &Settings,
     ) -> Vec<(TranscriptionEngine, EngineAvailability)>;
 }
 
-/// The one place a Dictation Readiness answer is built.
-///
-/// Every fact is probed exactly once and the report is derived from the same
-/// values the answer is, so `dictation_available` can never contradict an item in
-/// `items` and a consumer cannot disagree with the start decision about which
-/// item is missing.
 pub fn readiness_snapshot(
     probes: &dyn ReadinessProbes,
     input: impl FnOnce(&Settings) -> DictationInput,
@@ -59,15 +42,11 @@ pub fn readiness_snapshot(
     }
 }
 
-/// The two OS permission answers, collected so they are asked once per snapshot.
 struct Permissions {
     microphone: bool,
     insertion: bool,
 }
 
-/// The required items of a report that are not ready. Written once here so
-/// the notification path and the diagnostic path cannot disagree about what
-/// "missing" means.
 pub fn missing_required_items(report: &SettingsReadinessReport) -> Vec<ReadinessItem> {
     report
         .items
@@ -77,8 +56,6 @@ pub fn missing_required_items(report: &SettingsReadinessReport) -> Vec<Readiness
         .collect()
 }
 
-/// The user input that starts one dictation. Voice Activation does not need a
-/// configured hotkey; every other readiness requirement is shared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DictationInput {
     Hotkey,
@@ -91,9 +68,6 @@ impl DictationInput {
     }
 }
 
-/// Which engine a dictation started right now would actually be transcribed by,
-/// falling back to the user's choice when nothing can run so the report still
-/// talks about the engine they picked.
 fn engine_in_play(
     settings: &Settings,
     engines: &[(TranscriptionEngine, EngineAvailability)],
@@ -101,15 +75,6 @@ fn engine_in_play(
     engine_that_can_run(settings.primary_engine, engines).unwrap_or(settings.primary_engine)
 }
 
-/// Whether the Whisper ggml file on disk gates dictation on this machine.
-///
-/// "Local model" meant one thing when Whisper was the only engine. Now that
-/// engines are plural it means *the assets for the engine that will actually
-/// run*, and every other engine already reports its own assets through
-/// [`EngineAvailability`] — Apple SpeechTranscriber's are system-managed and
-/// Parakeet's are installed from Settings. So the Whisper download is required
-/// only when Whisper is the engine in play, and a Parakeet-primary machine is
-/// no longer blocked on a file it will never open (slugtale-y4m).
 fn whisper_model_is_required(
     settings: &Settings,
     engines: &[(TranscriptionEngine, EngineAvailability)],
@@ -117,13 +82,6 @@ fn whisper_model_is_required(
     engine_in_play(settings, engines) == TranscriptionEngine::Whisper
 }
 
-/// One of the facts Dictation Readiness (CONTEXT.md) is built from.
-///
-/// The name is the wire string: it is what the settings window keys its
-/// checklist, its banner and its pane badges on, and what the Local Diagnostic
-/// Log names an unmet item by. Typing it once here means a rename is a change in
-/// one place, and the seam test in `tests/frontend-seam.test.mjs` fails if the
-/// settings window's list of ids does not move with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadinessItemId {
@@ -147,8 +105,6 @@ impl ReadinessItemId {
         }
     }
 
-    /// What the settings window calls this item. Stated here so the settings
-    /// window's own fallback copy and this report cannot drift apart.
     pub fn label(self) -> &'static str {
         match self {
             ReadinessItemId::Microphone => "Microphone permission",
@@ -160,16 +116,9 @@ impl ReadinessItemId {
         }
     }
 
-    /// The settings pane that shows this item and the control that settles it.
-    /// The settings window counts an item's problems against this pane, so every
-    /// item names one. The two permissions are granted in system settings, but
-    /// the Privacy pane is where Slugtale shows them and offers the way there.
     pub fn pane(self) -> ReadinessPane {
         match self {
             ReadinessItemId::Hotkey => ReadinessPane::Shortcut,
-            // The model and the engine share a pane: the model is one engine's
-            // assets, listed next to the engines that state why each one is
-            // unavailable.
             ReadinessItemId::LocalModel | ReadinessItemId::TranscriptionEngine => {
                 ReadinessPane::Transcription
             }
@@ -179,8 +128,6 @@ impl ReadinessItemId {
     }
 }
 
-/// One of the settings window's panes, by the id the window routes on. A subset
-/// of the window's sections: the panes a readiness item can send the user to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadinessPane {
@@ -204,16 +151,10 @@ impl ReadinessPane {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadinessItem {
     pub id: ReadinessItemId,
-    /// Derived from `id` and never set independently, so an item cannot claim a
-    /// name the backend does not know or a pane that does not exist.
     pub label: String,
     pub ready: bool,
     pub required: bool,
-    /// The settings pane that shows this item.
     pub pane: ReadinessPane,
-    /// Why this item is not ready, when the reason is specific to this machine
-    /// or this build rather than fixed guidance the settings window already
-    /// knows. `None` means the static copy for `id` is the whole story.
     pub detail: Option<String>,
 }
 
@@ -245,31 +186,17 @@ impl ReadinessItem {
         self
     }
 
-    /// This item, if the report carries one with this id.
     pub fn find(report: &SettingsReadinessReport, id: ReadinessItemId) -> Option<&ReadinessItem> {
         report.items.iter().find(|item| item.id == id)
     }
 }
 
-/// Dictation Readiness's answer for one activation, and the terms it came from.
-///
-/// `dictation_available` is derived from the same table of terms as `items` —
-/// it is exactly "every required item is ready" — so the answer and the list can
-/// never contradict each other, and a consumer can never disagree with the
-/// start decision about which item is missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingsReadinessReport {
     pub dictation_available: bool,
     pub items: Vec<ReadinessItem>,
 }
 
-/// One readiness term: what it asks, whether it gates dictation at all, and
-/// the answer for this activation.
-///
-/// The whole report is one table of these, so `dictation_available` is derived
-/// from the same terms the Settings window draws rather than restated next to
-/// them. A term that does not gate (`required: false`) is listed for the user's
-/// benefit and cannot fail the activation.
 struct ReadinessTerm {
     id: ReadinessItemId,
     required: bool,
@@ -293,19 +220,6 @@ impl ReadinessTerm {
     }
 }
 
-/// Dictation Readiness (ADR-0013): dictation is only available once microphone
-/// permission, text insertion permission, a configured hotkey, the assets for
-/// the engine that will run, and a Transcription Engine that can actually run
-/// are all ready. This is the whole rule, in the order the terms are checked.
-///
-/// The engine check is separate from the model check on purpose. A downloaded
-/// model says only that the weights are on disk; whether anything in *this
-/// binary* can decode them is a fact about the build, and a build compiled
-/// without `local-whisper-runtime` has the file and no runtime (slugtale-bre).
-///
-/// Voice Activation can make the hotkey optional; every other term is the same.
-/// The answer and the item list are two views of one table of terms, so they
-/// cannot disagree about which term failed.
 fn readiness_report(
     settings: &Settings,
     permissions: &Permissions,
@@ -343,10 +257,6 @@ fn readiness_report(
             engine_blocker.is_none(),
         )
         .with_detail(engine_blocker),
-        // Launch at Login is informational and optional (slugtale-9bx, ADR-0017):
-        // it is listed so Settings can point at it, but it is never required
-        // and never unready, because a user who chooses not to start Slugtale
-        // at sign-in still dictates normally.
         ReadinessTerm::new(ReadinessItemId::LaunchAtLogin, false, true),
     ];
 
@@ -372,19 +282,11 @@ fn readiness_item(id: ReadinessItemId, required: bool, ready: bool) -> Readiness
     }
 }
 
-/// One activation's immutable view of everything outside the audio and
-/// transcription engines themselves (slugtale-g1o.6).
-///
 /// Built once, by [`readiness_snapshot`], at the activation entry point: one
 /// Settings value, one probe per OS permission, one local-model answer, and the
 /// report derived from those same values. Consumers in the activation read this
 /// instead of re-reading global state, so they cannot disagree with each other
 /// or with the start decision even if the Settings File changes mid-activation.
-/// That is a promise about consistency between readers of one snapshot, not
-/// about any individual fact being right: whether a fact is right is the
-/// probes' business, and the Local Model term is exactly the fact that used to
-/// be answered from a different file than the engine opened.
-///
 /// It is request-scoped by construction: a later Hotkey builds a fresh one and
 /// therefore sees current OS permission state, honouring ADR-0013's
 /// live-readiness rule.
@@ -405,8 +307,6 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// Every readiness fact, settable one at a time, so the rule can be read as
-    /// a table of terms rather than as one call per permutation.
     struct FakeProbes {
         settings: Settings,
         microphone: bool,
@@ -452,21 +352,14 @@ mod tests {
         }
     }
 
-    /// A Local Model file that exists. The probe only ever asks `is_present`, so
-    /// pointing it at the platform temp directory answers true without a test
-    /// writing a model file or leaking one.
     fn present_model() -> LocalModelRef {
         LocalModelRef::at(std::env::temp_dir())
     }
 
-    /// A Local Model that resolves to a path with nothing on it, which is what a
-    /// user who has not downloaded the model yet sees.
     fn absent_model() -> LocalModelRef {
         LocalModelRef::at(unique_test_dir("no-such-model"))
     }
 
-    /// The same facts, counted, so tests can hold snapshots to the "probe
-    /// exactly once" contract (slugtale-g1o.6).
     struct CountingProbes {
         inner: FakeProbes,
         settings_loads: RefCell<usize>,
@@ -518,10 +411,6 @@ mod tests {
 
     #[test]
     fn every_readiness_id_still_travels_to_the_settings_window_under_its_old_name() {
-        // The settings window keys four separate tables off these names. Changing
-        // one here is safe for the compiler and invisible everywhere else, so the
-        // old names are pinned: a rename has to be a deliberate change to both
-        // sides at once, and tests/frontend-seam.test.mjs is what enforces that.
         let ids = [
             (ReadinessItemId::Microphone, "microphone"),
             (ReadinessItemId::TextInsertion, "text_insertion"),
@@ -545,9 +434,6 @@ mod tests {
 
     #[test]
     fn an_items_name_and_pane_come_from_its_id_and_cannot_disagree_with_it() {
-        // A report is built by naming ids and nothing else, so an item cannot
-        // claim a name the backend does not know or point the settings window at
-        // a pane that does not exist.
         let probes = FakeProbes::all_ready();
         let report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
 
@@ -565,10 +451,6 @@ mod tests {
 
     #[test]
     fn the_answer_is_exactly_every_required_item_being_ready() {
-        // The two are one computation, so they can only be written as two
-        // expressions. Pinning the invariant across every term that can fail is
-        // what keeps a later change from making an unavailable dictation look
-        // ready to the Settings window — or the reverse.
         let unready_by_term = [
             (
                 ReadinessItemId::Microphone,
@@ -661,9 +543,6 @@ mod tests {
         assert_eq!(*probes.engine_probes.borrow(), 1);
     }
 
-    /// The five terms of Dictation Readiness (ADR-0013), each flipped on its own
-    /// from an all-ready baseline. This table is the rule: a term that stops
-    /// mattering, or stops naming itself, cannot hide here.
     #[test]
     fn each_readiness_term_flips_availability_and_names_itself() {
         struct Term {
@@ -741,9 +620,6 @@ mod tests {
             },
             Term {
                 term: "the engine in play needs no Whisper model",
-                // slugtale-y4m: Parakeet decodes its own installed assets, so
-                // blocking dictation on a 148 MB download the user will never
-                // open is over-blocking, not safety.
                 probes: FakeProbes {
                     settings: parakeet_settings(),
                     model: Some(absent_model()),
@@ -803,8 +679,6 @@ mod tests {
             ..FakeProbes::all_ready()
         };
         let mut report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
-        // launch_at_login is ready here; force an optional item to be unready so
-        // the filter has an optional one to skip.
         for item in report.items.iter_mut() {
             if item.id == ReadinessItemId::LaunchAtLogin {
                 item.ready = false;
@@ -823,9 +697,6 @@ mod tests {
 
     #[test]
     fn launch_at_login_is_informational_and_never_blocks_dictation() {
-        // slugtale-9bx decision (ADR-0017): Launch at Login is an optional
-        // convenience, not a Dictation Readiness requirement. The row exists so
-        // Settings can point at it, and a user who leaves it off still dictates.
         let mut settings = configured_settings();
         settings.launch_at_login = false;
         let probes = FakeProbes {
@@ -882,8 +753,6 @@ mod tests {
 
     #[test]
     fn a_permission_denial_fails_the_activation_and_names_the_missing_item() {
-        // This is the fact the Settings-window fallback is driven from: the
-        // report must list the denied permission as a missing required item.
         let probes = FakeProbes {
             microphone: false,
             ..FakeProbes::all_ready()
@@ -913,8 +782,6 @@ mod tests {
 
         let activation = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
 
-        // A later Settings save lands in storage; the in-flight activation was
-        // built from the value it captured and must not shift under it.
         let mut changed = settings.clone();
         changed.hotkey = None;
 
@@ -961,8 +828,6 @@ mod tests {
         assert!(!activation.dictation_available());
         assert!(!engine.ready);
         assert!(engine.required);
-        // The user is told what is actually wrong with the binary, not sent to
-        // re-download a model they already have.
         assert_eq!(
             engine.detail.as_deref(),
             Some(
@@ -1015,9 +880,6 @@ mod tests {
 
     #[test]
     fn the_whisper_model_is_required_again_when_the_fallback_is_whisper() {
-        // The chosen engine lost its assets, so the router falls back to Whisper
-        // — which means the Whisper download is once more the thing standing
-        // between this machine and a transcription.
         let probes = FakeProbes {
             settings: parakeet_settings(),
             model: Some(absent_model()),
@@ -1049,8 +911,6 @@ mod tests {
 
     #[test]
     fn the_whisper_model_stays_required_when_nothing_can_run_for_a_whisper_user() {
-        // Nothing runs, so there is no engine in play to defer to; the user
-        // chose Whisper, so the report keeps describing Whisper's requirements.
         let probes = FakeProbes {
             model: Some(absent_model()),
             engines: whisper_runtime_not_built(),
@@ -1068,9 +928,6 @@ mod tests {
         assert!(local_model.required);
     }
 
-    /// The production wiring's own Local Model answer, over a real model
-    /// directory: the probe asks the engine catalogue, exactly as
-    /// `AppReadinessProbes` does in the Tauri tier.
     struct CatalogueProbes {
         catalogue: crate::TranscriptionEngineCatalogue,
         settings: Settings,
@@ -1101,9 +958,6 @@ mod tests {
         }
     }
 
-    /// A readiness report built the way the app builds one: from Settings and a
-    /// model directory, with the probe reading the model through the engine
-    /// catalogue rather than computing the answer itself.
     fn readiness_report_over(
         settings: &Settings,
         model_dir: &std::path::Path,
@@ -1127,8 +981,6 @@ mod tests {
 
     #[test]
     fn readiness_uses_the_default_local_model_when_settings_model_is_unset() {
-        // Settings name no model, so the managed default in the model directory
-        // is the file a dictation would open.
         let model_dir = unique_test_dir("readiness-default-model");
         std::fs::create_dir_all(&model_dir).unwrap();
         std::fs::write(crate::default_model_path(&model_dir), b"model").unwrap();
@@ -1146,10 +998,6 @@ mod tests {
 
     #[test]
     fn readiness_uses_the_settings_model_when_it_is_the_one_that_exists() {
-        // The defect: readiness looked only at the default path, so a user who
-        // chose a custom model in Settings was told dictation could not start
-        // and warm-up was suppressed, while the engine reported that very model
-        // available and ready to decode.
         let model_dir = unique_test_dir("readiness-custom-model");
         std::fs::create_dir_all(&model_dir).unwrap();
         let custom = model_dir.join("custom-model.bin");
@@ -1169,10 +1017,6 @@ mod tests {
 
     #[test]
     fn readiness_reports_a_stale_settings_model_as_missing_rather_than_falling_back() {
-        // The Settings File still names a model the user has since deleted, and
-        // the engine resolves that same stale path. Falling back to the default
-        // here is what let the report say "ready" about a file the engine would
-        // never open.
         let model_dir = unique_test_dir("readiness-stale-model-setting");
         std::fs::create_dir_all(&model_dir).unwrap();
         std::fs::write(crate::default_model_path(&model_dir), b"model").unwrap();
@@ -1197,9 +1041,6 @@ mod tests {
         std::fs::remove_dir_all(&model_dir).ok();
     }
 
-    /// Every combination of a Settings override and a model directory's
-    /// contents. The report's Local Model item and the Whisper engine must be
-    /// talking about one file: whatever the Settings name is what both open.
     #[test]
     fn readiness_and_engine_availability_agree_about_the_same_file() {
         for settings_model in [None, Some("custom-present.bin"), Some("custom-deleted.bin")] {
@@ -1233,9 +1074,6 @@ mod tests {
                     present,
                     "settings.model={settings_model:?} default_present={default_present}"
                 );
-                // A build without the Whisper runtime cannot decode the file
-                // whatever is on disk; that half is the report's own
-                // transcription_engine item, not the Local Model one.
                 assert_eq!(
                     availability.is_available(),
                     present && cfg!(feature = "local-whisper-runtime"),

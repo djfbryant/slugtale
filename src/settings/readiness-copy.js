@@ -10,14 +10,6 @@
       return "macos";
     })();
 
-    // Everything the settings window knows about each Dictation Readiness item
-    // that is not a fact about this machine: what to tell the user, how to send
-    // them to the right system-settings panel on their platform, and nothing
-    // else. One record per item, so an id cannot appear without its copy.
-    //
-    // The pane is not here: the report carries it, because which pane settles an
-    // item is a fact about Slugtale's own settings window rather than about the
-    // platform.
     const READINESS_COPY = {
       microphone: {
         guidance: {
@@ -47,9 +39,6 @@
       local_model: {
         guidance: "Download the local model before transcription can run."
       },
-      // Fallback only: the backend sends the engine's own reason as `detail`,
-      // because "this build has no Whisper" and "the model is not installed"
-      // need different actions from the user.
       transcription_engine: {
         guidance: "No transcription engine can run in this build."
       },

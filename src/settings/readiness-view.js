@@ -20,9 +20,6 @@
       label.append(srState);
       copy.append(label);
 
-      // The report may carry a reason only the backend knows — which engine
-      // this build compiled in, which assets are installed. Prefer it over the
-      // static copy, which cannot know any of that.
       const detail = item.detail || readinessGuidance(item.id);
       if (detail) {
         const small = document.createElement("small");
@@ -43,7 +40,6 @@
       return row;
     }
 
-    // The problems on the pane in view, above the controls that fix them.
     function renderReadinessList(report) {
       const list = document.getElementById("readiness-list");
       const items = blockersOf(report).filter(
@@ -53,8 +49,6 @@
       list.replaceChildren(...items.map(readinessRow));
     }
 
-    // The permissions are a fact about this machine, so their rows always say
-    // where they stand, and offer the way to system settings when not granted.
     function renderPermissions(report) {
       PERMISSION_ITEMS.forEach((id) => {
         const item = report.items.find((entry) => entry.id === id);
@@ -102,8 +96,6 @@
       renderBadges(report);
       renderPermissions(report);
 
-      // The first report opens the window on its first problem, so the fix is
-      // one look away. Later reports leave the user where they are.
       const firstProblem = blockersOf(report)[0];
       if (!paneChosen) {
         paneChosen = true;

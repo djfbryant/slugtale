@@ -1,6 +1,3 @@
-//! The always-on listener: a microphone the Voice Activation window holds open
-//! between wake checks.
-//!
 //! Dictation's recorder keeps a paused CoreAudio stream so the next Hotkey only
 //! pays for `play`. The listener cannot share that trick: after dictation or
 //! digital silence, `play` on a retained stream can succeed while the callback
@@ -10,13 +7,6 @@
 use crate::audio_capture::recorder::VoiceActivationRecorder;
 use crate::{AudioCaptureError, CapturedAudio};
 
-/// Always-on microphone used by Voice Activation.
-///
-/// Dictation's [`CpalAudioRecorder`] keeps a paused CoreAudio stream so the next
-/// hotkey only pays for `play`. The listener cannot share that trick: after
-/// dictation or digital silence, `play` on the retained stream can succeed while
-/// the callback supplies only zeros (slugtale-3wo). Closing therefore drops the
-/// recorder and the next start is given a fresh one.
 pub struct VoiceActivationCapture<R: VoiceActivationRecorder> {
     recorder: R,
     open: bool,
@@ -105,9 +95,6 @@ mod tests {
 
     #[test]
     fn a_second_listen_after_dictation_rebuilds_the_recorder() {
-        // The installed-app failure: first "Hi Slugtale" starts dictation, then
-        // later phrases do nothing because start() resumed the paused listener
-        // stream and CoreAudio fed it digital silence. Rebuilding is the fix.
         let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut capture = VoiceActivationCapture::new(GenerationRecorder::new(1, events.clone()));
 

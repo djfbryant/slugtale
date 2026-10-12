@@ -1,4 +1,3 @@
-//! Development-only local ASR corpus recorder and evaluation rig.
 
 use slugtale_lib::{
     CapturedAudio, CpalAudioRecorder, DictationRecorder, LocalWhisperRuntime, SpeedProfile,
@@ -13,63 +12,23 @@ const ADAPTER_SCHEMA_VERSION: u32 = 1;
 const RUN_SCHEMA_VERSION: u32 = 1;
 const REPORT_SCHEMA_VERSION: u32 = 1;
 
-/// The smallest number of human-voice clips the parent benchmark asks for.
-///
-/// Below this, a word error rate moves more when one clip is added or dropped
-/// than when a model genuinely improves, so a smaller corpus publishes
-/// pipeline measurements and no accuracy claim at all. The count is of human
-/// clips, not clips in total: padding a corpus to this size with synthesized or
-/// unattributed audio leaves the voice result exactly as small as it was.
 const MINIMUM_BENCHMARK_CLIPS: usize = 100;
 
-/// Where a clip's audio came from.
-///
-/// This is the field that keeps a report honest. A synthesized voice and a
-/// person speaking into a microphone produce very different error rates for the
-/// same text, so a corpus that does not say which one it holds cannot support a
-/// claim about how dictation sounds to the user it is for.
-///
-/// `Unknown` is the default rather than a validation error so a manifest written
-/// before this field existed keeps working. It is reported as unknown and never
-/// counted as human: "we do not know" has to stay distinguishable from "it was
-/// a person".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum ClipProvenance {
-    /// Recorded from a person speaking into the microphone, through Slugtale's
-    /// own capture path. Only this can back a claim about the user's accuracy.
     Human,
-    /// Synthesized speech from a text-to-speech voice. Useful for exercising
-    /// capture, decode and scoring end to end; it is not a stand-in for a voice.
     Synthetic,
-    /// The manifest did not say. Legacy corpora land here, and so does any clip
-    /// the maintainer forgot to annotate.
     #[default]
     Unknown,
 }
 
-/// A condition a clip deliberately includes because it stresses something the
-/// Dictation Workflow actually does.
-///
-/// Silence and names need no marker: an empty reference already identifies a
-/// non-speech clip, and `proper_terms` already identifies a named one. Noise and
-/// the segment edges are invisible from the audio alone — nothing in the
-/// manifest can distinguish "quiet room" from "quiet room with a fan" — so a
-/// clip has to say that it covers them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum CoverageProbe {
-    /// Speech with a competing sound in the room: fan, keyboard, traffic.
     Noise,
-    /// Silence before the first word, so a segment starts on a real pause rather
-    /// than on the artificial edge of a file.
     LeadingSegmentEdge,
-    /// Silence after the last word, so a segment ends on the same pause the
-    /// Segment Pause Detector acts on.
     TrailingSegmentEdge,
-    /// A final sound quieter than the Dictation Bar's level threshold — the case
-    /// where a level threshold, rather than a speech detector, decides whether a
-    /// word made it into the segment.
     QuietSegmentEnding,
 }
 
@@ -100,17 +59,10 @@ struct ClipSpec {
     wav_path: PathBuf,
     #[serde(default)]
     proper_terms: Vec<String>,
-    /// Whether this clip is a human voice, a synthesized voice, or unattributed.
-    /// A manifest that omits it loads as `Unknown`; see [`ClipProvenance`].
     #[serde(default)]
     provenance: ClipProvenance,
-    /// A local pseudonym for the person who spoke the clip, used only to count
-    /// distinct voices. Never a real name: the manifest is a file the maintainer
-    /// may share or archive, and a real name in it is a privacy problem rather
-    /// than a measurement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     speaker: Option<String>,
-    /// Conditions this clip covers on purpose. See [`CoverageProbe`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     probes: Vec<CoverageProbe>,
 }
@@ -160,13 +112,6 @@ struct EvaluationRun {
     results: Vec<AdapterResult>,
 }
 
-/// One measured dimension of the corpus, and whether it is present in enough
-/// material to make a claim about.
-///
-/// A dimension nobody recorded is the most likely way a report overstates
-/// itself, because an absent measurement looks exactly like a measurement
-/// nobody looked for. So each dimension is always present, with the reason it
-/// cannot be used when it is short.
 #[derive(Debug, Clone, serde::Serialize)]
 struct DimensionCoverage {
     dimension: String,
@@ -175,12 +120,6 @@ struct DimensionCoverage {
     reason: String,
 }
 
-/// What the corpus contains, and therefore what a report built from it may be
-/// used to claim.
-///
-/// Every number here is a count or an aggregate label. No clip ID, reference
-/// text, path or hypothesis reaches this struct, so it stays publishable
-/// alongside the rest of the report.
 #[derive(Debug, Clone, serde::Serialize)]
 struct CorpusCoverage {
     clips_total: usize,
@@ -193,27 +132,12 @@ struct CorpusCoverage {
     non_speech_clips: usize,
     noise_clips: usize,
     segment_edge_clips: usize,
-    /// See [`MINIMUM_BENCHMARK_CLIPS`].
     minimum_benchmark_clips: usize,
-    /// Whether this corpus can support any claim about dictation accuracy on a
-    /// human voice: at least [`MINIMUM_BENCHMARK_CLIPS`] clips must be `human`
-    /// on their own. Every whole-corpus accuracy field stays null unless this
-    /// is true, so a report cannot present synthetic or unattributed audio as a
-    /// voice result, and a corpus padded to the benchmark size with that audio
-    /// does not open it.
     real_voice_accuracy_supported: bool,
-    /// Everything that narrows what this report may be claimed to show, in
-    /// order. A closed `real_voice_accuracy_supported` gate always appears
-    /// here; a short dimension can appear while the gate is still open.
     gaps: Vec<String>,
     dimensions: Vec<DimensionCoverage>,
 }
 
-/// The same measurements restricted to one kind of audio.
-///
-/// A whole-corpus rate that mixes a person's voice with synthesized clips is a
-/// statement about neither, which is why the slices exist: the label is what
-/// makes a number readable, and the number is only meaningful next to it.
 #[derive(Debug, Clone, serde::Serialize)]
 struct ProvenanceSlice {
     provenance: ClipProvenance,
@@ -238,15 +162,8 @@ struct EngineAggregate {
     latency_p50_ms: Option<f64>,
     latency_p95_ms: Option<f64>,
     confidence_ece: Option<f64>,
-    /// Whether every clip in the corpus produced a hypothesis from this engine.
-    /// A rate computed over the clips that happened to succeed is a rate over a
-    /// corpus nobody chose, so this has to be visible next to the rate.
     clips_complete: bool,
-    /// The accuracy measurements split by where the audio came from. Always
-    /// contains all three kinds, so an absent one is visible as a zero.
     provenance_slices: Vec<ProvenanceSlice>,
-    /// Non-content reasons the whole-corpus accuracy fields above are absent.
-    /// Empty exactly when they are present.
     measurement_gaps: Vec<String>,
 }
 
@@ -260,11 +177,6 @@ struct PairAggregate {
     first_disagreement_wer: Option<f64>,
     second_disagreement_wer: Option<f64>,
     oracle_wer: Option<f64>,
-    /// Non-content reasons the pair accuracy fields above are absent. Empty
-    /// exactly when they are present. A pair rate needs the same boundary as an
-    /// engine rate — a corpus that can support a voice claim, no other audio
-    /// mixed in — plus both engines transcribing every clip, because a rate
-    /// over the pairs that happened to succeed describes a corpus nobody chose.
     measurement_gaps: Vec<String>,
 }
 
@@ -273,9 +185,6 @@ struct AggregateReport {
     schema_version: u32,
     corpus_name: String,
     clip_count: usize,
-    /// One plain sentence, first in the report, saying what this corpus can and
-    /// cannot be used to claim. The structured gate is `coverage`; this is the
-    /// line a reader meets before any number, so it cannot be skimmed past.
     claim_scope: String,
     coverage: CorpusCoverage,
     engines: Vec<EngineAggregate>,
@@ -471,11 +380,6 @@ fn confidence_ece(samples: &[(f64, bool)]) -> Option<f64> {
     )
 }
 
-/// Everything the scorer accumulates for one engine over some set of clips.
-///
-/// Grouping by provenance is just this struct built once per group, which keeps
-/// the whole-corpus numbers and the per-provenance slices provably the same
-/// measurement rather than two implementations that drift apart.
 #[derive(Debug, Clone, Default)]
 struct ScoreTotals {
     clips: usize,
@@ -572,20 +476,12 @@ impl ScoreTotals {
     }
 }
 
-/// The order slices are reported in, so two reports of the same corpus serialize
-/// identically. Unknown is last because it is the absence of an answer.
 const PROVENANCE_ORDER: [ClipProvenance; 3] = [
     ClipProvenance::Human,
     ClipProvenance::Synthetic,
     ClipProvenance::Unknown,
 ];
 
-/// The shared start of every "this corpus is not one voice" caveat.
-///
-/// A whole-corpus rate over a corpus that mixes a person with synthesized or
-/// unattributed audio is a statement about neither, so the engine aggregates
-/// and the pair aggregates both have to say why they withhold it. The caller
-/// appends what that means for its own fields.
 fn mixed_audio_reason(human: usize, synthetic: usize, unknown: usize) -> Option<String> {
     (synthetic > 0 || unknown > 0).then(|| {
         format!(
@@ -595,13 +491,6 @@ fn mixed_audio_reason(human: usize, synthetic: usize, unknown: usize) -> Option<
     })
 }
 
-/// Count what the corpus contains, and decide whether that is enough to talk
-/// about a voice at all.
-///
-/// The counts are derived from the manifest rather than trusted from it: a
-/// "silence" clip is one whose reference is empty, a "names" clip is one whose
-/// reference actually contains a listed term. Deriving them means a mislabelled
-/// clip cannot inflate its own dimension.
 fn coverage_of(manifest: &CorpusManifest) -> CorpusCoverage {
     let mut human = 0usize;
     let mut synthetic = 0usize;
@@ -730,9 +619,6 @@ fn coverage_of(manifest: &CorpusManifest) -> CorpusCoverage {
         },
     ];
 
-    // The claim is about a human voice, so the human clips themselves have to
-    // meet the benchmark size. A corpus padded to 100 with synthesized or
-    // unattributed clips is still a pipeline check.
     let real_voice_accuracy_supported = human >= MINIMUM_BENCHMARK_CLIPS;
     let mut gaps = Vec::new();
     if human == 0 {
@@ -777,10 +663,6 @@ fn coverage_of(manifest: &CorpusManifest) -> CorpusCoverage {
     }
 }
 
-/// The sentence a reader meets before any number in the report.
-///
-/// It says what the corpus measured and, when that is not a voice, says so
-/// before the rates rather than in a footnote underneath them.
 fn claim_scope_for(coverage: &CorpusCoverage) -> String {
     if coverage.real_voice_accuracy_supported {
         let qualified = coverage
@@ -863,9 +745,6 @@ fn aggregate_engine(
         coverage.clips_synthetic,
         coverage.clips_unknown,
     ) {
-        // The corpus has enough human clips to be a benchmark, but it also
-        // holds audio that is not a voice. Publishing one rate over the blend
-        // would read as a voice result; the slices are the labelled numbers.
         measurement_gaps.push(format!(
             "{reason}; the per-provenance slices describe the audio they name"
         ));
@@ -878,9 +757,6 @@ fn aggregate_engine(
             whole.clips
         ));
     }
-    // An accuracy field is published only when there is nothing to caveat. The
-    // alternative — publishing a rate over the successful subset next to an
-    // error count — reads as a rate over the corpus.
     let publishable = measurement_gaps.is_empty();
 
     let provenance_slices = PROVENANCE_ORDER
@@ -894,11 +770,6 @@ fn aggregate_engine(
             {
                 totals.add(clip, by_id[clip.id.as_str()]);
             }
-            // An unattributed clip cannot be attributed here either. Reporting a
-            // rate for it would hand back a number indistinguishable from a
-            // voice result at a glance, which is exactly what the label exists
-            // to prevent; the per-clip hypotheses remain in the sensitive run
-            // file for anyone who re-annotates the manifest.
             let attributable = provenance != ClipProvenance::Unknown;
             ProvenanceSlice {
                 provenance,
@@ -927,8 +798,6 @@ fn aggregate_engine(
         silence_hallucination_rate: publishable
             .then(|| whole.silence_hallucination_rate())
             .flatten(),
-        // Latency is a property of the machine and the model, not of whose voice
-        // was recorded, so it survives every caveat above.
         latency_p50_ms: percentile(&whole.latencies, 50.0),
         latency_p95_ms: percentile(&whole.latencies, 95.0),
         confidence_ece: publishable.then(|| whole.confidence_ece()).flatten(),
@@ -991,12 +860,6 @@ fn aggregate_pair(
         }
     }
 
-    // The same boundary as the engine aggregates. A pair rate over a corpus
-    // that cannot support a voice claim, or that mixes other audio into it,
-    // reads exactly like the voice result the boundary exists to prevent. An
-    // incomplete pair is the survivor problem again: both engines have to have
-    // transcribed every clip, or the rate describes the clips that happened to
-    // succeed. Counts and latencies stay.
     let mut measurement_gaps = Vec::new();
     if !coverage.real_voice_accuracy_supported {
         measurement_gaps.push(format!(
@@ -1140,9 +1003,6 @@ fn validate_manifest(manifest: &CorpusManifest) -> Result<(), String> {
         if clip.proper_terms.iter().any(|term| term.trim().is_empty()) {
             return Err(format!("clip {} has an empty proper term", clip.id));
         }
-        // A speaker label is a pseudonym for counting distinct voices, so it is
-        // held to the same shape as a clip ID: a shape a real name, an email
-        // address or a path would not survive.
         if let Some(speaker) = &clip.speaker {
             if speaker.is_empty()
                 || !speaker
@@ -1176,7 +1036,7 @@ fn write_f32_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
     bytes.extend_from_slice(b"WAVEfmt ");
     bytes.extend_from_slice(&16u32.to_le_bytes());
     bytes.extend_from_slice(&3u16.to_le_bytes()); // IEEE float
-    bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+    bytes.extend_from_slice(&1u16.to_le_bytes());
     bytes.extend_from_slice(&16_000u32.to_le_bytes());
     bytes.extend_from_slice(&(16_000u32 * 4).to_le_bytes());
     bytes.extend_from_slice(&4u16.to_le_bytes());
@@ -1647,9 +1507,6 @@ fn validate_corpus_audio(
         coverage.clips_human, coverage.clips_synthetic, coverage.clips_unknown, claim_state
     );
     if !coverage.real_voice_accuracy_supported {
-        // Surfaced while the corpus is still being recorded, because the cheapest
-        // moment to add a human clip or a speaker label is before the recordings
-        // exist, not after a run has already been scored from them.
         for gap in &coverage.gaps {
             println!("  gap: {gap}");
         }
@@ -1668,8 +1525,6 @@ fn run_adapter_process(
         .args(arguments)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        // Adapter stderr is intentionally suppressed: an adapter must return
-        // non-content errors in its schema, never leak a hypothesis via logs.
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("could not start adapter {program:?}: {error}"))?;
@@ -1823,8 +1678,6 @@ fn whisper_adapter(options: &CliOptions) -> Result<(), String> {
         let response = match read_validated_f32_wav(&request.wav_path) {
             Ok(samples) => {
                 let audio_ms = samples.len() as f64 / 16.0;
-                // Balanced, the app's default. The rig measures transcription,
-                // not decode strategies, and its manifest records no profile.
                 match runtime
                     .transcribe(CapturedAudio::mono_16khz(samples), SpeedProfile::default())
                 {
@@ -2205,10 +2058,6 @@ mod tests {
             .contains("relative"));
     }
 
-    /// A corpus recorded before provenance existed is still a real corpus. It
-    /// must keep working, and it must keep saying so: the honest answer to "we
-    /// do not know what this audio is" is to report it as unknown, never to
-    /// guess human.
     #[test]
     fn a_manifest_without_provenance_loads_as_unattributed_and_stays_that_way() {
         let legacy = br#"{
@@ -2237,9 +2086,6 @@ mod tests {
         assert_eq!(coverage.clips_human, 0);
         assert!(!coverage.real_voice_accuracy_supported);
 
-        // `init` re-serializes the manifest into the research directory, so the
-        // stored copy has to state the unknown rather than drop the field and
-        // leave a later reader to assume it was human.
         let stored = serde_json::to_string(&parsed).unwrap();
         assert!(
             stored.contains("\"provenance\":\"unknown\""),
@@ -2247,9 +2093,6 @@ mod tests {
         );
     }
 
-    /// Annotating provenance is only useful if the values are constrained. An
-    /// unrecognized one has to fail loudly here, not become a fourth kind of
-    /// audio that no count ever notices.
     #[test]
     fn provenance_and_speaker_labels_are_constrained() {
         let readable: CorpusManifest = serde_json::from_slice(
@@ -2296,9 +2139,6 @@ mod tests {
         );
         assert!(misspelled.is_err());
 
-        // The speaker label is held to a pseudonym's shape. A real name in the
-        // manifest is a privacy problem in a file the maintainer may share, and
-        // it is much cheaper to refuse it at the door.
         let mut named = manifest();
         named.clips[0].speaker = Some("Darren Bryant".to_string());
         assert!(validate_manifest(&named)
@@ -2309,10 +2149,6 @@ mod tests {
         assert!(validate_manifest(&blank).is_err());
     }
 
-    /// A synthesized corpus is a legitimate thing to build — it exercises
-    /// capture, decode and scoring end to end. It is not evidence about a voice,
-    /// so the report has to withhold the whole-corpus rate rather than print it
-    /// and ask the reader to remember the caveat.
     #[test]
     fn a_synthetic_or_unattributed_corpus_never_publishes_a_whole_corpus_rate() {
         let engine = EngineIdentity {
@@ -2337,8 +2173,6 @@ mod tests {
                 schema_version: RUN_SCHEMA_VERSION,
                 run_id: "run".into(),
                 engine: engine.clone(),
-                // Perfectly clean text: a synthesized corpus scores beautifully,
-                // which is exactly the number that must not escape as accuracy.
                 results: corpus
                     .clips
                     .iter()
@@ -2357,15 +2191,10 @@ mod tests {
             assert_eq!(aggregate.normalized_wer, None, "{label}");
             assert_eq!(aggregate.punctuation_accuracy, None, "{label}");
             assert!(!aggregate.measurement_gaps.is_empty(), "{label}");
-            // Latency is a property of the machine and the model, not of whose
-            // voice was recorded, so it survives the caveat.
             assert_eq!(aggregate.latency_p50_ms, Some(120.0), "{label}");
         }
     }
 
-    /// The other half of the integrity rule: a corpus that really is people
-    /// really speaking, in the quantity the benchmark asks for, publishes its
-    /// rates. A gate that can never open would be as useless as no gate.
     #[test]
     fn a_sufficient_human_corpus_does_publish_its_rates() {
         let engine = EngineIdentity {
@@ -2399,12 +2228,8 @@ mod tests {
         assert_eq!(human.normalized_wer, Some(0.0));
     }
 
-    /// The benchmark gate counts human clips, not clips. A corpus padded to
-    /// 100 with synthesized or unattributed audio is the exact shape that used
-    /// to open the gate with a single human clip in it.
     #[test]
     fn the_human_benchmark_gate_counts_human_clips_not_corpus_size() {
-        // 100 clips, one of them a voice.
         let padded = coverage_of(&provenance_corpus(1, 99, 0));
         assert_eq!(padded.clips_total, MINIMUM_BENCHMARK_CLIPS);
         assert_eq!(padded.clips_human, 1);
@@ -2418,7 +2243,6 @@ mod tests {
             padded.gaps
         );
 
-        // 100 clips, 99 of them voices: still one clip short.
         let almost = coverage_of(&provenance_corpus(99, 0, 1));
         assert_eq!(almost.clips_total, MINIMUM_BENCHMARK_CLIPS);
         assert!(!almost.real_voice_accuracy_supported);
@@ -2431,22 +2255,16 @@ mod tests {
             almost.gaps
         );
 
-        // 100 human clips with no other audio: the benchmark itself.
         let sufficient = coverage_of(&provenance_corpus(MINIMUM_BENCHMARK_CLIPS, 0, 0));
         assert!(sufficient.real_voice_accuracy_supported);
         assert!(sufficient.gaps.is_empty(), "{:?}", sufficient.gaps);
 
-        // 100 human clips plus synthetic audio: the human benchmark is still
-        // there, but the corpus is no longer one voice.
         let mixed = coverage_of(&provenance_corpus(MINIMUM_BENCHMARK_CLIPS, 2, 0));
         assert!(mixed.real_voice_accuracy_supported);
         assert_eq!(mixed.clips_total, MINIMUM_BENCHMARK_CLIPS + 2);
         assert!(mixed.gaps.is_empty(), "{:?}", mixed.gaps);
     }
 
-    /// A corpus big enough for the benchmark, but not all one voice, must not
-    /// publish the blend as a voice result: the whole-corpus fields are
-    /// withheld and the labelled slices carry the numbers.
     #[test]
     fn a_mixed_corpus_does_not_publish_its_whole_corpus_rate() {
         let engine = EngineIdentity {
@@ -2479,10 +2297,8 @@ mod tests {
             "{:?}",
             aggregate.measurement_gaps
         );
-        // Counts and latency are not voice claims, so they survive.
         assert_eq!(aggregate.clips_total, MINIMUM_BENCHMARK_CLIPS + 2);
         assert_eq!(aggregate.latency_p50_ms, Some(100.0));
-        // The honest labelled slices remain.
         let slice = |provenance: ClipProvenance| {
             aggregate
                 .provenance_slices
@@ -2499,9 +2315,6 @@ mod tests {
         assert_eq!(slice(ClipProvenance::Synthetic).normalized_wer, Some(0.0));
     }
 
-    /// A run where the engine failed on some clips used to publish a rate over
-    /// the survivors with an error count printed underneath it. That rate
-    /// describes a corpus nobody chose.
     #[test]
     fn an_incomplete_run_withholds_accuracy_instead_of_scoring_the_survivors() {
         let engine = EngineIdentity {
@@ -2557,8 +2370,6 @@ mod tests {
             "{:?}",
             aggregate.measurement_gaps
         );
-        // The per-provenance slice counts the failure too, so the shortfall is
-        // visible at the same level as the number it qualifies.
         let human = aggregate
             .provenance_slices
             .iter()
@@ -2568,9 +2379,6 @@ mod tests {
         assert_eq!(human.clips_scored, MINIMUM_BENCHMARK_CLIPS - failed);
     }
 
-    /// The pair rates sit behind the same boundary as the engine rates: a
-    /// corpus padded to 100 clips with synthesized audio withholds them even
-    /// though it is large enough to look like a benchmark.
     #[test]
     fn a_pair_on_a_padded_corpus_withholds_its_rates() {
         let first_engine = EngineIdentity {
@@ -2606,9 +2414,6 @@ mod tests {
         );
     }
 
-    /// A pair that covers every clip on a corpus that can support the claim
-    /// publishes its rates, so the boundary does not swallow the measurements
-    /// it exists to qualify.
     #[test]
     fn a_sufficient_pair_publishes_its_rates() {
         let first_engine = EngineIdentity {
@@ -2624,8 +2429,6 @@ mod tests {
         let corpus = provenance_corpus(MINIMUM_BENCHMARK_CLIPS, 0, 0);
         let first = perfect_run(&corpus, &first_engine, "first-run");
         let mut second = perfect_run(&corpus, &second_engine, "second-run");
-        // One clip hears "setting" instead of "settings": one disagreement, so
-        // the disagreement rates are measured rather than assumed.
         let differing = second
             .results
             .iter_mut()
@@ -2644,8 +2447,6 @@ mod tests {
         assert_eq!(pair.oracle_wer, Some(0.0));
     }
 
-    /// A pair rate over the clips both engines happened to transcribe is the
-    /// survivor problem again: the rates are withheld and the counts stay.
     #[test]
     fn an_incomplete_pair_withholds_its_rates_instead_of_scoring_the_survivors() {
         let first_engine = EngineIdentity {
@@ -2672,8 +2473,6 @@ mod tests {
         }
 
         let report = score_runs(&corpus, &[first, second]).unwrap();
-        // Completeness is a property of each run and of the pair that joins
-        // them: the complete run still publishes its own rate.
         assert_eq!(report.engines[0].normalized_wer, Some(0.0));
         let pair = &report.pairs[0];
         assert_eq!(pair.clips_compared, 3);
@@ -2691,8 +2490,6 @@ mod tests {
         );
     }
 
-    /// The dimensions the finding names — voices, names, silence, noise and
-    /// segment edges — have to be countable and, when absent, named.
     #[test]
     fn coverage_counts_every_dimension_and_names_the_ones_that_are_missing() {
         let mut corpus = manifest();
@@ -2709,8 +2506,6 @@ mod tests {
                 ..clip("002-second-voice", "Compare Slugtale and Parakeet.")
             },
             ClipSpec {
-                // A proper term the reference never says must not inflate the
-                // names dimension: the scorer only scores terms that occur.
                 proper_terms: vec!["whisper.cpp".to_string()],
                 ..clip("003-unused-term", "Open the settings.")
             },
@@ -2750,8 +2545,6 @@ mod tests {
         assert_eq!(dimension("segment-edges").clips, 2);
         assert!(coverage.dimensions.iter().all(|dimension| dimension.supported));
 
-        // Strip the corpus back to the bare minimum and every dimension has to
-        // report itself unsupported rather than quietly read as zero-or-fine.
         let mut bare = manifest();
         bare.clips = vec![clip("001-bare", "Open the settings.")];
         let bare_coverage = coverage_of(&bare);
@@ -2780,9 +2573,6 @@ mod tests {
         }
     }
 
-    /// Provenance is what the whole-corpus gate reads, so a label that no
-    /// dimension depends on is a label nothing enforces. This keeps the two
-    /// agreeing: the scorer and the report must slice on the same field.
     #[test]
     fn the_report_slices_on_the_same_provenance_the_manifest_records() {
         let engine = EngineIdentity {
@@ -2809,9 +2599,6 @@ mod tests {
             results: corpus
                 .clips
                 .iter()
-                // Only the human clip is transcribed correctly. If the slices
-                // were computed over something other than `provenance`, the
-                // synthetic slice could not come out as the worst one.
                 .map(|spec| {
                     let hypothesis = if spec.provenance == ClipProvenance::Human {
                         spec.expected_text.clone()
@@ -2925,11 +2712,6 @@ mod tests {
         }
     }
 
-    /// A corpus split by provenance, sized to whatever boundary a test needs.
-    ///
-    /// Every clip carries a proper term, a probe and (for humans) a speaker
-    /// label, so all five coverage dimensions are supported and a test about
-    /// provenance is not accidentally also a test about a missing dimension.
     fn provenance_corpus(human: usize, synthetic: usize, unknown: usize) -> CorpusManifest {
         let mut corpus = manifest();
         corpus.name = "provenance boundary".to_string();
@@ -2965,8 +2747,6 @@ mod tests {
         corpus
     }
 
-    /// One run whose hypothesis is the reference text itself, so a test about
-    /// gating is not also a test about error rates.
     fn perfect_run(
         corpus: &CorpusManifest,
         engine: &EngineIdentity,
@@ -3037,9 +2817,6 @@ mod tests {
         let report = score_runs(&corpus, &runs).unwrap();
         assert_eq!(report.engines.len(), 2);
         let a = &report.engines[0];
-        // Three clips is a pipeline smoke test, not a benchmark, so the
-        // whole-corpus accuracy fields are withheld. The measurements still
-        // exist; they sit on the slice for the audio they actually describe.
         assert!(!report.coverage.real_voice_accuracy_supported);
         assert_eq!(a.normalized_wer, None);
         assert_eq!(a.latency_p50_ms, Some(200.0));
@@ -3057,10 +2834,6 @@ mod tests {
         assert_eq!(human.silence_hallucination_rate, Some(1.0));
 
         let pair = &report.pairs[0];
-        // The pair rates sit behind the same boundary as the engine rates: a
-        // three-clip smoke corpus cannot support a voice claim, so agreement,
-        // disagreement WER and oracle WER are withheld here too. The counts
-        // still describe what was compared.
         assert_eq!(pair.normalized_agreement_rate, None);
         assert_eq!(pair.first_disagreement_wer, None);
         assert_eq!(pair.second_disagreement_wer, None);
@@ -3089,19 +2862,10 @@ mod tests {
         );
     }
 
-    /// One level tick, 20 ms, which is roughly the cadence the capture loop
-    /// reports voice levels at. Segment-edge behaviour is a question about
-    /// timescales, so the fixtures below are built in ticks rather than in
-    /// seconds of real time.
     const LEVEL_WINDOW: usize = 320;
     const TICK_MS: u64 = 20;
-    /// The Segment Pause the shipped Settings File defaults to. Production
-    /// derives each dictation's pause from the Settings it pins (ADR-0026), so
-    /// the shipped default is what these detector replays measure.
     const SEGMENT_PAUSE: Duration = Duration::from_secs(DEFAULT_SEGMENT_PAUSE_SECS as u64);
 
-    /// A deterministic stand-in for random noise, so a fixture is a pure
-    /// function of its parameters and no test depends on a seed or a clock.
     fn noise(seed: u32) -> impl Iterator<Item = f32> {
         let mut state = seed | 1;
         std::iter::from_fn(move || {
@@ -3112,13 +2876,10 @@ mod tests {
         })
     }
 
-    /// A microphone's noise floor: not digital silence, and far below speech.
     fn room_tone(seed: u32) -> Vec<f32> {
         noise(seed).take(16_000).map(|value| value * 0.003).collect()
     }
 
-    /// A speech stand-in with an amplitude-modulated carrier, so it has the
-    /// envelope a voice has instead of the flat top of a test tone.
     fn speech(seed: u32, amplitude: f32) -> Vec<f32> {
         noise(seed)
             .take(16_000)
@@ -3132,9 +2893,6 @@ mod tests {
             .collect()
     }
 
-    /// A word at an even, known level. The level pipeline compares an RMS
-    /// against a fixed threshold, so a fixture whose RMS does not depend on
-    /// where a window happens to fall is what a boundary measurement needs.
     fn even_level_word(amplitude: f32) -> Vec<f32> {
         (0..16_000)
             .map(|index| {
@@ -3144,8 +2902,6 @@ mod tests {
             .collect()
     }
 
-    /// A steady room hum, loud enough to matter and even in pitch. It contains
-    /// no speech at all; the level pipeline has no way of knowing that.
     fn fan(seed: u32) -> Vec<f32> {
         noise(seed)
             .take(16_000)
@@ -3157,22 +2913,15 @@ mod tests {
             .collect()
     }
 
-    /// One representative window from the middle of a fixture, so a tick reads
-    /// the steady part of the signal rather than an onset.
     fn window(samples: &[f32]) -> &[f32] {
         let start = samples.len() / 2 - LEVEL_WINDOW / 2;
         &samples[start..start + LEVEL_WINDOW]
     }
 
-    /// The level the Dictation Bar renders and the Segment Pause Detector reads,
-    /// built from the production helpers rather than a copy of them. A test that
-    /// passes here is evidence about the shipped numbers.
     fn voice_level(samples: &[f32]) -> f32 {
         voice_level_from_rms(audio_level_from_samples(samples))
     }
 
-    /// Replays a level timeline through the production detector and returns the
-    /// ticks at which it asked for the segment to be flushed.
     fn flush_ticks(timeline: &[&[f32]]) -> Vec<usize> {
         let mut detector = SegmentPauseDetector::with_pause(SEGMENT_PAUSE);
         let start = std::time::Instant::now();
@@ -3186,12 +2935,6 @@ mod tests {
         flushed
     }
 
-    /// The finding this unit answers is that a level threshold is not a speech
-    /// detector: a fan can look like speech, and a quiet final sound can fall
-    /// below the limit. This is a measurement of where the shipped helpers draw
-    /// that line. It deliberately claims nothing about whether a learned
-    /// detector would draw it better — that has to be measured rather than
-    /// assumed, and adding one is out of scope here (ADR-0027).
     #[test]
     fn signal_helpers_tell_digital_silence_room_tone_and_speech_apart() {
         let silence = vec![0.0f32; 16_000];
@@ -3219,16 +2962,9 @@ mod tests {
         assert!(audio_level_from_samples(&quiet_room) < audio_level_from_samples(&speech_level));
         assert!(is_voice_level(voice_level(&speech_level)));
         assert!(!is_voice_level(voice_level(&quiet_room)));
-        // The fan is the point of the whole exercise: no speech in it at all, and
-        // unambiguously above the threshold the Segment Pause Detector uses.
         assert!(is_voice_level(voice_level(&hum)));
     }
 
-    /// The capture path resamples and downmixes before anything else sees the
-    /// audio, so a fault here is invisible in every downstream measurement. The
-    /// comparison is against what naive point sampling would have done with the
-    /// same stream, because that is the regression the box filter exists to
-    /// prevent (slugtale-8dj).
     #[test]
     fn the_capture_resampler_preserves_the_speech_band_and_attenuates_above_it() {
         let source_rate = 48_000;
@@ -3262,21 +2998,14 @@ mod tests {
             "3:1 decimation produced {} samples, expected about {expected}",
             resampled.samples.len()
         );
-        // A resampler that flattens the voice is worse than no resampler, so
-        // the speech band has to come through at its original amplitude.
         let before = audio_level_from_samples(&channel_mean(&interleaved));
         let after = audio_level_from_samples(&resampled.samples);
         assert!(
             (after / before - 1.0).abs() < 0.05,
             "300 Hz level moved from {before} to {after}"
         );
-        // Mono must stay mono: a two-channel stream is one voice, not two.
         assert!(is_voice_level(voice_level(&resampled.samples)));
 
-        // Above the 8 kHz Nyquist limit of the 16 kHz target, the box filter
-        // attenuates rather than folding the tone back down into the speech
-        // band. It attenuates, it does not remove, and recording that honestly
-        // is the difference between a measurement and a quality claim.
         let above_nyquist = interleave(&source_tone(12_000.0));
         let filtered =
             captured_audio_from_interleaved_input(source_rate, 2, &above_nyquist).unwrap();
@@ -3301,9 +3030,6 @@ mod tests {
         );
     }
 
-    /// Segment edges are where a dictation actually breaks: a pause that is
-    /// missed merges two sentences, and a pause that arrives early cuts a word
-    /// off. Both are decided by the level threshold, so both are worth recording.
     #[test]
     fn the_level_threshold_ends_a_segment_on_a_real_pause_and_cannot_see_a_fan() {
         let speech_fixture = speech(21, 0.35);
@@ -3313,9 +3039,6 @@ mod tests {
         let quiet_window = window(&quiet_fixture);
         let fan_window = window(&fan_fixture);
 
-        // Two seconds of speech, then eight seconds of a genuine pause. The
-        // five-second Segment Pause is the shipped default rather than a scaled
-        // stand-in, so this exercises the real threshold.
         let mut timeline: Vec<&[f32]> = Vec::new();
         timeline.extend(std::iter::repeat(speech_window).take(100));
         timeline.extend(std::iter::repeat(quiet_window).take(400));
@@ -3333,11 +3056,6 @@ mod tests {
             "flushed {elapsed:?} after the last word, against a {SEGMENT_PAUSE:?} pause"
         );
 
-        // The same speech and the same pause, but the room has a fan in it. The
-        // threshold cannot tell a steady hum from a voice, so the pause never
-        // elapses and the dictation never flushes. This is a measurement of the
-        // shipped rule, and the reason a level threshold is not a speech
-        // detector.
         let mut noisy: Vec<&[f32]> = Vec::new();
         noisy.extend(std::iter::repeat(speech_window).take(100));
         noisy.extend(std::iter::repeat(fan_window).take(400));
@@ -3350,11 +3068,6 @@ mod tests {
             "a sustained hum above the threshold holds every pause open indefinitely"
         );
 
-        // The other end of the same rule, measured either side of the line. A
-        // final word a little above the threshold reads as voice; a little below
-        // it reads as silence, and the segment edge lands after that word
-        // instead of on it. These numbers are where the shipped threshold falls,
-        // not a claim that a different threshold would be better.
         let just_heard = even_level_word(0.0198);
         let just_missed = even_level_word(0.0180);
         assert!(is_voice_level(voice_level(&just_heard)));

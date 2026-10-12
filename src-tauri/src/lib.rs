@@ -1,44 +1,24 @@
-/// Tauri app-shell helpers for Slugtale's resident tray/settings surface
-/// (ADR-0007, ADR-0008). Re-exported so existing `slugtale_lib::*` call sites
-/// keep compiling.
 mod app_shell;
 pub use app_shell::*;
 
-/// Window identity: the label every window Slugtale owns is reached by, and the
-/// close and focus policy that follows from which window it is. One place, so a
-/// misspelled label cannot quietly become a window that never appears.
 mod window_label;
 pub use window_label::*;
 
 mod app_update;
 pub use app_update::*;
 
-/// The Local Diagnostic Log domain (ADR-0019). Extracted into its own module;
-/// re-exported so existing `slugtale_lib::*` call sites keep compiling.
 mod diagnostics;
 pub use diagnostics::*;
 
-/// File locations (ADR-0018): the one module that knows where the Settings
-/// File, Usage File, Local Diagnostic Log, and model directory live.
 mod app_files;
 pub use app_files::*;
 
 mod recording_feedback;
 pub use recording_feedback::*;
 
-/// Audio Capture (CONTEXT.md): microphone recording and the perceptual voice
-/// level the dictation waveform renders. Extracted into its own module; the
-/// `DictationRecorder` and `VoiceActivationRecorder` traits stay the test seams
-/// and `cpal` an impl detail behind `CpalAudioRecorder`. Re-exported so the
-/// research examples under `examples/` can reach the recorder without knowing
-/// which module owns it.
 mod audio_capture;
 pub use audio_capture::*;
 
-/// Text Insertion and Insertion Rescue (CONTEXT.md): the clipboard-free
-/// insertion pipeline and the clipboard rescue that preserves a transcription
-/// when insertion fails. The `*System` traits stay the platform-adapter seam.
-/// Re-exported so existing `slugtale_lib::*` call sites keep compiling.
 mod text_insertion;
 pub use text_insertion::*;
 
@@ -50,22 +30,12 @@ mod json_file;
 mod settings;
 pub use settings::*;
 
-/// Usage (CONTEXT.md, ADR-0025): the opt-in Daily Usage Records, the Time Saved
-/// derived from them, and the queue that carries a Counted Segment from the
-/// Dictation Runtime to the writer without ever making a Dictation wait.
-/// Aggregates only — no transcription, no audio, no text target — which is what
-/// keeps this outside Dictation History (ADR-0002).
 mod usage;
 pub use usage::*;
 
-/// The Typing Baseline and the three Typing Challenges that measure it
-/// (CONTEXT.md, ADR-0025). Lives in the Settings File so it survives turning
-/// Usage off.
 mod typing_baseline;
 pub use typing_baseline::*;
 
-/// Dictation Bar geometry: where the bar sits on screen and which part of its
-/// transparent window actually paints (slugtale-z7a).
 mod dictation_bar;
 pub use dictation_bar::*;
 
@@ -75,9 +45,6 @@ pub use local_model::*;
 mod permission_setup;
 pub use permission_setup::*;
 
-/// The Transcription Engine boundary (CONTEXT.md): the seam every local speech
-/// recognizer sits behind, and the non-content vocabulary Settings and the
-/// Second Opinion router share (slugtale-vjs).
 mod transcription_engine;
 pub use transcription_engine::*;
 
@@ -87,63 +54,31 @@ pub use engine_catalogue::*;
 mod asr;
 pub use asr::*;
 
-/// NVIDIA Parakeet TDT v2 0.6B as a Transcription Engine (slugtale-vjs.1).
-/// Portable: the ONNX artefacts run on macOS, Windows, and Linux, so the
-/// provider is compiled everywhere and only its inference is feature-gated.
 mod parakeet;
 pub use parakeet::*;
 mod phonon;
 pub use phonon::PhononProvider;
 
-/// Apple SpeechTranscriber as a Transcription Engine (slugtale-vjs.2). The
-/// provider type exists on every platform so Settings can explain why the
-/// engine is unavailable; only the macOS build can actually transcribe.
 mod apple_speech;
 pub use apple_speech::*;
 
-/// Second Opinion routing (slugtale-vjs.3): the fixed, inspectable rules that
-/// decide when a second local Transcription Engine is worth asking, and which
-/// of the two complete transcripts to insert.
 mod second_opinion;
 pub use second_opinion::*;
 
-/// The Second Opinion worker: the thread, the channel, and the shared
-/// in-flight gate that let one engine answer off the dictation thread. Split
-/// from the router so the escalation policy has no concurrency in it, and the
-/// transport has no opinion about engines.
 mod second_opinion_transport;
 
-/// Dictation Segments and the Segment Pause that ends one (CONTEXT.md,
-/// ADR-0015): the rule that decides when the speech so far is worth inserting
-/// while the microphone is still running.
 mod segmentation;
 pub use segmentation::*;
 
 mod dictation_workflow;
 pub use dictation_workflow::*;
 
-/// The Dictation Runtime (CONTEXT.md, ADR-0015, ADR-0026): the module that
-/// coordinates ordered Dictation Segment execution — spoken order, the
-/// watermark cut, rescue suspension, panic containment, and the Counted Segment
-/// handoff — with everything OS-touching behind the `DictationRuntimeHost`
-/// adapter, which the Dictation Host implements. Usage counting is its half:
-/// `usage` owns the queue those counted segments travel to the Usage File on.
 mod dictation_runtime;
 pub use dictation_runtime::*;
 
-/// The dictation lifecycle host (slugtale-30i): everything between an
-/// activation input saying "start" and the Dictation Runtime receiving the
-/// captured audio. It owns the recording-feedback state machine, the focus
-/// target, the audio capture session, and the runtime handle, and it reaches the
-/// rest of the app only through two ports — `DictationEffects` for what the user
-/// sees and hears, `DictationParts` for the machinery a segment runs on —
-/// implemented by the Tauri shell in the binary tier and by a fake in tests.
 mod dictation_host;
 pub use dictation_host::*;
 
-/// Transcript Cleanup (slugtale-m4h): the deterministic, entirely local passes
-/// that run between transcription and insertion — whitespace normalization in
-/// every mode, plus conservative filler-word removal when enabled.
 mod transcript_cleanup;
 pub use transcript_cleanup::*;
 
@@ -153,36 +88,18 @@ pub use readiness::*;
 mod hotkey;
 pub use hotkey::*;
 
-/// Bare-Escape arming: the one arbiter that owns whether Escape is global, so
-/// there is never an active but uncancellable dictation and never a duplicate
-/// OS registration.
 mod global_key;
 pub use global_key::*;
 
-/// Dictation Control (CONTEXT.md): the begin/rollback activation policy shared
-/// by the Hotkey, Voice Activation, and Dictation Bar inputs. The lifecycle's
-/// transitions live in `hotkey`; this module decides when a begin request may
-/// run one and how to undo it.
 mod dictation_control;
 pub use dictation_control::*;
 
-/// Voice Activation spike (slugtale-e95): scoring transcripts against the wake
-/// phrase and the detection state machine. Pure logic, compiled everywhere;
-/// the always-on listener that feeds it is feature-gated in the Tauri tier.
 mod wake_word;
 pub use wake_word::*;
 
-/// The Voice Activation listen loop (slugtale-e95): the always-listening state
-/// machine — dictation suppression, engine readiness, capture retry,
-/// report-once microphone problems, and the wake trigger — with every OS touch
-/// behind three roles (`ListenTransport`, `WakeCapture`, `WakeTrigger`) that
-/// `WakeListener` composes, so all platforms test and run it unchanged.
 mod listen_loop;
 pub use listen_loop::*;
 
-/// macOS implementation of platform adapters (ADR-0021). Resolves OS-specific
-/// dictation gates, text insertion, insertion rescue, permission setup, and
-/// focused-app activation from live system state.
 #[cfg(target_os = "macos")]
 mod macos;
 
@@ -194,10 +111,6 @@ pub use macos::{
     MacosTextInsertionPermissionSetup,
 };
 
-/// Windows implementation of platform adapters (ADR-0021, PRD slugtale-5pc).
-/// Mirrors the macOS adapter surface so the core Dictation Workflow runs
-/// unchanged on Windows. Scaffold from slugtale-5pc.1; behaviour filled by the
-/// follow-on Windows issues.
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -208,10 +121,6 @@ pub use windows::{
     WindowsTextInsertion, WindowsTextInsertionPermissionSetup,
 };
 
-/// Linux implementation of platform adapters (ADR-0021, ADR-0023, PRD
-/// slugtale-8ul). Mirrors the macOS/Windows adapter surface so the core
-/// Dictation Workflow runs unchanged on Linux. Phase 1 targets X11 (Mint
-/// Cinnamon); Wayland support is phased second.
 #[cfg(target_os = "linux")]
 mod linux;
 

@@ -1,25 +1,10 @@
 <!DOCTYPE html>
-<!--
-  PROTOTYPE — throwaway. Original task: slugtale-ai3e, completed before the GitHub issue migration.
-
-  Question: what should the Settings window look like, with settings grouped by
-  what the user is trying to do, and the theme following the OS light/dark mode?
-
-  Verdict so far: variant A (Sidebar + search) won over B (Dictation pipeline)
-  and C (Home tiles). B and C are removed; this file now refines A only. Everything is in-memory stub data: no Tauri, no
-  saving. Lives outside src/ so it can never ship (tests/runtime-frontend).
-
-  Run:  open prototypes/settings-menu/settings-menu-prototype.html
-  URL params: scheme=system|light|dark,
-        state=ready|fresh.
--->
 <html lang="en" data-scheme="system">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>PROTOTYPE · Slugtale Settings menu</title>
 <style>
-  /* ---------- tokens: light-dark() follows color-scheme, which follows the OS ---------- */
   :root {
     color-scheme: light dark;
     --desk: light-dark(#d9dee3, #0b0d10);
@@ -46,7 +31,6 @@
     --on-fill: #fff;
     --sw-red: #ff5a52; --sw-amber: #f5a524; --sw-green: #35c76a;
     --sw-blue: #4c9ffe; --sw-violet: #a78bfa; --sw-graphite: #9aa4ad;
-    /* group hues for icon tiles */
     --g-shortcut: #6366f1; --g-transcription: #0ea5e9;
     --g-text: #a855f7; --g-bar: #f97316; --g-usage: #22a35a;
     --g-privacy: #64748b; --g-general: #78716c;
@@ -66,7 +50,6 @@
   }
   button, input, select { font: inherit; color: inherit; }
 
-  /* ---------- mock window ---------- */
   .window {
     position: relative;
     display: flex; flex-direction: column;
@@ -91,7 +74,6 @@
   .win-body { flex: 1 1 auto; min-height: 0; position: relative; }
   .size-note { margin-top: 10px; text-align: center; color: var(--faint); font-size: .74rem; }
 
-  /* ---------- shared atoms ---------- */
   svg.i { width: 16px; height: 16px; flex: 0 0 auto; }
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -151,7 +133,6 @@
   .tile-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; color: #fff; background: var(--g); flex: 0 0 auto; }
   .tile-icon svg.i { width: 15px; height: 15px; }
 
-  /* rows */
   .row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 14px; padding: 11px 0; border-top: 1px solid var(--border); }
   .row:first-child { border-top: 0; }
   .row-label { font-size: .88rem; font-weight: 600; }
@@ -162,7 +143,6 @@
   .row[hidden] { display: none; }
   .note { margin: 10px 0 0; color: var(--dim); font-size: .78rem; }
 
-  /* engines */
   .engines { display: grid; gap: 8px; }
   .engine { border: 1px solid var(--border); border-radius: 10px; padding: 10px 11px; background: var(--surface-2); cursor: pointer; }
   .engine[data-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface-2)); }
@@ -177,14 +157,12 @@
   .progress { height: 5px; flex: 1 1 120px; border-radius: 99px; background: var(--border); overflow: hidden; }
   .progress > div { height: 100%; background: var(--accent); border-radius: inherit; transition: width .15s; }
 
-  /* cleanup example */
   .example { display: grid; gap: 6px; margin-top: 8px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-size: .82rem; }
   .example .lbl { font-size: .68rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
   .example .said { color: var(--dim); }
   .example .said s { text-decoration-color: var(--danger); color: var(--faint); }
   .example .typed { white-space: pre-line; font-weight: 550; }
 
-  /* dictation bar preview */
   .screen { position: relative; height: 92px; border-radius: 9px; border: 1px solid var(--border-2); overflow: hidden;
     background: linear-gradient(160deg, light-dark(#b9cde0,#24324a), light-dark(#e9d6c4,#3a2a3a)); }
   .screen::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 9px; background: light-dark(rgba(255,255,255,.6), rgba(0,0,0,.35)); }
@@ -202,7 +180,6 @@
   .mini-bar .wave i:nth-child(6) { animation-delay: .3s } .mini-bar .wave i:nth-child(7) { animation-delay: .05s }
   @keyframes wave { 50% { height: 12px; } }
 
-  /* usage */
   .hero { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); text-align: center; }
   .hero .lbl { margin: 0; color: var(--dim); font-size: .72rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
   .hero .val { margin: 3px 0 0; font-size: 1.8rem; font-weight: 750; letter-spacing: -.02em; line-height: 1.15; }
@@ -228,13 +205,11 @@
 
   .scroll { overflow: auto; scrollbar-width: thin; scrollbar-color: var(--border-2) transparent; }
 
-  /* =================== Sidebar + search =================== */
   .a { display: grid; grid-template-columns: 214px minmax(0,1fr); height: 100%; background: var(--surface); }
   .a-side { display: flex; flex-direction: column; gap: 10px; min-height: 0; padding: 10px; background: var(--rail); border-right: 1px solid var(--border); }
   .a-search { position: relative; }
   .a-search svg.i { position: absolute; left: 8px; top: 7px; width: 14px; height: 14px; color: var(--faint); }
   .a-search input { width: 100%; padding-left: 28px; border-color: var(--border); background: var(--surface); }
-  /* Ready or not, nothing more. Where the problems are is the nav's job. */
   .a-ready { display: flex; align-items: center; gap: 7px; padding: 0 6px; font-size: .8rem; font-weight: 650; color: var(--ok-text); }
   .a-ready svg.i { width: 15px; height: 15px; }
   .a-ready.warn { color: var(--warn-text); }
@@ -248,7 +223,6 @@
   .a-issues { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px 1px 5px; border-radius: 99px; background: var(--warn-soft); color: var(--warn-text); font-size: .72rem; font-weight: 750; }
   .a-issues svg.i { width: 12px; height: 12px; }
   .a-nav button[data-active="true"] .a-issues { background: rgba(255,255,255,.22); color: var(--on-fill); }
-  /* The setting that is the problem, marked on its own page. */
   .row.issue .row-label::before { content: ""; display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0; border-radius: 99px; background: var(--warn); }
   .a-main { display: flex; flex-direction: column; min-height: 0; }
   .a-head { display: flex; align-items: center; gap: 11px; padding: 16px 22px 10px; }
@@ -267,7 +241,6 @@
   .a-noresult { margin-top: 40px; text-align: center; color: var(--dim); }
   mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; border-radius: 3px; }
 
-  /* =================== prototype switcher (not part of the design) =================== */
   .proto-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 100;
     display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 999px;
     background: #111; color: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.12);
@@ -294,9 +267,6 @@
   <pre id="proto-state" class="proto-state" hidden></pre>
 
 <script>
-/* ============================================================
-   Stub state (in memory only)
-   ============================================================ */
 const SCENARIOS = {
   ready: () => ({
     mic: true, textInsertion: true,
@@ -341,9 +311,6 @@ const UI = {
   confirm: null, toast: null, showState: false
 };
 
-/* ============================================================
-   Icons (Lucide, ISC) — same approach as src/index.html
-   ============================================================ */
 const LUCIDE = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   alert: '<path d="M12 9v4"/><path d="M12 17h.01"/>',
@@ -372,9 +339,6 @@ const LUCIDE = {
 const icon = (name) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${LUCIDE[name] || ""}</svg>`;
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-/* ============================================================
-   Logical groups
-   ============================================================ */
 const GROUPS = {
   shortcut:      { title: "Shortcut",           icon: "keyboard", sub: "How you start and stop dictating." },
   transcription: { title: "Transcription",      icon: "cpu",      sub: "Which on-device engine turns speech into text." },
@@ -386,9 +350,6 @@ const GROUPS = {
 };
 const tileIcon = (g) => `<span class="tile-icon" style="--g: var(--g-${g})">${icon(GROUPS[g].icon)}</span>`;
 
-/* ============================================================
-   Derived facts
-   ============================================================ */
 function readiness() {
   const eng = S.engines[S.engine];
   return [
@@ -404,16 +365,12 @@ function readiness() {
 }
 const blockers = () => readiness().filter((r) => !r.ready);
 const issuesIn = (g) => blockers().filter((b) => b.group === g).length;
-// Open on the first page with a problem, so the fix is one look away.
 const firstPage = () => blockers()[0]?.group || "shortcut";
 const systemDark = () => matchMedia("(prefers-color-scheme: dark)").matches;
 const effectiveScheme = () => (UI.scheme === "system" ? (systemDark() ? "dark" : "light") : UI.scheme);
 const installedCount = () => Object.values(S.engines).filter((e) => e.installed).length;
 const hasBaseline = () => S.wpm !== null || S.estimate !== null;
 
-/* ============================================================
-   Controls
-   ============================================================ */
 const GLYPHS = { Cmd: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧" };
 const keycaps = (hk, big) => hk ? `<span class="keys${big ? " big" : ""}">${hk.split("+").map((k) => `<kbd>${GLYPHS[k] || k}</kbd>`).join("")}</span>` : "";
 function seg(key, options, disabled) {
@@ -474,7 +431,6 @@ function engineCards() {
   }).join("")}</div>`;
 }
 
-/* --- row sets per group  --- */
 const rowsShortcut = () => [
   row("Shortcut", S.hotkey ? "Starts dictation from any app." : "Not set. Dictation cannot start without one.", hotkeyControl(), { kw: "hotkey keys keyboard record", issue: !S.hotkey }),
   row("Activation", ACTIVATION_HINT[S.activation], seg("activation", [["toggle", "Toggle"], ["hold", "Hold"]]), { kw: "hold toggle push to talk" }),
@@ -504,8 +460,6 @@ const rowsGeneral = () => [
   row("App updates", S.update === "checking" ? "Checking…" : S.update === "latest" ? `You have the latest version, ${S.version}.` : `Version ${S.version}. Checks only when you ask.`,
     `<button class="btn ghost" data-act="check-update" ${S.update === "checking" ? "disabled" : ""}>${icon("refresh")}Check now</button>`, { kw: "version upgrade release" })
 ];
-// Numbers first, the two settings that feed them last. All time lives only in
-// the hero, so no number is shown twice.
 const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? "" : "s"}`;
 const countsLine = (span) => `${plural(span.d, "dictation")} · ${plural(span.w, "word")}`;
 function usageStats() {
@@ -532,9 +486,6 @@ const rowsUsage = () => [
     typingSpeedControl(), { kw: "wpm baseline challenge estimate" })
 ];
 
-/* ============================================================
-   Sidebar + search (System Settings style, 740×540)
-   ============================================================ */
 const A_NAV = [
   ["Dictate", ["shortcut", "transcription", "text", "bar"]],
   ["You", ["usage"]],
@@ -590,9 +541,6 @@ function afterA() {
   document.querySelector(".a-noresult").hidden = any;
 }
 
-/* ============================================================
-   Prototype bar + render loop
-   ============================================================ */
 
 function syncUrl() {
   const p = new URLSearchParams();
@@ -688,7 +636,6 @@ document.addEventListener("click", (ev) => {
   }
   const act = ev.target.closest("[data-act]");
   if (act && !act.disabled) {
-    // A button inside an engine card should not also select the card.
     if (act.dataset.act === "pick-engine" && ev.target.closest("button")) return;
     ACTIONS[act.dataset.act]?.(act.dataset.arg, act);
   }

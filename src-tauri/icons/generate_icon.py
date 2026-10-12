@@ -20,22 +20,20 @@ import math
 import struct
 import zlib
 
-SIZE = 48          # tray template icon is SIZE x SIZE px (crisp on retina menu bars)
-SS_SMALL = 4       # supersampling factor for app icons below 256px
-SS_LARGE = 2       # supersampling factor for app icons 256px and above
-SPACE = 32.0       # design coordinate space; shapes below are authored in 0..32
+SIZE = 48
+SS_SMALL = 4
+SS_LARGE = 2
+SPACE = 32.0
 
 
 def circles_along(path, r0, r1, steps=48):
     """Return (cx, cy, r) circles sampled along a poly-path, radius r0 -> r1."""
-    # Cumulative length so radius tapers evenly along the whole path.
     seg_len = [math.dist(path[i], path[i + 1]) for i in range(len(path) - 1)]
     total = sum(seg_len) or 1.0
     out = []
     for s in range(steps + 1):
         t = s / steps
         target = t * total
-        # Walk segments to find the point at arc-length `target`.
         acc = 0.0
         px, py = path[-1]
         for i, L in enumerate(seg_len):
@@ -49,33 +47,29 @@ def circles_along(path, r0, r1, steps=48):
     return out
 
 
-# --- Slug body: a humped capsule from thin tail (left) to raised head (right).
 BODY = [
-    (4.2, 21.2, 2.0),    # tail tip
+    (4.2, 21.2, 2.0),
     (7.0, 20.0, 3.3),
-    (10.5, 18.6, 4.3),   # hump
+    (10.5, 18.6, 4.3),
     (14.5, 18.1, 4.6),
     (18.5, 18.5, 4.3),
-    (21.5, 19.4, 3.7),   # neck
-    (24.3, 18.2, 3.3),   # head
+    (21.5, 19.4, 3.7),
+    (24.3, 18.2, 3.3),
 ]
-# Gliding foot (sole): a flat shelf the body rests on.
+
 FOOT = circles_along([(4.5, 22.4), (24.5, 22.4)], 1.7, 1.7, steps=40)
 
-# --- Two eye stalks rising up-and-forward from the head, each with an eye bulb.
 STALK_FRONT = circles_along([(24.4, 17.2), (25.6, 12.0), (26.6, 8.8)], 1.25, 0.8)
 STALK_BACK = circles_along([(22.3, 17.4), (22.7, 12.6), (22.4, 10.2)], 1.2, 0.78)
 EYES = [(26.8, 8.0, 1.7), (22.3, 9.4, 1.55)]
 
 SOLID = BODY + FOOT + STALK_FRONT + STALK_BACK + EYES
-FIRST_EYE = len(SOLID) - len(EYES)  # index of the first eye circle in SOLID
-FOOT_CLIP = 23.4  # nothing extends below the flat sole
+FIRST_EYE = len(SOLID) - len(EYES)
+FOOT_CLIP = 23.4
 TOP_Y = min(cy - r for _, cy, r in SOLID)
 
 BOUNDS = [(cx - r, cy - r, cx + r, cy + r) for cx, cy, r in SOLID]
 
-# App-icon fill: the settings accent green (#2f9e5f) as a soft vertical
-# gradient for depth; the eye bulbs drop darker so they read as eyes.
 GRAD_TOP = (0x41, 0xb4, 0x74)
 GRAD_BOTTOM = (0x27, 0x86, 0x4c)
 EYE_FILL = (0x17, 0x4f, 0x30)
@@ -112,7 +106,7 @@ def render_raw(size, ss, fill):
     denom = ss * ss
     raw = bytearray()
     for py in range(size):
-        raw.append(0)  # PNG filter type 0 (none) per scanline
+        raw.append(0)
         for px in range(size):
             r_sum = g_sum = b_sum = hits = 0
             for sy in range(ss):
@@ -143,7 +137,7 @@ def png_bytes(size, raw):
         return (struct.pack(">I", len(data)) + tag + data
                 + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
 
-    ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)  # 8-bit RGBA
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
     return (b"\x89PNG\r\n\x1a\n"
             + chunk(b"IHDR", ihdr)
             + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
@@ -181,7 +175,7 @@ def build_ico(sizes):
     offset = 6 + 16 * count
     for size in sizes:
         data = app_icon_png(size)
-        dim = 0 if size >= 256 else size  # 0 means 256 in the ICO directory
+        dim = 0 if size >= 256 else size
         directory += struct.pack("<BBBBHHII",
                                  dim, dim, 0, 0, 1, 32, len(data), offset)
         blobs += data
@@ -193,11 +187,9 @@ if __name__ == "__main__":
     import os
     here = os.path.dirname(__file__)
 
-    # Tray template icon (unchanged shape-in-alpha behaviour).
     with open(os.path.join(here, "icon.png"), "wb") as f:
         f.write(png_bytes(SIZE, render_raw(SIZE, SS_SMALL, template_fill)))
 
-    # App-icon bundle referenced by tauri.conf.json bundle.icon.
     for name, size in [("32x32.png", 32),
                        ("128x128.png", 128),
                        ("128x128@2x.png", 256)]:
@@ -211,12 +203,11 @@ if __name__ == "__main__":
     print(f"Wrote app-icon bundle to {here}: "
           "32x32.png 128x128.png 128x128@2x.png icon.icns icon.ico")
 
-    # Console preview of the tray template so the shape can be eyeballed.
     preview = render_raw(SIZE, SS_SMALL, template_fill)
     for py in range(0, SIZE, 2):
         line = ""
         for px in range(SIZE):
-            off = 1 + py * (SIZE * 4 + 1) + px * 4 + 3  # alpha byte
+            off = 1 + py * (SIZE * 4 + 1) + px * 4 + 3
             line += " .:-=+*#@"[min(8, preview[off] * 9 // 256)]
         print(line)
     print(f"\nWrote icon.png ({SIZE}x{SIZE}, template)")

@@ -1,6 +1,3 @@
-    /* Colour lives in tokens so the window can follow the system appearance
-   without a second copy of the stylesheet. There is no in-app theme
-   selector: the OS decides. */
 :root {
   --bg: #eef0ef;
   --surface: #ffffff;
@@ -20,10 +17,8 @@
   --warn-text: #946212;
   --danger: #9a3726;
   --shadow: 0 1px 2px rgba(24, 34, 44, 0.06);
-  /* Text drawn on top of an accent/ok/warn fill, in both appearances. */
   --on-fill: #ffffff;
 
-  /* One hue per settings section, behind its sidebar icon. */
   --group-shortcut: #6366f1;
   --group-transcription: #0ea5e9;
   --group-text: #a855f7;
@@ -32,15 +27,11 @@
   --group-privacy: #64748b;
   --group-general: #78716c;
 
-  /* The small picture of a screen behind the Dictation Bar preview. */
   --preview-sky: #b9cde0;
   --preview-ground: #e9d6c4;
   --preview-window: #ffffffbf;
   --preview-bar: #14161adb;
 
-  /* The Dictation Bar orb palette (ADR-0004): fixed colours that must read
-     as the same accent in both appearances, so they live outside the dark
-     overrides. Each maps to one AccentColor enum value. */
   --accent-swatch-red: #ff5a52;
   --accent-swatch-amber: #f5a524;
   --accent-swatch-green: #35c76a;
@@ -71,13 +62,10 @@
     --accent-soft: #1b2a35;
     --ok: #3fbb75;
     --ok-text: #5ccb8b;
-    /* Amber needs its own warm-dark tint here — a dimmed light amber glows. */
     --warn: #d9a03f;
     --warn-soft: #2a2115;
     --warn-text: #e0b165;
     --danger: #e08072;
-    /* White on accent/ok/warn fills reads in dark too; restated so every
-       colour token is explicitly overridden here. */
     --on-fill: #ffffff;
     --group-shortcut: #7c7ff2;
     --group-transcription: #2bb3ec;
@@ -116,7 +104,6 @@ body {
   border: 0;
 }
 
-/* ---------- shell: sidebar + content ---------- */
 
 .shell {
   display: grid;
@@ -151,7 +138,6 @@ body {
 
 .search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
 
-/* Ready or not, nothing more: where the problems are is the nav's job. */
 .ready-line {
   display: flex;
   align-items: center;
@@ -217,7 +203,6 @@ body {
 [data-group="privacy"] { --group: var(--group-privacy); }
 [data-group="general"] { --group: var(--group-general); }
 
-/* How many problems a section holds, so setup never needs a status page. */
 .issue-count {
   display: inline-flex;
   align-items: center;
@@ -285,7 +270,6 @@ body {
   background-clip: padding-box;
 }
 
-/* ---------- atoms ---------- */
 
 button {
   display: inline-flex;
@@ -337,7 +321,6 @@ select {
 }
 
 input[type="text"][hidden] { display: none; }
-/* Checkboxes read as switches, the way system settings draws them. */
 input[type="checkbox"] {
   position: relative;
   flex: 0 0 auto;
@@ -377,7 +360,6 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
   min-width: 23px;
   height: 23px;
   padding: 0 6px;
-  /* The border does the work in dark mode; a fill alone reads as flat text. */
   border: 1px solid var(--border-strong);
   border-bottom-width: 2px;
   border-radius: 6px;
@@ -412,8 +394,6 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
   box-shadow: var(--shadow);
 }
 
-/* Accent swatches. Colour alone is not a label, so each button carries the
-   name of its colour for screen readers and keyboard users. */
 .swatches {
   display: inline-flex;
   gap: 6px;
@@ -422,8 +402,6 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
 .swatches button {
   width: 22px;
   height: 22px;
-  /* Buttons carry a 28px min-height globally, which would stretch these
-     circles into ellipses. */
   min-height: 0;
   padding: 0;
   border: 1px solid var(--border);
@@ -451,7 +429,6 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
   outline-offset: 3px;
 }
 
-/* ---------- rows ---------- */
 
 .row {
   display: grid;
@@ -478,7 +455,6 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
 
 .row-control { display: inline-flex; align-items: center; gap: 8px; justify-self: end; }
 
-/* Rows sit in inset cards, the way system settings groups them. */
 .card {
   margin-top: 12px;
   padding: 2px 14px;
@@ -501,7 +477,6 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
 .card-title + .card, .card-title + .engine-list { margin-top: 6px; }
 .pane-heading + .card, .pane-heading + .card-title, .pane-heading + .usage-hero { margin-top: 0; }
 
-/* The setting that is a readiness problem, marked on its own pane. */
 .row[data-issue="true"] .row-label::before {
   content: "";
   display: inline-block;
@@ -545,7 +520,6 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
 
 .note.error { color: var(--danger); }
 
-/* ---------- readiness ---------- */
 
 .checklist {
   display: grid;
@@ -594,7 +568,6 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
   font-size: 0.78rem;
 }
 
-/* ---------- model ---------- */
 
 .progress {
   height: 6px;
@@ -629,7 +602,6 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
   font-size: 0.76rem;
 }
 
-/* ---------- transcription engines ---------- */
 
 .engine-list {
   display: grid;
@@ -720,10 +692,7 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
 
 .engine-progress { margin-top: 8px; }
 
-/* ---------- usage ---------- */
 
-/* Time Saved is the hero, so it gets the only large number in the window.
-   Everything else on the pane is a supporting row. */
 .usage-hero {
   padding: 18px 18px 16px;
   border: 1px solid var(--border);
@@ -749,7 +718,6 @@ input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline
   line-height: 1.15;
 }
 
-/* The hole: no Typing Baseline, so there is no honest number to print. */
 .usage-hero[data-baseline="false"] .usage-hero-value { color: var(--text-faint); }
 
 .usage-hero-note, .usage-hero-counts { margin: 5px 0 0; color: var(--text-dim); font-size: 0.79rem; }
@@ -831,7 +799,6 @@ input[type="number"] {
 
 input[type="number"]:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* ---------- transcript cleanup example ---------- */
 
 .example {
   display: grid;
@@ -856,7 +823,6 @@ input[type="number"]:disabled { opacity: 0.5; cursor: not-allowed; }
 .example-said s { color: var(--text-faint); text-decoration-color: var(--danger); }
 .example-typed { font-weight: 550; white-space: pre-line; }
 
-/* ---------- dictation bar preview ---------- */
 
 .bar-preview {
   position: relative;
@@ -923,10 +889,7 @@ input[type="number"]:disabled { opacity: 0.5; cursor: not-allowed; }
   .bar-preview-wave i { animation: none; height: 8px; }
 }
 
-/* ---------- search ---------- */
 
-/* While searching, every pane shows under its own heading and only the
-   rows that match stay; the blocks around them step aside. */
 .pane-heading { display: none; }
 
 .searching .pane-heading {

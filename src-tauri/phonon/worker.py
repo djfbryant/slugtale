@@ -6,7 +6,6 @@ from pathlib import Path
 import struct
 import sys
 
-# Even native libraries cannot put content into stdout/stderr diagnostics.
 protocol = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)
 null = os.open(os.devnull, os.O_WRONLY)
 os.dup2(null, 1)
@@ -36,7 +35,6 @@ def run():
     import numpy as np
     from fermion._speech.engine_phonon2 import load
 
-    # Direct MLX loader; no backend auto-selection, model hub, or lazy fetch.
     model = load(root / "model", profile="five-value",
                  backend="phonon2-five-value", quiet=True)
     if model.decode.get("levers_error"):
@@ -54,8 +52,6 @@ def run():
         if not np.isfinite(audio).all():
             raise ValueError
         result = model.transcribe_array_detailed(audio)
-        # Keep existing Phonon cleanup behaviour: a flat transcript with no
-        # synthetic pause breaks. Cleanup remains a separate user control.
         send({"text": result.text, "segments": []})
         del result, audio
 
@@ -63,6 +59,5 @@ def run():
 try:
     run()
 except BaseException:
-    # A dependency exception may quote a partial transcript. Never forward it.
     send({"error": "Phonon-2 MLX could not run. Reinstall it from Settings."})
     sys.exit(1)

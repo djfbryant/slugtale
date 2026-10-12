@@ -1,36 +1,24 @@
 
-# macOS metadata
 .DS_Store
 
-# Rust / Tauri
 src-tauri/target/
 node_modules/
 
-# Transient tool output: cargo-mutants reports and coverage data are regenerated
-# per run, and the results worth keeping live in docs/research or GitHub Issues — not as
-# thousands of tracked files (slugtale review finding 10).
 src-tauri/mutants-report/
 src-tauri/lcov.info
 
-# Local env / secrets
 .env
 .env.*
 !.env.example
 !.env.*.example
 
-# SSH keys (should live in ~/.ssh, not the repo)
 github-ssh
 github-ssh.pub
 
-# Tauri updater private signing key (slugtale-9pr). Only the public key is
-# committed, inside tauri.conf.json. The private key lives outside the repo
-# (default: ~/.tauri/slugtale-updater.key).
 src-tauri/**/*.key
 
-# Logs
 *.log
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
-# Claude Code worktrees (local working copies, never repo content)
 .claude/worktrees/

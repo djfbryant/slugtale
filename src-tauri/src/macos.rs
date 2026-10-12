@@ -121,7 +121,6 @@ impl MacosPlatform {
     }
 
     pub fn insertion_granted(&self) -> bool {
-        // Accessibility trust governs text insertion via synthesized events.
         unsafe { AXIsProcessTrusted() }
     }
 }
@@ -159,7 +158,6 @@ impl TextInsertionSystem for MacosTextInsertionSystem {
         // this gate `post_unicode_text` would report success for events that
         // never reached any app, so the clipboard fallback and rescue would be
         // skipped (slugtale-iy2, slugtale-avo). Refusing here lets the pipeline
-        // fall through to clipboard paste and, failing that, the rescue.
         if !accessibility_trusted() {
             return Err(TextInsertionError::new(ACCESSIBILITY_NOT_TRUSTED));
         }
@@ -167,8 +165,6 @@ impl TextInsertionSystem for MacosTextInsertionSystem {
     }
 
     fn insert_from_clipboard(&self, text: &str) -> Result<(), TextInsertionError> {
-        // The Cmd+V paste is also a synthesized event, so it needs the same
-        // Accessibility trust; bail early to reach the clipboard rescue.
         if !accessibility_trusted() {
             return Err(TextInsertionError::new(ACCESSIBILITY_NOT_TRUSTED));
         }
@@ -363,9 +359,6 @@ fn applescript_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// How the Core Audio device with this UID is attached. The UID is what cpal
-/// reports as a CoreAudio device id. Anything Core Audio cannot answer for — a
-/// device that just disappeared — is `Other`, which keeps the default device.
 pub(crate) fn microphone_transport(uid: &str) -> MicrophoneTransport {
     audio_device_for_uid(uid)
         .and_then(audio_device_transport_type)
@@ -404,7 +397,6 @@ fn audio_device_for_uid(uid: &str) -> Option<u32> {
         if uid_string.is_null() {
             return None;
         }
-        // The qualifier is the CFStringRef itself, passed by address.
         let status = AudioObjectGetPropertyData(
             K_AUDIO_OBJECT_SYSTEM_OBJECT,
             &address,
@@ -441,11 +433,7 @@ fn audio_device_transport_type(device: u32) -> Option<u32> {
     (status == 0).then_some(transport)
 }
 
-/// Play the audible dictation cue through `afplay` against the built-in system
-/// sounds, so v1 ships no bundled audio assets. The helper is spawned detached
-/// so the recording lifecycle never blocks waiting on audio.
 pub(crate) fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
-    // Tink marks the start of recording; Pop marks the end.
     Command::new("afplay")
         .arg(dictation_sound_file(sound))
         .spawn()?;
@@ -459,9 +447,6 @@ fn dictation_sound_file(sound: DictationSound) -> &'static str {
     }
 }
 
-/// Reveal `path` in Finder, selecting the file when `select` is set. The
-/// spawned helper returns immediately. Reached from local_model through the
-/// Platform Adapter boundary (ADR-0021).
 pub(crate) fn reveal_in_file_manager(path: &std::path::Path, select: bool) -> std::io::Result<()> {
     reveal_command(path, select).spawn()?;
     Ok(())
@@ -476,9 +461,6 @@ fn reveal_command(path: &std::path::Path, select: bool) -> Command {
     command
 }
 
-/// Show a user-facing notification (used to guide the user to grant
-/// Accessibility when insertion can't reach the focused app). Exposed for the
-/// Tauri layer; failures are non-fatal and surfaced to the caller.
 pub fn notify(title: &str, body: &str) -> Result<(), String> {
     notify_user(title, body)
 }
@@ -533,18 +515,12 @@ pub fn request_microphone_access() -> Result<(), String> {
     Ok(())
 }
 
-/// The process id of the frontmost application — the app that owns the text
-/// field the user is dictating into. Captured at recording start so insertion
-/// can re-target it even if focus drifts to Slugtale's own UI (slugtale-squ).
 pub fn frontmost_app_pid() -> Option<i32> {
     NSWorkspace::sharedWorkspace()
         .frontmostApplication()
         .map(|app| app.processIdentifier())
 }
 
-/// Bring the app with `pid` back to the front so synthesized keystrokes land in
-/// its focused field. Mirrors FluidVoice's `activateApp(pid:)` reactivation step
-/// before pasting. Returns whether a running app was found to activate.
 pub fn activate_app(pid: i32) -> bool {
     match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
         Some(app) => app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows),
@@ -552,20 +528,12 @@ pub fn activate_app(pid: i32) -> bool {
     }
 }
 
-/// Which day the user's macOS locale calls the first of the week, for the Usage
-/// pane's "this week" (ADR-0025).
-///
 /// `NSCalendar.firstWeekday` is 1-based from Sunday and already reflects both
 /// the region and any explicit override in System Settings, which is exactly the
-/// question being asked. Anything other than Sunday collapses to Monday: those
-/// are the only two weeks the Usage pane knows how to draw, and Monday is the
-/// ISO answer that a Saturday-start locale is closest to.
 pub fn locale_week_start() -> WeekStart {
     week_start_from_first_weekday(NSCalendar::currentCalendar().firstWeekday() as i64)
 }
 
-/// The mapping from Cocoa's 1-based weekday to the two weeks Usage supports.
-/// Split out from the framework call so it can be tested without a live locale.
 fn week_start_from_first_weekday(first_weekday: i64) -> WeekStart {
     match first_weekday {
         1 => WeekStart::Sunday,
@@ -599,8 +567,6 @@ mod tests {
 
     #[test]
     fn a_device_core_audio_does_not_know_is_other_and_never_a_crash() {
-        // A headset that disconnected between listing and asking leaves a UID
-        // with no device behind it; that must keep the default, not fail.
         assert_eq!(
             microphone_transport("slugtale-no-such-device"),
             MicrophoneTransport::Other
@@ -611,11 +577,9 @@ mod tests {
     fn a_sunday_start_locale_is_the_only_thing_that_moves_the_week_off_monday() {
         // Cocoa counts weekdays from Sunday = 1. A US locale reports 1; the UK
         // and most of Europe report 2; a handful of locales report 7 (Saturday),
-        // which Usage draws as the ISO week rather than inventing a third shape.
         assert_eq!(week_start_from_first_weekday(1), WeekStart::Sunday);
         assert_eq!(week_start_from_first_weekday(2), WeekStart::Monday);
         assert_eq!(week_start_from_first_weekday(7), WeekStart::Monday);
-        // A calendar that will not answer must not silently become Sunday.
         assert_eq!(week_start_from_first_weekday(0), WeekStart::Monday);
     }
 

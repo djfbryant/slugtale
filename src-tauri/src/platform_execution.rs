@@ -1,33 +1,17 @@
-//! Platform Adapter execution for one Dictation Segment.
-//!
-//! The Dictation Workflow stays platform-neutral. This module owns the OS work
-//! immediately before Text Insertion: the Dictation Session that is still allowed
-//! to type, the text target the words belong to, platform notices, and
-//! construction of the insertion/rescue pair.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::{InsertionRescue, TextInsertion};
 
-/// How long the target application needs after activation before it is safe to
-/// type into. Unchanged from the previous always-sleep behaviour; what changed
-/// is *when* the clock runs (slugtale-g1o.1).
 pub const FOCUS_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
 
-/// The two operating-system questions Text Insertion asks about the app it is
-/// about to type into. A trait rather than a direct call so the target policy is
-/// exercised by injected outcomes in tests, with no desktop session involved
-/// (slugtale-7lq0).
 pub trait TextTargetFocus: Send + Sync {
-    /// The process id of the app that owns the keyboard focus right now.
     fn frontmost_app(&self) -> Option<i32>;
 
-    /// Bring `pid` back to the front. Reports whether the OS accepted it.
     fn activate(&self, pid: i32) -> bool;
 }
 
-/// The real operating system, which is what production asks.
 pub struct SystemTextTargetFocus;
 
 impl TextTargetFocus for SystemTextTargetFocus {
@@ -49,24 +33,12 @@ impl TextTargetFocus for SystemTextTargetFocus {
     }
 }
 
-/// Lets a Dictation Segment's effects run only while its Dictation Session is
-/// still the one the user is running, without holding that decision open across
-/// the work in between.
-///
-/// A plain "is it still live?" answer is not enough on its own: the words reach
-/// the user through focus activation, the keystrokes and — if those fail — the
-/// clipboard rescue, and a Cancel or a newer Start can land inside any of those.
-/// So the guard is asked once per effect, at the effect itself, and the runtime
-/// answers only once the answer cannot change underneath it. It is never held
-/// across Transcription or the settling sleep (slugtale-cbxb).
 pub trait SessionEffects: Send + Sync {
     /// Run `effect` only if `session` is still live, deciding and acting as one
     /// operation. Reports whether the effect ran.
     fn while_session_live(&self, session: u64, effect: &mut dyn FnMut()) -> bool;
 }
 
-/// A guard with no session behind it, for a prepared pair nothing has scoped.
-/// Every effect runs, which is what a dictation outside a session needs.
 pub struct UnscopedEffects;
 
 impl SessionEffects for UnscopedEffects {
@@ -76,8 +48,6 @@ impl SessionEffects for UnscopedEffects {
     }
 }
 
-/// A focus that never drifts, for a wrapper built outside `prepare_text_insertion`
-/// (tests only), so the settlement cases need no scripted operating system.
 #[cfg(test)]
 struct AlwaysFocused;
 
@@ -109,9 +79,6 @@ pub fn capture_text_target() -> Option<i32> {
     }
 }
 
-/// When an activated target becomes safe to type into, as a deadline rather
-/// than a sleep: `None` when no activation happened (nothing to wait for),
-/// otherwise `now` plus [`FOCUS_SETTLE_DELAY`]. Injected-clock seam for tests.
 fn settle_deadline(activated: bool, now: std::time::Instant) -> Option<std::time::Instant> {
     activated.then(|| now + FOCUS_SETTLE_DELAY)
 }
@@ -140,22 +107,9 @@ fn target_is_safe(target: Option<i32>, focus: &dyn TextTargetFocus) -> bool {
     focus.activate(pid) && focus.frontmost_app() == Some(pid)
 }
 
-/// The prepared text-insertion pair for one Dictation Segment.
-///
-/// `prepare_text_insertion` activates the segment's text target immediately and
-/// records when that target will have settled, instead of sleeping for the
-/// fixed settlement window on the spot. The Dictation Workflow therefore starts
-/// Transcription right away; the wait, if any is still owed, happens inside
-/// [`SettledTextInsertion::insert`] immediately before typing — and when
-/// Transcription took at least the 120 ms settlement window, nothing waits at
-/// all (slugtale-g1o.1).
 pub struct PreparedInsertion {
     pub insertion: SettledTextInsertion,
     pub rescue: Box<dyn InsertionRescue>,
-    /// Shared with the wrapper so the caller can tell a refused insertion from
-    /// an inserted one. The Dictation Workflow reports success for a segment
-    /// whose adapter declined to type, and only the Dictation Host knows that
-    /// the refusal means "cancelled", not "typed".
     refused: Arc<AtomicBool>,
 }
 
@@ -169,10 +123,6 @@ impl PreparedInsertion {
         }
     }
 
-    /// Scope this pair's effects to `session`, through `effects`. Every keystroke,
-    /// and the clipboard rescue that may follow a failed insertion, is then
-    /// decided and taken as one operation, so a Cancel or a newer Start cannot
-    /// land between the decision and the effect (slugtale-cbxb).
     pub fn guard_with_session(
         &mut self,
         session: u64,
@@ -192,15 +142,11 @@ impl PreparedInsertion {
         });
     }
 
-    /// Whether an effect for this segment was refused because its dictation was
-    /// no longer live.
     pub fn insertion_was_refused(&self) -> bool {
         self.refused.load(Ordering::SeqCst)
     }
 }
 
-/// The `SessionEffects` a prepared pair was scoped to, plus the flag its caller
-/// reads afterwards.
 struct SessionScoped {
     session: u64,
     effects: Arc<dyn SessionEffects>,
@@ -209,9 +155,6 @@ struct SessionScoped {
 
 impl SessionEffects for SessionScoped {
     fn while_session_live(&self, session: u64, effect: &mut dyn FnMut()) -> bool {
-        // Only the session this pair was scoped to may be judged here; a pair
-        // handed to another dictation's job must not have its own effects decided
-        // by that other job's answer.
         if session != self.session {
             effect();
             return true;
@@ -225,9 +168,6 @@ impl SessionEffects for SessionScoped {
     }
 }
 
-/// The Insertion Rescue of a session-scoped pair: the clipboard write is an
-/// effect like any other, and a cancelled dictation must not reach the user's
-/// clipboard either (slugtale-cbxb).
 struct SessionScopedRescue {
     inner: Box<dyn InsertionRescue>,
     session: u64,
@@ -248,8 +188,6 @@ impl InsertionRescue for SessionScopedRescue {
         });
         if !ran {
             self.refused.store(true, Ordering::SeqCst);
-            // Nothing was preserved, so this must not read to the caller as a
-            // successful rescue of words the user never received anywhere.
             return Err(crate::InsertionRescueError::new(
                 "the dictation was cancelled before its transcription could be preserved",
             ));
@@ -258,8 +196,6 @@ impl InsertionRescue for SessionScopedRescue {
     }
 }
 
-/// A rescue that must never run, standing in while a scoped pair takes the real
-/// one out of its field.
 struct UnreachableRescue;
 
 impl InsertionRescue for UnreachableRescue {
@@ -271,34 +207,17 @@ impl InsertionRescue for UnreachableRescue {
     }
 }
 
-/// A text insertion adapter that enforces its target's settlement deadline
-/// before the first keystroke. Target knowledge — which app was activated and
-/// when it became safe — stays inside this Platform Adapter type; the Dictation
-/// Workflow only sees a plain [`TextInsertion`].
 pub struct SettledTextInsertion {
     inner: Box<dyn TextInsertion>,
     ready_at: Option<std::time::Instant>,
-    /// The app this segment's words belong to, pinned when the dictation began.
     target: Option<i32>,
     focus: Arc<dyn TextTargetFocus>,
-    /// The Dictation Session's effect guard, when the Dictation Host has scoped
-    /// this pair. Asked separately for the keystrokes and for the focus work that
-    /// precedes them, because a Cancel landing between those two must stop the
-    /// words as surely as one landing before either.
     effects: Option<Arc<dyn SessionEffects>>,
-    /// The session those effects belong to, so the wrapper asks about its own
-    /// dictation rather than whatever the caller passes down.
     session: u64,
-    /// Set when an effect above was refused. See
-    /// [`PreparedInsertion::insertion_was_refused`].
     refused: Arc<AtomicBool>,
 }
 
 impl SettledTextInsertion {
-    /// Wrap `inner` so its first keystroke waits for `ready_at`. `ready_at` of
-    /// `None` means the text target never moved, so nothing is owed. Test-only:
-    /// production always goes through [`prepare_text_insertion`], which pins a
-    /// real target and the real operating system.
     #[cfg(test)]
     pub(crate) fn new(inner: Box<dyn TextInsertion>, ready_at: Option<std::time::Instant>) -> Self {
         Self::targeted(
@@ -328,9 +247,6 @@ impl SettledTextInsertion {
         }
     }
 
-    /// How much of the settlement window is still owed at `now`. Injected-clock
-    /// seam for tests: shorter than the window leaves time to wait, equal or
-    /// longer leaves none.
     pub fn settle_remaining_at(&self, now: std::time::Instant) -> std::time::Duration {
         match self.ready_at {
             Some(ready_at) => ready_at.saturating_duration_since(now),
@@ -349,46 +265,22 @@ impl TextInsertion for SettledTextInsertion {
             std::thread::sleep(remaining);
         }
 
-        // The settling sleep and the focus work are both deliberately outside the
-        // session guard. The sleep is 120 ms of nothing happening, and activating
-        // the target is an operating-system call that can block for as long as the
-        // target app takes to come forward. Holding the guard across either would
-        // put the user's own Cancel in a queue behind them — and would then let
-        // the words through afterwards, because the waiting Cancel would retire
-        // the session only once the guard was free again (slugtale-cbxb).
-        //
-        // So focus is resolved first, unguarded, and the session is then asked
-        // once at the boundary where the keystrokes would actually land. A Cancel
-        // that arrived during the activation is therefore already recorded by the
-        // time that question is asked, which is the interleaving that used to type
-        // old words.
         let target_confirmed = target_is_safe(self.target, self.focus.as_ref());
 
-        // The session is asked before anything else is reported, because a dead
-        // session means this segment produces no failure at all: not a rescue, not
-        // an insertion failure the caller would log.
         if !self.still_mine(|| true) {
             return Ok(());
         }
-        // Only then does an unconfirmable target become an insertion failure,
-        // which is what sends the Dictation Workflow to ADR-0016's rescue. The two
-        // answers stay apart: conflating them would either lose the words or type
-        // them where they must not go.
         if !target_confirmed {
             return Err(crate::TextInsertionError::new(
                 "the dictation's text target could not be confirmed",
             ));
         }
 
-        // The keystrokes, decided and taken as one operation.
         let mut outcome = Ok(());
         let ran = self.within_session(&mut || {
             outcome = self.inner.insert(transcription);
         });
         if !ran {
-            // Refused at the boundary: the Dictation Workflow reads this as a
-            // plain success, so the refusal is recorded for the caller that knows
-            // what it meant, and no rescue follows a failure that never happened.
             return Ok(());
         }
         outcome
@@ -396,12 +288,6 @@ impl TextInsertion for SettledTextInsertion {
 }
 
 impl SettledTextInsertion {
-    /// Whether this insertion still belongs to a live dictation, asked around
-    /// `work` so the answer cannot change while the work runs.
-    ///
-    /// The work is a `&mut dyn FnMut` because it is handed on to the guard as the
-    /// closure the guard runs while holding its decision — handing over the work
-    /// itself is the point, not an implementation detail.
     fn within_session(&self, work: &mut dyn FnMut()) -> bool {
         match self.effects.as_ref() {
             None => {
@@ -415,10 +301,6 @@ impl SettledTextInsertion {
         }
     }
 
-    /// Run a side effect that must not happen for a dictation the user has left,
-    /// reporting refusal the same way as the keystrokes. The effect's own verdict
-    /// is captured rather than returned, because the answer the caller needs is
-    /// whether the effect ran at all.
     fn still_mine(&self, work: impl FnOnce() -> bool) -> bool {
         let mut verdict = false;
         let mut work = Some(work);
@@ -432,9 +314,6 @@ impl SettledTextInsertion {
     }
 }
 
-/// Prepare the current Platform Adapter for Text Insertion into the segment's
-/// target.
-///
 /// Focus restoration deliberately repeats for every Dictation Segment. This is
 /// the ADR-0015 rule that makes a Pause Flush behave like ordinary Immediate
 /// Insertion at the current caret. The activation happens here, immediately;
@@ -445,7 +324,6 @@ pub fn prepare_text_insertion(target: Option<i32>) -> Result<PreparedInsertion, 
     prepare_text_insertion_with(target, Arc::new(SystemTextTargetFocus))
 }
 
-/// [`prepare_text_insertion`] with the operating system injected.
 pub fn prepare_text_insertion_with(
     target: Option<i32>,
     focus: Arc<dyn TextTargetFocus>,
@@ -453,8 +331,6 @@ pub fn prepare_text_insertion_with(
     let mut ready_at = None;
 
     if let Some(pid) = target {
-        // Activate now, start the settlement clock now, and do not sleep:
-        // Transcription runs during the window instead of after it.
         if focus.activate(pid) {
             ready_at = settle_deadline(true, std::time::Instant::now());
         }
@@ -542,7 +418,6 @@ mod tests {
         let started = std::time::Instant::now();
         let deadline = settle_deadline(true, started).expect("activated");
 
-        // Transcription finished 40 ms in; 80 ms of the window is still owed.
         let remaining =
             deadline.saturating_duration_since(started + std::time::Duration::from_millis(40));
 
@@ -571,14 +446,11 @@ mod tests {
 
     #[test]
     fn a_failed_activation_never_makes_insertion_wait() {
-        // No activation (or a failed one) means the target never moved: typing
-        // is safe immediately, and the wrapper must not invent a delay.
         assert_eq!(settle_deadline(false, std::time::Instant::now()), None);
     }
 
     #[test]
     fn settled_insertion_reports_zero_remaining_without_an_activation() {
-        // A SettledTextInsertion built outside prepare (tests) has no deadline.
         let insertion = SettledTextInsertion::new(Box::new(UnreachableInsertion), None);
 
         assert_eq!(
@@ -592,9 +464,6 @@ mod tests {
         let pid = capture_text_target();
         #[cfg(target_os = "linux")]
         {
-            // Only an X11 session with a reachable X server can answer, and a
-            // headless runner has neither. `None` is the honest answer there,
-            // not a failure of the X11 path.
             let has_x_server = std::env::var("DISPLAY").is_ok_and(|value| !value.is_empty());
             if has_x_server && crate::detect_session().is_supported() {
                 assert!(
@@ -629,24 +498,16 @@ mod tests {
         );
     }
 
-    // ---- the text target just before typing (slugtale-7lq0) ----
 
-    /// The operating system a test scripts: what holds focus, whether it
-    /// accepts an activation request, and what an accepted activation actually
-    /// brings forward. Injected, so the target policy is decided here rather
-    /// than by whatever happens to be in front on the machine running the tests.
     #[derive(Default)]
     struct FakeFocus {
         frontmost: Mutex<Option<i32>>,
         accepts_activation: bool,
-        /// What an accepted activation puts in front. `Some(None)` is the OS
-        /// accepting the request without the app ever coming back.
         restores_to: Option<Option<i32>>,
         activations: Mutex<Vec<i32>>,
     }
 
     impl FakeFocus {
-        /// Focus has moved elsewhere and the OS will bring the target back.
         fn drifted(pid: i32) -> Self {
             Self {
                 frontmost: Mutex::new(Some(pid)),
@@ -656,7 +517,6 @@ mod tests {
             }
         }
 
-        /// The pinned target still holds focus.
         fn holding(pid: i32) -> Arc<Self> {
             Arc::new(Self {
                 frontmost: Mutex::new(Some(pid)),
@@ -664,7 +524,6 @@ mod tests {
             })
         }
 
-        /// Focus moved elsewhere and the OS brings `target` back.
         fn restoring(pid: i32, target: i32) -> Arc<Self> {
             Arc::new(Self {
                 frontmost: Mutex::new(Some(pid)),
@@ -674,7 +533,6 @@ mod tests {
             })
         }
 
-        /// Focus moved elsewhere and the OS refuses to bring `target` back.
         fn refusing(pid: i32) -> Arc<Self> {
             Arc::new(Self {
                 frontmost: Mutex::new(Some(pid)),
@@ -683,8 +541,6 @@ mod tests {
             })
         }
 
-        /// Focus moved elsewhere; the OS accepts the request and brings nothing
-        /// forward.
         fn accepting_without_restoring(pid: i32) -> Arc<Self> {
             Arc::new(Self {
                 frontmost: Mutex::new(Some(pid)),
@@ -716,9 +572,6 @@ mod tests {
         }
     }
 
-    /// A prepared pair whose effects reach a real keystroke and a real rescue only
-    /// while `effects` says its session is live. `inner` decides what a real
-    /// keystroke would do, so a test can prove it never happened.
     fn scoped(
         inner: Box<dyn TextInsertion>,
         rescue: Box<dyn InsertionRescue>,
@@ -734,8 +587,6 @@ mod tests {
 
     const TEST_SESSION: u64 = 1;
 
-    /// Session effects whose answer the test scripts, so a refusal can be forced
-    /// at the boundary rather than hoped for.
     #[derive(Default)]
     struct FakeEffects {
         live: Mutex<Vec<bool>>,
@@ -750,15 +601,11 @@ mod tests {
             })
         }
 
-        /// How many effects were asked about, so a test can prove a refusal came
-        /// from a second decision rather than from the first one.
         fn asked(&self) -> usize {
             *self.calls.lock().unwrap()
         }
     }
 
-    /// A runtime host that reaches nothing, so a test can start a real
-    /// [`crate::DictationRuntime`] purely for its session effects.
     struct UnscopedHost;
 
     impl crate::DictationRuntimeHost for UnscopedHost {
@@ -788,8 +635,6 @@ mod tests {
             if answer {
                 effect();
             }
-            // Every answer is consumed, so a scripted sequence walks the effects
-            // in order: target check, then keystrokes, then any rescue.
             if !live.is_empty() {
                 live.remove(0);
             }
@@ -811,8 +656,6 @@ mod tests {
 
     #[test]
     fn a_target_that_kept_the_focus_is_typed_into_without_another_activation() {
-        // Nothing to restore, so the target is confirmed by one question and no
-        // second activation is asked for on the way in.
         let focus = FakeFocus::holding(7);
 
         assert!(target_is_safe(Some(7), focus.as_ref()));
@@ -829,9 +672,6 @@ mod tests {
 
     #[test]
     fn a_target_the_os_cannot_bring_back_is_never_typed_into() {
-        // The OS refused to restore it, so the words must not go to whatever is
-        // in front now. The refusal surfaces as an insertion failure, which is
-        // what sends the Dictation Workflow to the Insertion Rescue.
         let focus = FakeFocus::refusing(9);
 
         assert!(!target_is_safe(Some(7), focus.as_ref()));
@@ -840,8 +680,6 @@ mod tests {
 
     #[test]
     fn an_activation_the_os_accepts_but_does_not_perform_is_not_believed() {
-        // Accepting the request is not the app coming back; only the re-check
-        // afterwards decides.
         let focus = FakeFocus::accepting_without_restoring(9);
 
         assert!(!target_is_safe(Some(7), focus.as_ref()));
@@ -860,9 +698,6 @@ mod tests {
 
     #[test]
     fn a_cancelled_session_types_nothing_at_the_insertion_boundary() {
-        // Refused at the keystroke boundary, so the adapter reports success —
-        // the Dictation Workflow's only signal — while recording the refusal for
-        // the one caller that knows what it meant: nothing was typed.
         let prepared = scoped(
             Box::new(UnreachableInsertion),
             Box::new(UnreachableRescue),
@@ -879,27 +714,14 @@ mod tests {
         assert!(prepared.insertion_was_refused());
     }
 
-    /// An activation that tells the test when it has been entered and then
-    /// waits, bounded at both ends: the "entered" signal is a channel the test
-    /// receives with a deadline, and the wait ends on the release, on the test's
-    /// sender being dropped, or on its own deadline. A failing test can
-    /// therefore never park the insertion thread, which is what an unbounded
-    /// gate used to do (slugtale-cbxb).
     struct BlockingActivation {
         entered: std::sync::mpsc::Sender<()>,
-        /// Held behind a `Mutex` only because `activate` takes `&self`; the
-        /// receiver's `recv_timeout` also returns once the test drops its
-        /// sender, which is the cleanup path a panicking test takes.
         release: Mutex<std::sync::mpsc::Receiver<()>>,
         focus: FakeFocus,
     }
 
-    /// Long enough for any test to act, short enough that a mistake ends the
-    /// wait instead of the suite.
     const ACTIVATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
-    /// The test's end of a [`BlockingActivation`], so waiting and releasing are
-    /// bounded channel operations rather than a shared flag waited on forever.
     struct ActivationHandle {
         entered: std::sync::mpsc::Receiver<()>,
         release: std::sync::mpsc::Sender<()>,
@@ -924,14 +746,12 @@ mod tests {
     }
 
     impl ActivationHandle {
-        /// Wait, bounded, until an activation has entered its blocked window.
         fn wait_until_activation_started(&self) {
             self.entered
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .expect("the insertion never reached its focus activation");
         }
 
-        /// Let the blocked activation finish.
         fn release(&self) {
             let _ = self.release.send(());
         }
@@ -943,8 +763,6 @@ mod tests {
         }
 
         fn activate(&self, pid: i32) -> bool {
-            // Focus has drifted and the real OS would bring the target back; the
-            // test only needs the blocking, not the restoration.
             *self.focus.frontmost.lock().unwrap() = Some(pid);
             let _ = self.entered.send(());
             let _ = self
@@ -958,13 +776,6 @@ mod tests {
 
     #[test]
     fn a_cancel_and_a_newer_start_during_a_blocked_focus_restore_still_type_nothing() {
-        // The production interleaving with the real runtime: the session is live
-        // when focus restoration starts, the target app blocks while it is
-        // activated, and the user's Cancel and a newer Start both land in that
-        // window. The words must not land afterwards, and neither lifecycle
-        // event may wait behind the blocked activation — which is what holding
-        // the session guard across the operating-system focus work would have
-        // caused (slugtale-cbxb).
         let runtime = Arc::new(
             crate::DictationRuntime::start(Arc::new(UnscopedHost), || 0)
                 .expect("test runtime starts"),
@@ -999,8 +810,6 @@ mod tests {
 
         activation.wait_until_activation_started();
 
-        // The user's Cancel and the next Start, while the activation is still
-        // blocked. Both must return without waiting for the operating system.
         let (cancelled_tx, cancelled_rx) = std::sync::mpsc::channel();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let lifecycling = {
@@ -1018,9 +827,6 @@ mod tests {
         let newer = started_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("a newer Start must not wait behind the blocked activation");
-        // The replacement dictation owns the session now; the retired one may
-        // no longer reach the user. Asked through the same guard the insertion
-        // used, so the assertion is about the decision the runtime makes.
         let effects = runtime.session_effects();
         assert!(
             effects.while_session_live(newer, &mut || {}),
@@ -1046,9 +852,6 @@ mod tests {
 
     #[test]
     fn a_cancelled_session_never_reaches_the_clipboard_through_the_rescue() {
-        // Insertion failed, and the Cancel lands between the failure and the
-        // rescue. The rescue is an effect too, so it is refused on its own account
-        // and reports that it preserved nothing.
         let effects = FakeEffects::answering(&[true, true, false]);
         let rescued = Arc::new(Mutex::new(Vec::new()));
         let prepared = scoped(
@@ -1086,8 +889,6 @@ mod tests {
 
     #[test]
     fn a_live_session_still_rescues_a_failed_insertion_onto_the_clipboard() {
-        // The other half of the rule, so the refusal above cannot be met simply
-        // by never rescuing: a live dictation keeps ADR-0016's rescue intact.
         let rescued = Arc::new(Mutex::new(Vec::new()));
         let prepared = scoped(
             Box::new(FailingInsertion),
@@ -1134,9 +935,6 @@ mod tests {
 
     #[test]
     fn a_live_session_whose_target_is_gone_reports_an_insertion_failure() {
-        // The session is live, but the app the words belong to cannot be
-        // confirmed. An error here is what makes the Dictation Workflow preserve
-        // the words on the clipboard rather than lose them.
         let focus = FakeFocus::refusing(9);
         let prepared = scoped(
             Box::new(UnreachableInsertion),
@@ -1158,7 +956,6 @@ mod tests {
         assert!(!prepared.insertion_was_refused());
     }
 
-    /// An insertion that always fails, as a real one does without Accessibility.
     struct FailingInsertion;
 
     impl TextInsertion for FailingInsertion {
@@ -1170,7 +967,6 @@ mod tests {
         }
     }
 
-    /// Records the text a real keystroke would have delivered.
     struct RecordingInsertion(Arc<Mutex<Vec<String>>>);
 
     impl TextInsertion for RecordingInsertion {

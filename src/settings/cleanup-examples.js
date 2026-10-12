@@ -1,4 +1,3 @@
-    // What each cleanup mode does to the same spoken sentence.
     const CLEANUP_EXAMPLES = {
       basic: {
         said: "“Um, so I think we should, uh, ship the beta on Friday… then collect feedback.”",

@@ -1,17 +1,3 @@
-//! The whisper.cpp bindings: every `whisper_rs` name in Slugtale, and nothing
-//! else.
-//!
-//! whisper.cpp is a C++ library with a C ABI, so this module is the one place
-//! that knows the raw types, the raw parameters, and the raw segment iterator.
-//! Everything crossing back into the rest of `asr` is either a domain type
-//! ([`FinalTranscription`]) or a plain value ([`RawSegment`]), which is what
-//! lets [`crate::asr::whisper_runtime`] own the model's lifetime without
-//! spelling a single binding, and lets the decode policy
-//! ([`crate::asr::machine_probe`]) stay a pure function that can be tested
-//! without a model file.
-//!
-//! Nothing in this module knows which caller is asking, or with what
-//! Transcription Speed Profile: the decode settings arrive as a parameter.
 
 #[cfg(feature = "local-whisper-runtime")]
 use super::machine_probe::WhisperDecodeSettings;
@@ -20,14 +6,9 @@ use crate::AsrError;
 #[cfg(any(test, feature = "local-whisper-runtime"))]
 use crate::{FinalTranscription, TranscriptSegment};
 
-/// The loaded whisper.cpp model context. Owned by
-/// [`crate::asr::whisper_runtime::LocalWhisperRuntime`], which decides when it
-/// is created and when it is dropped; this module only borrows it.
 #[cfg(feature = "local-whisper-runtime")]
 pub(super) type WhisperContext = whisper_rs::WhisperContext;
 
-/// Open a model file. Reading and parsing it is expensive, so the caller does
-/// this once per model path and keeps the context.
 #[cfg(feature = "local-whisper-runtime")]
 pub(super) fn open_context(model_path: &str) -> Result<WhisperContext, AsrError> {
     whisper_rs::WhisperContext::new_with_params(
@@ -37,9 +18,6 @@ pub(super) fn open_context(model_path: &str) -> Result<WhisperContext, AsrError>
     .map_err(|error| AsrError::Runtime(error.to_string()))
 }
 
-/// One recognized segment as whisper.cpp reports it: text plus centisecond
-/// timestamps. Converted to a [`TranscriptSegment`] by
-/// [`transcript_from_whisper_segments`] before it reaches the domain.
 #[cfg(any(test, feature = "local-whisper-runtime"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RawSegment {
@@ -48,9 +26,6 @@ pub(super) struct RawSegment {
     pub(super) end_cs: i64,
 }
 
-/// Decode `samples` with an already-open context. The settings come from the
-/// machine probe, so this module decides no policy of its own — it only carries
-/// the profile's decision across the FFI.
 #[cfg(feature = "local-whisper-runtime")]
 pub(super) fn decode(
     context: &WhisperContext,
@@ -69,7 +44,6 @@ pub(super) fn decode(
         WhisperDecodeStrategy::BeamSearch { beam_size } => {
             whisper_rs::SamplingStrategy::BeamSearch {
                 beam_size,
-                // whisper.cpp's default patience (unbounded beam pruning off).
                 patience: -1.0,
             }
         }
@@ -155,9 +129,6 @@ mod tests {
 
     #[test]
     fn flattening_whisper_segments_matches_the_previous_immediate_join() {
-        // Before segments were preserved the runtime joined segment texts with
-        // no separator and trimmed once; the flattened text must stay identical
-        // so behavior is unchanged until cleanup consumes boundaries.
         let transcription = transcript_from_whisper_segments(vec![
             segment(" Hello ", 0, 100),
             segment(" from slugtale. ", 110, 250),

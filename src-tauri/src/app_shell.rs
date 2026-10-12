@@ -18,26 +18,18 @@ where
         .any(|arg| arg.as_ref() == REAUTHORIZE_PERMISSIONS_ARGUMENT)
 }
 
-/// What one tray menu item does when the user picks it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrayMenuAction {
     Settings,
     Quit,
 }
 
-/// One tray menu item: the id Tauri hands the click back on, the label the user
-/// reads, and what picking it does. The three travel together, so an item cannot
-/// exist without a way to act on it.
 struct TrayMenuItem {
     id: &'static str,
     label: &'static str,
     action: TrayMenuAction,
 }
 
-/// The whole tray menu, in the order it is shown.
-///
-/// The ids are namespaced. Unprefixed they read as window labels, and the tray
-/// "Settings…" item was called "settings" because the two were never told apart.
 const TRAY_MENU: [TrayMenuItem; 2] = [
     TrayMenuItem {
         id: "tray.settings",
@@ -128,9 +120,6 @@ mod tests {
             "/Applications/Slugtale.app/Contents/MacOS/slugtale",
             "--reauthorize-permissions",
         ]));
-        // A longer argument that merely starts with the flag is a different
-        // argument, and re-authorizing on it would reset permissions the user
-        // never asked to reset.
         assert!(!permission_reauthorization_requested([
             "/Applications/Slugtale.app/Contents/MacOS/slugtale",
             "--reauthorize-permissions-please",
@@ -157,9 +146,6 @@ mod tests {
 
     #[test]
     fn tray_menu_ids_are_not_window_labels() {
-        // The two namespaces are separate strings that happen to live in the same
-        // process. Nothing turns a tray id into a window, and nothing should read
-        // as though it might.
         for item in &TRAY_MENU {
             assert_eq!(WindowLabel::from_label(item.id), None);
         }

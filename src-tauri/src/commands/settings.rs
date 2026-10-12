@@ -1,5 +1,3 @@
-//! Settings commands: readiness, the Settings File writers, the OS permission
-//! shortcuts, and Launch at Login.
 
 use tauri::Manager;
 use tauri_plugin_autostart::ManagerExt;
@@ -12,8 +10,6 @@ use super::engines::current_engine_availability;
 use super::platform::CurrentPlatform;
 use super::{app_files, load_current_settings, record_diagnostic_event, update_current_settings};
 
-/// The app's answers to the five readiness facts, probed through one
-/// interface so both snapshot paths see identical state (slugtale-g1o.6).
 struct AppReadinessProbes<'a> {
     app: &'a tauri::AppHandle,
 }
@@ -62,8 +58,6 @@ fn current_settings_readiness(app: &tauri::AppHandle) -> slugtale_lib::SettingsR
     .report
 }
 
-/// One readiness snapshot over the app's probes. `input` decides which
-/// activation's requirements the report reflects.
 fn readiness_snapshot_for(
     app: &tauri::AppHandle,
     input: impl FnOnce(&slugtale_lib::Settings) -> slugtale_lib::DictationInput,
@@ -78,8 +72,6 @@ pub(crate) fn build_activation_snapshot_for(
     readiness_snapshot_for(app, |_| input)
 }
 
-/// Tell the user which required items are missing and open Settings, where
-/// they can act on each one.
 pub(crate) fn report_not_ready(
     app: &tauri::AppHandle,
     report: &slugtale_lib::SettingsReadinessReport,
@@ -101,9 +93,6 @@ pub(crate) fn report_not_ready(
     slugtale_lib::show_settings(app.clone());
 }
 
-/// Name the unmet required items of a report in the Local Diagnostic Log, once.
-/// Both the not-ready report and the readiness read go through here, so what is
-/// logged and what the user is told cannot disagree.
 fn record_readiness_incomplete(
     app: &tauri::AppHandle,
     report: &slugtale_lib::SettingsReadinessReport,
@@ -170,12 +159,6 @@ pub(crate) fn save_transcript_cleanup_settings(
     })
 }
 
-/// Save the Segment Pause length in seconds (ADR-0026). The value is validated
-/// inside the Settings File's one transaction, so a rejected value writes
-/// nothing. No part of the save reaches the running runtime: the next dictation
-/// derives its pause from the Settings snapshot it pins at Start, so a dictation
-/// already in progress keeps the length it armed with and no save can publish a
-/// stale length to a dictation about to begin.
 #[tauri::command]
 pub(crate) fn save_segment_pause_settings(
     app: tauri::AppHandle,
@@ -186,8 +169,6 @@ pub(crate) fn save_segment_pause_settings(
     })
 }
 
-/// Save whether dictation records from the built-in microphone when the
-/// default one is Bluetooth. The next dictation picks the new microphone up.
 #[tauri::command]
 pub(crate) fn save_microphone_settings(
     app: tauri::AppHandle,
@@ -204,9 +185,6 @@ pub(crate) fn voice_activation_supported() -> bool {
     voice_activation::supported()
 }
 
-/// Save the Voice Activation opt-in and bring the listener in line immediately.
-/// Change the worker first, then persist. A failed worker must not leave a saved
-/// "on" value while nothing is listening.
 #[tauri::command]
 pub(crate) fn save_voice_activation_settings(
     app: tauri::AppHandle,
@@ -235,11 +213,8 @@ pub(crate) fn save_dictation_bar_settings(
     Ok(settings)
 }
 
-/// Register or unregister the app as an OS login item to match the desired state.
 /// Backed by tauri-plugin-autostart (a macOS LaunchAgent), which keeps this off the
 /// dictation hot path and gives the Windows port the same abstraction for free.
-/// Launch at Login is informational and optional (slugtale-9bx): it is not a
-/// Dictation Readiness item, and a disabled preference never blocks dictation.
 pub(crate) fn set_launch_at_login_state(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let autolaunch = app.autolaunch();
     if enabled {

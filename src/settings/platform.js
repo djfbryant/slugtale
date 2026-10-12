@@ -9,9 +9,6 @@
       return READINESS_COPY[id]?.actions?.[PLATFORM] || null;
     }
 
-    // One entry per sidebar section, in sidebar order. A readiness item names
-    // the pane that shows it, so these ids are also the backend's
-    // `ReadinessPane` wire names.
     const PANES = [
       { id: "shortcut", title: "Shortcut", icon: "keyboard", subtitle: "How you start and stop dictating." },
       { id: "transcription", title: "Transcription", icon: "cpu", subtitle: "Which on-device engine turns speech into text." },
@@ -22,7 +19,5 @@
       { id: "general", title: "General", icon: "sliders", subtitle: "How Slugtale behaves in the background." }
     ];
 
-    // The two OS permissions have a row of their own on the Privacy pane, so
-    // the pane's problem list leaves them to it rather than saying it twice.
     const PERMISSION_ITEMS = ["microphone", "text_insertion"];
 

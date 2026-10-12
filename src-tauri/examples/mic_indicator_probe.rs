@@ -1,18 +1,8 @@
-//! Proves, against real macOS, that building a CoreAudio input stream does not
-//! activate the microphone until the stream plays (slugtale-g1o.3).
-//!
 //! Evidence: `kAudioDevicePropertyDeviceIsRunningSomewhere` on the default
 //! input device. This is the property that reports whether any process has the
 //! device running — the same underlying state the system's microphone
 //! indicator reflects. The probe asserts it stays false while a stream is
 //! built but stopped, and flips true once it plays.
-//!
-//! Usage:
-//!   cargo run --example mic_indicator_probe
-//!
-//! The probe reads macOS-only CoreAudio state, so on other platforms it
-//! compiles but refuses to run: there is no macOS audio HAL to measure, and a
-//! silent pass would not be evidence.
 
 #[cfg(target_os = "macos")]
 use objc2_core_audio::{
@@ -28,10 +18,6 @@ use std::ptr::NonNull;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
-/// The probe needs the macOS audio HAL; off macOS there is nothing to measure
-/// and no evidence to report. `cargo check --examples` still has to compile
-/// this example on every platform, so this main keeps the build honest and
-/// fails loudly if someone runs it expecting proof.
 #[cfg(not(target_os = "macos"))]
 fn main() {
     eprintln!(
@@ -54,7 +40,6 @@ fn main() {
     );
 
     let mut recorder = CpalAudioRecorder::new();
-    // Builds the input stream but never plays it — what idle-time prepare does.
     recorder.prepare().expect("prepare capture");
     std::thread::sleep(Duration::from_millis(500));
 
@@ -83,8 +68,6 @@ fn main() {
     println!("ok: a built-but-stopped stream does not activate the microphone");
 }
 
-/// The default input device's `AudioObjectID`, read straight from the HAL so
-/// the property query below targets exactly the device cpal will use.
 #[cfg(target_os = "macos")]
 fn default_input_device_id() -> Option<u32> {
     let address = AudioObjectPropertyAddress {

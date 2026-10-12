@@ -1,8 +1,6 @@
     :root {
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 14px;
-      /* Overwritten from the dictation-appearance event. The defaults match the
-         Red accent so the bar is never unpainted, even if the event is missed. */
       --accent: #ff5a52;
       --accent-soft: rgba(255, 90, 82, 0.3);
       --accent-bed: rgba(255, 90, 82, 0.16);
@@ -16,8 +14,6 @@
     body {
       margin: 0;
       height: 100%;
-      /* The window is transparent; only the orb paints, so it floats over
-         whatever the user is dictating into. */
       background: transparent;
       overflow: hidden;
       -webkit-user-select: none;
@@ -33,14 +29,9 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      /* Transparent gutter so the pill's drop shadow fades out inside the window
-         instead of being sliced off at the edge. Matches BAR_GUTTER_PT, and has
-         to stay big enough for the shadow below (slugtale-3d4). */
       padding: 16px;
     }
 
-    /* The orb hugs whichever edge it was sent to, so it lands in the corner the
-       user chose and the pill grows inwards from there. */
     body[data-position="bottom-left"] { justify-content: flex-start; }
     body[data-position="bottom-right"] { justify-content: flex-end; }
 
@@ -54,9 +45,6 @@
       border-radius: 999px;
       background: rgba(18, 21, 25, 0.92);
       backdrop-filter: blur(14px);
-      /* Reaches 16pt below and 12pt elsewhere, which is what BAR_GUTTER_PT is
-         sized to contain. A bigger shadow needs a bigger gutter or it comes back
-         sliced. */
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
       color: #f3f5f6;
       overflow: hidden;
@@ -85,15 +73,11 @@
     }
 
     .orb svg {
-      /* Above the halo, which paints behind the glyph. */
       position: relative;
       width: 15px;
       height: 15px;
     }
 
-    /* Scaled from the voice level each frame. The recorder already emits a
-       perceptual level, so this is the level and nothing else — no idle
-       animation on top of it pretending to be speech. */
     .halo {
       position: absolute;
       inset: 0;
@@ -117,10 +101,6 @@
       opacity: 1;
     }
 
-    /* The waveform of the last ~2.4 seconds, and the reason the bar opens itself
-       while you are talking. It takes the whole tail: while the bar is speaking
-       for itself there is nothing else worth showing, and hovering swaps it for
-       the controls. */
     .wave {
       display: none;
       flex: 1;
@@ -152,8 +132,6 @@
     body[data-reason="voice"] .elapsed,
     body[data-reason="voice"] .controls { display: none; }
 
-    /* The status stays in the accessibility tree in every state, so the wave
-       replacing the words costs a screen reader nothing. */
     body[data-reason="voice"] .label {
       position: absolute;
       width: 1px;
@@ -210,9 +188,6 @@
       height: 12px;
     }
 
-    /* Transcribing: the audio is already captured, so the accent, its halo and
-       the waveform go quiet and a ring sweeps the glyph instead. The mic itself
-       stays still — a rotating microphone reads as an error, not as progress. */
     body[data-phase="transcribing"] .orb {
       background: rgba(255, 255, 255, 0.1);
       color: #e8edf1;
@@ -237,7 +212,6 @@
       to { transform: rotate(360deg); }
     }
 
-    /* Nothing left to stop once the model is running. */
     body[data-phase="transcribing"] .controls {
       display: none;
     }
@@ -248,10 +222,6 @@
       gap: 6px;
     }
 
-    /* Reduced motion keeps the signal and drops the decoration: the waveform
-       still rises and falls with the voice, but it stops sliding and its edges
-       stop undulating. Removing the feedback outright would leave these users
-       with no way to tell the bar is hearing them at all. */
     @media (prefers-reduced-motion: reduce) {
       .bar { transition: none; }
       .tail { transition: none; }

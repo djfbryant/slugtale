@@ -1,21 +1,6 @@
-//! Device and stream policy: which microphone a dictation records from, and
-//! whether the stream already built is still the one to use.
-//!
-//! Two rules, both pure, both tested without a device:
-//!
-//! - [`choose_input_device`] decides between the system default and the
-//!   built-in microphone, because a Bluetooth headset costs seconds to open and
-//!   drops the user's music while it is open.
-//! - [`paused_stream_is_reusable`] decides whether the stream prepared while the
-//!   app was idle still matches the device and format a Hotkey just observed.
-//!
-//! [`PrepareState`], [`should_attempt_prepare`], and [`prepare_state_after`]
-//! carry the same idea for the idle-time half: what the recorder has already
-//! validated, and what it may retry.
 
 use crate::audio_capture::signal::AudioCaptureError;
 
-/// How a microphone is attached, as far as choosing one to record from cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MicrophoneTransport {
     BuiltIn,
@@ -23,8 +8,6 @@ pub enum MicrophoneTransport {
     Other,
 }
 
-/// The input device a dictation records from: the system default, unless the
-/// user prefers the built-in microphone and the default is Bluetooth.
 ///
 /// A Bluetooth headset can only record by switching into its call profile.
 /// Opening it from cold took 3.4 s on the reference headset against 0.08 s for
@@ -51,8 +34,6 @@ where
         .unwrap_or(default)
 }
 
-/// How `device` is attached, asked of the Platform Adapter. Only macOS can
-/// tell today; elsewhere every microphone is `Other`, which keeps the default.
 pub(super) fn microphone_transport(device: &cpal::Device) -> MicrophoneTransport {
     #[cfg(target_os = "macos")]
     {
@@ -71,7 +52,6 @@ pub(super) fn microphone_transport(device: &cpal::Device) -> MicrophoneTransport
     }
 }
 
-/// The device to record from on this host, per [`choose_input_device`].
 pub(super) fn recording_device(
     host: &cpal::Host,
     prefer_built_in: bool,
@@ -111,18 +91,11 @@ pub(super) fn paused_stream_is_reusable(
     stream_held && buffer_held && recorded == Some(observed)
 }
 
-/// Where the recorder stands relative to the first Hotkey. `Recording` is not
-/// a variant here because it is already tracked by `stream_active`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) enum PrepareState {
     #[default]
     Unprepared,
-    /// Device and format validated and the stream built in a stopped state;
-    /// Start only has to play it. See [`DictationRecorder::prepare`] for why a
-    /// stopped stream is safe to hold.
     Prepared { identity: InputStreamIdentity },
-    /// The last prepare attempt failed with this message. A later prepare may
-    /// retry — a missing device can come back.
     Failed(String),
 }
 
@@ -166,13 +139,10 @@ mod tests {
             choose_input_device("headset", devices, true, transport),
             "built-in"
         );
-        // The user turned the preference off: their default stands.
         assert_eq!(
             choose_input_device("headset", devices, false, transport),
             "headset"
         );
-        // A desktop Mac with no built-in microphone keeps the headset rather
-        // than recording from nothing.
         assert_eq!(
             choose_input_device("headset", || vec!["headset", "usb"], true, transport),
             "headset"
@@ -181,8 +151,6 @@ mod tests {
 
     #[test]
     fn a_default_that_is_not_bluetooth_is_kept_without_listing_devices() {
-        // Listing devices costs a round trip to the audio system on every
-        // press, so only the Bluetooth case may pay for it.
         let transport = |name: &&str| match *name {
             "built-in" => MicrophoneTransport::BuiltIn,
             _ => MicrophoneTransport::Other,
@@ -212,11 +180,7 @@ mod tests {
 
         assert!(should_attempt_prepare(&PrepareState::Unprepared, false));
         assert!(!should_attempt_prepare(&prepared, false));
-        // Preparing while recording must not disturb the dictation in
-        // progress.
         assert!(!should_attempt_prepare(&PrepareState::Unprepared, true));
-        // A failed prepare may always be retried: a missing device can come
-        // back.
         assert!(should_attempt_prepare(
             &PrepareState::Failed("no device".into()),
             false
@@ -259,8 +223,6 @@ mod tests {
             ..observed.clone()
         };
 
-        // Same device and format: the hundreds-of-milliseconds rebuild is
-        // skipped and `play` resumes the paused stream (slugtale-op3).
         assert!(paused_stream_is_reusable(
             true,
             true,
@@ -274,8 +236,6 @@ mod tests {
             &observed
         ));
 
-        // A dropped stream, a dropped ring, or a forgotten identity forces the
-        // cold start that rebuilds all three together.
         assert!(!paused_stream_is_reusable(
             false,
             true,

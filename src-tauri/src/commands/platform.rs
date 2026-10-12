@@ -1,20 +1,6 @@
-//! OS platform adapters behind the binary's commands: the microphone and text
-//! insertion permission probes the readiness report reads, the permission-setup
-//! shortcuts Settings offers, and the locale's week start.
-//!
-//! Every platform module in `slugtale_lib` answers the same questions under the
-//! same names (ADR-0021), so the questions are stated once as
-//! [`PlatformAdapter`] and dispatched through the one [`CurrentPlatform`] this
-//! build carries. A command asks a question and never writes a `#[cfg]` arm of
-//! its own, and a new question is one trait method rather than one arm per
-//! platform.
 
 use slugtale_lib::WeekStart;
 
-/// One question the commands ask the OS.
-///
-/// The adapter methods mirror the platform modules' own vocabulary rather than
-/// inventing a second one, so an adapter impl forwards and nothing translates.
 pub(crate) trait PlatformAdapter {
     fn microphone_granted(&self) -> bool;
     fn insertion_granted(&self) -> bool;
@@ -23,9 +9,6 @@ pub(crate) trait PlatformAdapter {
     fn locale_week_start() -> WeekStart;
 }
 
-/// The adapter this build dispatches every OS question to. One `#[cfg]` alias
-/// replaces a `#[cfg]` arm per question: whatever the platform, the questions
-/// below are answered by this one type.
 #[cfg(target_os = "macos")]
 type Adapter = slugtale_lib::MacosPlatform;
 
@@ -147,7 +130,6 @@ impl PlatformAdapter for UnsupportedPlatform {
     }
 }
 
-/// The platform this build runs on, behind the one set of questions.
 #[derive(Default)]
 pub(crate) struct CurrentPlatform(Adapter);
 
@@ -175,8 +157,6 @@ pub(crate) fn open_text_insertion_settings() -> Result<(), String> {
     <Adapter as PlatformAdapter>::open_text_insertion_settings()
 }
 
-/// Which week the Usage pane means by "this week", asked of the OS rather than
-/// assumed (ADR-0021: locale is platform behaviour).
 pub(crate) fn locale_week_start() -> WeekStart {
     <Adapter as PlatformAdapter>::locale_week_start()
 }

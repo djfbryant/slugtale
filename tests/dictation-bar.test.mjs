@@ -4,10 +4,6 @@ import test from "node:test";
 
 import { runPage, stylesheetOf } from "./harness.mjs";
 
-// The Dictation Bar runs as a plain script inside a transparent Tauri window.
-// These tests load that script against a fake DOM so the bar's behaviour — what
-// it expands for, what it hands back to the app underneath, what it paints — is
-// checked without a running app.
 function loadDictationBar({ invoke = async () => false, reduceMotion = false } = {}) {
   const invocations = [];
   const { api, document, elements, intervals, rootStyle } = runPage("dictation-bar.html", {
@@ -35,9 +31,6 @@ function loadDictationBar({ invoke = async () => false, reduceMotion = false } =
   };
 }
 
-// The envelope's y coordinates, which are where its amplitude lives. Comparing
-// the whole path would be useless: the wave slides continuously, so every x
-// changes on every frame even when the shape is dead still.
 function amplitudes(bar) {
   const d = bar.elements.get("envelope").getAttribute("d") || "";
   return (d.match(/-?\d+\.\d+,(-?\d+\.\d+)/g) || []).map((pair) => Number(pair.split(",")[1]));
@@ -73,8 +66,6 @@ test("hovering the orb expands it, leaving it collapses it again", async () => {
 });
 
 test("the pointer poll tells the backend which shape to hit-test against", async () => {
-  // The window is always sized for the expanded pill, so the backend cannot know
-  // how much of it is painted unless the bar says so.
   const bar = loadDictationBar({ invoke: async () => false });
 
   await bar.api.pollPointer();
@@ -107,8 +98,6 @@ test("the accent arrives as a custom property, never as markup", () => {
 
   assert.equal(bar.rootStyle.get("--accent"), "#a78bfa");
   assert.equal(bar.body.dataset.position, "bottom-right");
-  // Nothing the backend sent is written into the document as text: the label
-  // still shows the phase, and the accent name never reaches it.
   assert.equal(bar.elements.get("label").textContent, "Recording");
   assert.doesNotMatch(bar.elements.get("label").textContent, /violet/);
 });
@@ -159,7 +148,6 @@ test("the halo reads from the voice level alone, with no idle drift", () => {
 
   bar.api.setPhase("recording");
   bar.api.setAudioLevel(0);
-  // Settle the smoothing, then confirm the shape stops moving on silence.
   for (let frame = 0; frame < 60; frame += 1) bar.api.renderFrame(frame * 16);
   const silent = bar.elements.get("halo").style.transform;
   bar.api.renderFrame(1000);
@@ -180,10 +168,6 @@ test("the elapsed clock counts the current phase", () => {
 });
 
 test("reduced motion keeps the level signal and drops only the travel", () => {
-  // The bar used to hide the halo outright under prefers-reduced-motion, which
-  // left those users with no way at all to tell it was hearing them. The signal
-  // now stays and the decoration goes: the wave still rises and falls, but it
-  // does not slide sideways or undulate.
   const bar = loadDictationBar({ reduceMotion: true });
 
   bar.api.setAudioLevel(0.9);
@@ -204,8 +188,6 @@ test("reduced motion changes the waveform in place across successive audio level
   bar.api.renderFrame(0, now);
   const firstShape = normalizedEnvelope(bar);
 
-  // A new, different sample may grow or shrink the signal, but it must not push
-  // the previous shape one position to the left.
   bar.api.setAudioLevel(0.65);
   bar.api.renderFrame(0, now + 33);
   const secondShape = normalizedEnvelope(bar);
@@ -226,12 +208,10 @@ test("the bar opens itself while it hears you, and closes again after", () => {
   assert.equal(bar.body.dataset.expanded, "true");
   assert.equal(bar.body.dataset.reason, "voice");
 
-  // Held open across the gaps between words...
   bar.api.setAudioLevel(0);
   bar.api.renderFrame(0, now + 400);
   assert.equal(bar.body.dataset.expanded, "true");
 
-  // ...but not indefinitely.
   bar.api.renderFrame(0, now + 1_500);
   assert.equal(bar.body.dataset.expanded, "false");
   assert.equal(bar.body.dataset.reason, "none");
@@ -258,15 +238,10 @@ test("a pointer on the bar beats the voice, because it is a reach for the contro
 });
 
 test("the waveform is flat and dead still while the room is silent", () => {
-  // The rule the old drifting waveform broke (slugtale-hla): every part of the
-  // wave's movement is scaled by the level, so silence is a flat, motionless
-  // line rather than something that looks like it can hear a quiet room.
   const bar = loadDictationBar();
   const now = Date.now();
 
   bar.api.setPhase("recording");
-  // Open it with real voice, then flush the whole history back to silence while
-  // the hold keeps the wave on screen.
   bar.api.setAudioLevel(0.9);
   for (let sample = 0; sample < 120; sample += 1) bar.api.setAudioLevel(0);
 
@@ -275,8 +250,6 @@ test("the waveform is flat and dead still while the room is silent", () => {
   bar.api.renderFrame(0, now + 500);
 
   assert.deepEqual(amplitudes(bar), silent, "silence must not move the wave");
-  // The strip is a filled shape, so a flat line is two edges: every point sits
-  // exactly the floor thickness from the centre line, top or bottom.
   assert.ok(
     silent.every((y) => Math.abs(Math.abs(y - 13) - 0.7) < 0.01),
     "silence must be a flat line at the floor thickness"
@@ -290,8 +263,6 @@ test("the waveform is flat and dead still while the room is silent", () => {
 test("the bar only watches the pointer while it is on screen", async () => {
   const bar = loadDictationBar({ invoke: async () => false });
 
-  // The window is hidden between dictations and the webview keeps running, so
-  // polling before it is shown would ping the backend all day for nothing.
   assert.equal(bar.api.isPolling(), false);
   assert.equal(bar.intervals.length, 0);
 

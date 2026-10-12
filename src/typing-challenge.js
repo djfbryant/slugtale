@@ -1,8 +1,4 @@
-    // Local-Only Processing applies here as much as to dictation: the passages
-    // ship in the app, nothing is downloaded, and the only thing that leaves
-    // this window is a word-per-minute number.
 
-    // Shown outside the desktop app so the window is never blank.
     const fallbackState = {
       passage: "The harbour was quiet that morning, and the boats leaned together at their moorings as if sharing a long and complicated secret.",
       passage_index: 0,
@@ -14,9 +10,6 @@
 
     let state = fallbackState;
     let words = [];
-    // null until the first keystroke. The thirty seconds start when the user
-    // starts typing, not when the window opens — otherwise reading the passage
-    // costs them the measurement.
     let startedAt = null;
     let ticker = null;
     let finished = false;
@@ -43,9 +36,6 @@
       markTypedWords("");
     }
 
-    // Mark each passage word against what has been typed so far, comparing in
-    // order — the same rule the score uses, so what the user sees while typing
-    // is what they are actually being credited for.
     function markTypedWords(typed) {
       const typedWords = typed.split(/\s+/).filter(Boolean);
       const inWord = typed.length > 0 && !/\s$/.test(typed);
@@ -130,8 +120,6 @@
       startedAt = Date.now();
       el("clock").dataset.running = "true";
       el("abort").hidden = false;
-      // A wall-clock deadline rather than a countdown of ticks: a tab that is
-      // throttled or a machine that sleeps must not hand out extra seconds.
       ticker = setInterval(() => {
         const left = remainingSeconds();
         el("clock").textContent = String(left);
@@ -164,8 +152,6 @@
           typed
         });
         submitting = false;
-        // Land on a deliberate step rather than snapping to the next passage:
-        // three runs back to back with no pause is not a measurement of typing.
         if (state.passage_index === null || state.passage_index === undefined) {
           renderState();
           return;
@@ -199,8 +185,6 @@
     function closeWindow() {
       const invoke = tauriInvoke();
       if (invoke) {
-        // Closing part-way through keeps the challenges already finished; only
-        // the run in progress is lost, and its slot is served again next time.
         invoke("close_typing_challenge").catch(() => window.close());
         return;
       }
@@ -215,15 +199,11 @@
         if (startedAt !== null && remainingSeconds() <= 0) finishRun();
       });
 
-      // Enter would otherwise add a line the passage never asked for, and the
-      // score splits on whitespace so it would be free correctness noise.
       el("typing").addEventListener("keydown", (event) => {
         if (event.key === "Enter") event.preventDefault();
       });
 
       el("abort").addEventListener("click", () => {
-        // Abort retries this slot. A finished run has already been stored, so
-        // starting over here just re-serves whatever is outstanding.
         loadState();
       });
       el("next").addEventListener("click", () => renderState());

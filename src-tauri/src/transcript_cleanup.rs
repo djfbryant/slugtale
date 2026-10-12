@@ -1,40 +1,20 @@
 use serde::{Deserialize, Serialize};
 
-/// How much local Transcript Cleanup runs before insertion (slugtale-kyc).
-/// Both modes are deterministic and entirely on-device; neither rewrites
-/// meaning, adds generated text, or sends anything anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TranscriptCleanupMode {
-    /// Whitespace normalization only: today's behaviour.
     #[default]
     Basic,
-    /// Whitespace normalization plus conservative filler-word removal for
-    /// low-risk hesitations such as "um" (slugtale-5wr).
     CleanDictation,
-    /// Clean Dictation plus line breaks at clear pauses between short phrases.
-    /// This stays opt-in because a pause is not always a paragraph break.
     CleanDictationWithPauseBreaks,
 }
 
-/// A gap this long can be a deliberate separation between short thoughts. It
-/// is longer than ordinary breathing, but shorter than the five-second Segment
-/// Pause that flushes a Dictation Segment while recording continues.
 const PAUSE_LINE_BREAK_MS: u64 = 1_500;
 
-/// Long segments are usually prose. Keeping this small makes the line-break
-/// mode conservative when Whisper splits a normal sentence into segments.
 const MAX_WORDS_PER_PAUSE_LINE: usize = 8;
 
-/// The hesitation words Filler Cleanup removes when enabled. Deliberately tiny:
-/// every word here is one a user almost never wants typed out. Words that can
-/// carry meaning — "like", "well", "so", "hmm", "er" — are excluded so the pass
-/// prefers false negatives over meaning-changing false positives.
 const FILLER_BASES: [&str; 3] = ["um", "uh", "erm"];
 
-/// Whether a token core is a safe hesitation word, including lengthened forms
-/// such as "umm" or "uhhh". A hyphenated "uh-uh" (meaning "no") never matches,
-/// because the hyphen keeps it from being a bare core.
 fn is_filler_core(core: &str) -> bool {
     let lower = core.to_lowercase();
     FILLER_BASES
@@ -42,8 +22,6 @@ fn is_filler_core(core: &str) -> bool {
         .any(|base| filler_variant_of(base, &lower))
 }
 
-/// Whether `candidate` is `base` or `base` with its final letter repeated one
-/// or more times ("uh" -> "uhh" -> "uhhh"). Bases are non-empty ASCII.
 fn filler_variant_of(base: &str, candidate: &str) -> bool {
     let last = base.chars().last().unwrap_or(' ');
     candidate.len() >= base.len()
@@ -73,8 +51,6 @@ pub fn remove_filler_words(text: &str) -> String {
         .to_string()
 }
 
-/// Normalize spaces and tabs without flattening intentional line breaks from
-/// ASR or generated line breaks from structured cleanup.
 pub fn normalize_transcript_whitespace(text: &str) -> String {
     text.split('\n')
         .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -94,7 +70,6 @@ fn remove_filler_words_from_line(line: &str) -> String {
             continue;
         }
 
-        // Preserve sentence ends that rode on the dropped filler.
         let terminal: String = token
             .chars()
             .filter(|c| matches!(c, '.' | '!' | '?'))
@@ -157,9 +132,6 @@ fn ends_sentence(text: &str) -> bool {
     matches!(text.trim_end().chars().last(), Some('.' | '!' | '?' | '…'))
 }
 
-/// The run of alphanumeric characters inside a token: everything around it is
-/// leading or trailing punctuation. A token with no alphanumeric characters
-/// yields an empty core, which is never a filler.
 fn alphanumeric_core(token: &str) -> String {
     token
         .trim_matches(|c: char| !c.is_alphanumeric())
@@ -227,8 +199,6 @@ mod tests {
 
     #[test]
     fn never_recases_words_itself() {
-        // A dropped opening filler leaves lowercase text behind; Dictation
-        // Workflow's first-segment rule owns capitalization.
         assert_eq!(remove_filler_words("Um we left"), "we left");
         assert_eq!(remove_filler_words("We um left"), "We left");
     }
@@ -241,8 +211,6 @@ mod tests {
 
     #[test]
     fn commas_set_off_a_filler_and_die_with_it() {
-        // The comma before a removed filler stays with the word it followed;
-        // only the filler's own soft punctuation disappears.
         assert_eq!(remove_filler_words("I was, um, late."), "I was, late.");
     }
 

@@ -1,6 +1,3 @@
-//! Hotkey registration and the global-key worker: which shortcut starts and
-//! stops dictation, when bare Escape is global, and the single worker thread
-//! that turns key transitions into lifecycle events.
 
 use std::sync::Mutex;
 
@@ -49,9 +46,6 @@ pub(super) fn setup_configured_hotkey(
             match registration {
                 Ok(registration) => {
                     if let Some(commands) = registration.key_commands.as_ref() {
-                        // The key-identity rule is the core's: the adapter only
-                        // reports which key the plugin saw and whether any
-                        // modifier was held with it.
                         let key = slugtale_lib::dictation_key_for(slugtale_lib::GlobalKey::new(
                             shortcut.key == tauri_plugin_global_shortcut::Code::Escape,
                             !shortcut.mods.is_empty(),
@@ -88,9 +82,6 @@ pub(super) fn request_escape_registration(
         .map_err(|_| "global key worker is unavailable".to_string())
 }
 
-/// A requested registration state expressed through the arbiter's vocabulary:
-/// the caller says what it wants true/false to mean (armed or matching the
-/// lifecycle), and the arbiter decides whether the OS must change.
 fn escape_command(should_register: bool) -> slugtale_lib::EscapeCommand {
     if should_register {
         slugtale_lib::EscapeCommand::Arm
@@ -99,9 +90,6 @@ fn escape_command(should_register: bool) -> slugtale_lib::EscapeCommand {
     }
 }
 
-/// Bare Escape must only be global while recording; otherwise Slugtale would
-/// steal Escape from the user's current application. A dedicated worker first
-/// registers Escape and only then starts recording, so there is no active but
 /// uncancellable window. It also keeps registration outside the plugin callback,
 /// which holds the plugin's key map while invoking us.
 fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
@@ -119,7 +107,6 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
     std::thread::Builder::new()
         .name("dictation-global-keys".to_string())
         .spawn(move || {
-            // The one owner of bare Escape's armed state on this thread.
             let mut escape_arbiter = slugtale_lib::EscapeArbiter::new();
             for event in events {
                 match event {
@@ -131,9 +118,6 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                         }
                     }
                     GlobalKeyCommand::Input(key, input) => {
-                        // One rule, consulted by the begin sequence too. This
-                        // early check is what keeps the release of a swallowed
-                        // key from reaching the lifecycle at all.
                         if dictation_input_is_inert(&app) {
                             continue;
                         }
@@ -154,11 +138,6 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             )
                         );
 
-                        // A start goes through the shared readiness-gated begin
-                        // sequence, identical to the Voice Activation path.
-                        // One snapshot for this press: the readiness gate and
-                        // the Start path share the same Settings value and
-                        // permission probes (slugtale-g1o.6).
                         if pressed_start && !is_dictating {
                             let mut set_escape = |should_register: bool| {
                                 sync_escape_registration(
@@ -183,16 +162,10 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
                             .lock()
                             .ok()
                             .and_then(|mut registration| {
-                                // The whole transition table is the core's; the
-                                // adapter only forwards what the plugin saw.
                                 let event = registration.control.on_key(key, input);
                                 Some((event, registration.control.is_dictating()))
                             });
                         if let Some((event, should_register)) = transition {
-                            // The shared registration mutex is no longer held:
-                            // recording, transcription, and window work may block
-                            // without preventing the main-thread shortcut handler
-                            // from forwarding the next key transition (slugtale-pil).
                             if let Some(event) = event {
                                 if let Err(error) =
                                     dictation_host(&app).handle_dictation_event(event)
@@ -217,12 +190,6 @@ fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Bring the OS registration in line with `command`, and only then let the
-/// arbiter remember the new state.
-///
-/// The order matters: `apply` records what the OS is holding only after the
-/// registration itself succeeds, so a refusal leaves the arbiter armed-free and
-/// the next Arm tries again instead of looking already done (slugtale-7kxk).
 fn sync_escape_registration(
     app: &tauri::AppHandle,
     arbiter: &mut slugtale_lib::EscapeArbiter,
@@ -251,8 +218,6 @@ fn set_hotkey_registration_state(
         .lock()
         .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
     registration.current_hotkey = settings.hotkey.clone();
-    // The lifecycle belongs to dictation, not to the optional hotkey. Voice
-    // Activation and Dictation Bar controls use it even with no hotkey set.
     registration.control = slugtale_lib::DictationControl::new(settings.activation_mode);
     Ok(())
 }

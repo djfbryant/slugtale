@@ -17,20 +17,11 @@ const {
 const { runNodeTests } = require("../scripts/run-node-tests.js");
 const { runCargo } = require("../scripts/run-cargo.js");
 
-// The runners are the only thing standing between a hung test and a machine
-// that never comes back, so these tests drive the real scripts rather than
-// reading them as text. Finding 08 was a runner that printed "timed out" while
-// the test it claimed to stop was still running: it signalled a process group
-// it had not created, so the kill never landed.
 
 const quiet = () => {};
-// Normalised so a trailing separator cannot fail an otherwise exact match.
 const defaultRepoTestsDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ---------------------------------------------------------------------------
-// Unit: the child leads a group it owns
-// ---------------------------------------------------------------------------
 
 test("a POSIX child is spawned detached, so the timeout owns a process group", () => {
   const calls = [];
@@ -49,11 +40,6 @@ test("a POSIX child is spawned detached, so the timeout owns a process group", (
 });
 
 test("no platform ever launches through a shell", () => {
-  // `shell: true` would be the tempting way to run a `.cmd` or `.bat` fixture,
-  // and it is exactly what must not happen here: a shell changes how arguments
-  // are parsed, so a fixture path could no longer be trusted to reach the child
-  // as one argument, and the `shell: false` launch that production uses (cargo
-  // and `node --test`) would no longer be what the tests exercise.
   for (const platform of ["darwin", "linux", "win32"]) {
     let seen;
     spawnInOwnGroup("cargo", ["test"], {}, {
@@ -82,9 +68,6 @@ test("a Windows child is not detached, because the tree stop is taskkill", () =>
   assert.equal(calls[0].options.detached, false);
 });
 
-// ---------------------------------------------------------------------------
-// Unit: the tree stop is platform-correct
-// ---------------------------------------------------------------------------
 
 test("a POSIX timeout kills the whole process group, not one pid", () => {
   const signals = [];
@@ -131,14 +114,10 @@ test("a timeout with no pid to kill reports that nothing was delivered", () => {
   assert.equal(called, false);
 });
 
-// ---------------------------------------------------------------------------
-// Unit: exit codes
-// ---------------------------------------------------------------------------
 
 test("a timeout reports 124 even when the OS reports a plain exit code", async () => {
   // This is the Windows shape: taskkill ends the child, so it reports an exit
   // code and never a signal. Deriving the status from the signal alone is what
-  // made the old runner report an ordinary failure for a timed-out suite.
   const child = new EventEmitter();
   child.pid = 99;
 
@@ -152,7 +131,6 @@ test("a timeout reports 124 even when the OS reports a plain exit code", async (
     },
   );
 
-  // The cap has to fire first, and only then can the OS report the kill.
   await wait(60);
   child.emit("exit", 1, null);
 
@@ -262,14 +240,8 @@ test("the timeout still gives up when the kill never reaches the child", async (
   assert.equal(result.timedOut, true);
 });
 
-// ---------------------------------------------------------------------------
-// Discovery stays inside tests/
-// ---------------------------------------------------------------------------
 
 test("frontend discovery is scoped to tests/, not the whole checkout", async () => {
-  // A runner that globbed the repository would pick up any stray *.test.mjs
-  // anywhere in the tree, so a file left behind by another task could silently
-  // join or break the frontend suite.
   const calls = [];
 
   await runNodeTests({
@@ -291,16 +263,7 @@ test("frontend discovery is scoped to tests/, not the whole checkout", async () 
   assert.equal(resolve(calls[0].options.cwd), defaultRepoTestsDir);
 });
 
-// ---------------------------------------------------------------------------
-// End to end: a real hang, stopped for real
-// ---------------------------------------------------------------------------
 
-// Both hangs are observed the same portable way: the hanging processes append a
-// character to a marker file for as long as they are alive. `p` is the process
-// the runner started, `g` is a descendant it spawned. Seeing both characters
-// proves a real descendant ran, so the test would have caught a kill that
-// reached only the direct child; the marker then having stopped growing proves
-// both ended. No `ps`, no `tasklist`, no assumption about a process table.
 function makeSandbox(prefix) {
   const root = mkdtempSync(join(tmpdir(), `slugtale-${prefix}-`));
   return {
@@ -366,8 +329,6 @@ test("the frontend runner stops a hung test and the process it spawned", async (
       'test("hangs, and spawns a process that hangs too", () => {',
       `  spawn(process.execPath, [${JSON.stringify(descendant)}], { stdio: "ignore" });`,
       '  setInterval(() => appendFileSync(process.env.HANG_MARKER, "p"), 50);',
-      // Never resolves: the shape of a screen test waiting on something that
-      // never answers.
       "  return new Promise(() => {});",
       "});",
       "",
@@ -404,8 +365,6 @@ test("the cargo runner stops a hung cargo and the rustc it spawned", async (t) =
   t.after(sandbox.cleanup);
 
   const marker = join(sandbox.root, "marker");
-  // A stand-in for cargo: it hangs and spawns a descendant that hangs too, which
-  // is the shape of a real cargo build stuck behind a wedged rustc.
   const script = join(sandbox.root, "hanging-cargo.cjs");
   writeFileSync(
     script,

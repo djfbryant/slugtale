@@ -38,26 +38,14 @@ jobs:
     - name: Install dependencies
       run: npm install
     - name: Run project checks
-      # Single documented entry point (package.json `test`): frontend tests
-      # then the Rust lib tests via scripts/run-cargo.js. Per CLAUDE.md/AGENTS.md,
-      # CI must go through npm scripts, not bare Cargo. cargo is preinstalled on
-      # ubuntu-latest and resolved from PATH by scripts/run-cargo.js.
       run: npm test
     - name: Compile the examples
-      # `npm test` builds the lib and the bins, never an example, so asr_eval
-      # could stop compiling against the app's public API with CI still green
-      # (slugtale-p63q: it called a method that had become private and missed a
-      # constructor argument). `check:examples` is the npm entry point for that,
-      # and it turns on local-whisper-runtime because asr_eval and
-      # decode_benchmark are gated on it.
       run: npm run check:examples
 
   checks-windows:
-    # Real-Windows coverage for the Windows Platform Adapter (PRD slugtale-5pc):
     # windows.rs only compiles and runs on a Windows target, and Wine/cross-checks
     # from macOS cannot exercise it faithfully (ConsentStore registry, UIPI,
     # WASAPI). This job compiles the whole crate — including the cfg-gated
-    # Windows adapter — and runs the same npm test entry point as the Linux job.
     runs-on: windows-latest
 
     defaults:
@@ -76,26 +64,11 @@ jobs:
     - name: Run project checks
       run: npm test
     - name: Compile the examples
-      # Same gap as the Linux job: an example that no longer compiles is
-      # invisible to `npm test`. This is also the only place the Windows
-      # process-tree stop in scripts/process-tree.js is exercised on real
-      # Windows, because tests/runner-timeout.test.mjs hangs a child on purpose
-      # and asserts that both it and its descendant are gone afterwards.
       run: npm run check:examples
     - name: Build the Whisper runtime under MSVC
-      # `npm test` runs with default features, so whisper.cpp had never been
-      # compiled on Windows by any job (slugtale-5pc.10) even while the Windows
-      # job was green. Whisper is the cross-platform ASR baseline (ADR-0006), so
-      # if it does not build under MSVC then Local-Only Processing (ADR-0001)
-      # does not hold on Windows at all. Building the lib with the feature on is
-      # the cheapest automated signal; acceleration backends stay manual.
       run: npm run test:whisper-build
 
   checks-macos:
-    # macOS is the primary supported platform, but until now the maintainer's
-    # local runs were the only Mac signal — CI covered Ubuntu and Windows.
-    # Mirror the same npm test entry point so every PR reports Mac breakage
-    # before merge. cargo is preinstalled; no extra system packages needed.
     runs-on: macos-latest
 
     steps:
@@ -110,10 +83,8 @@ jobs:
     - name: Compile the examples
       # The Apple-only acceleration features (Metal, Core ML) cannot build off
       # macOS, so this job uses the wider set: it covers asr_eval *and* the
-      # Parakeet and Apple Speech paths that example can also drive.
       run: npm run check:examples:apple
     - name: Check the Phonon MLX provider
-      # No model download: exercise feature selection, offline IPC, and lifecycle.
       run: npm run test:phonon-mlx
     - name: Compile and test Voice Activation
       run: npm run test:voice-activation

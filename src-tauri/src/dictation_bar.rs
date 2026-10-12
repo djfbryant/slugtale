@@ -1,7 +1,3 @@
-//! Dictation Bar geometry (slugtale-z7a). Plain Rust so all three screen
-//! positions and the click-through hit test are unit-testable without a running
-//! Tauri runtime; `main.rs` supplies the live monitor and window reads.
-//!
 //! The bar is the Morph orb: a 44pt circle at rest that grows sideways into a
 //! full pill on hover and for the whole transcribing phase. A Tauri window
 //! cannot grow on hover, so the window is permanently sized for the expanded
@@ -11,29 +7,12 @@
 
 use crate::settings::BarPosition;
 
-/// Logical size of the Dictation Bar window, sized for the expanded pill plus
-/// the gutter its shadow needs on every side.
 pub const BAR_WINDOW_WIDTH_PT: f64 = 248.0;
 pub const BAR_WINDOW_HEIGHT_PT: f64 = 76.0;
-/// Transparent gutter inside the window so the pill's drop shadow fades out
-/// instead of being sliced off at the window edge.
-///
-/// This has to cover the shadow's reach: a blurred shadow extends roughly its
-/// blur radius past the box, plus its offset on the side it is cast toward. At
-/// `0 4px 12px` that is 16pt below and 12pt elsewhere, so 16pt covers it. The
-/// gutter was 8pt against a `0 6px 22px` shadow and had never been big enough —
-/// the shadow ended in a hard rectangular cut on every edge (slugtale-3d4).
 pub const BAR_GUTTER_PT: f64 = 16.0;
-/// Diameter of the resting orb, which is also the height of the expanded pill.
 pub const BAR_ORB_SIZE_PT: f64 = 44.0;
-/// Breathing room between the bar window and the platform-reported work area.
-/// The work area already excludes the macOS Dock, Windows taskbar, and desktop
-/// panels, so this is only a small visual gap rather than an OS-specific guess.
 pub const BAR_WORK_AREA_MARGIN_PT: f64 = 8.0;
 
-/// The usable work area the bar is being placed in, in physical pixels Tauri
-/// reports. Its origin can differ from the monitor origin when a panel occupies
-/// the top or left edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MonitorGeometry {
     pub origin_x: i32,
@@ -43,7 +22,6 @@ pub struct MonitorGeometry {
     pub scale_factor: f64,
 }
 
-/// A rectangle in logical points, relative to the top-left of the bar window.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaintRect {
     pub x: f64,
@@ -53,14 +31,8 @@ pub struct PaintRect {
 }
 
 impl PaintRect {
-    /// Whether a point is on the painted shape — a capsule, not its bounding
-    /// box. The bar is fully rounded (`border-radius: 999px`), so at rest it is
-    /// a circle in a 44pt square; claiming that square would take the four
-    /// corners from the app underneath even though nothing paints there.
     fn contains(&self, x: f64, y: f64) -> bool {
         let radius = self.height / 2.0;
-        // The straight run between the two end caps. Zero-length while collapsed,
-        // which reduces the capsule to a circle.
         let cap_left = self.x + radius;
         let cap_right = self.x + self.width - radius;
 
@@ -71,9 +43,6 @@ impl PaintRect {
     }
 }
 
-/// Where to put the top-left corner of the bar window on the given display, in
-/// physical pixels. All three positions ride the work area's bottom edge with
-/// the same small margin; left and right keep that margin horizontally too.
 pub fn dictation_bar_origin(
     monitor: &MonitorGeometry,
     window_width: u32,
@@ -96,12 +65,6 @@ pub fn dictation_bar_origin(
     (x, y)
 }
 
-/// The part of the bar window that actually paints, in logical points relative
-/// to the window's top-left. Everything outside it is transparent, and must be
-/// click-through so it does not steal input from the app underneath.
-///
-/// The pill hugs whichever edge the chosen position sits against, so the orb
-/// lands where the user pointed it and the pill grows inwards from there.
 pub fn dictation_bar_paint_rect(position: BarPosition, expanded: bool) -> PaintRect {
     let width = if expanded {
         BAR_WINDOW_WIDTH_PT - BAR_GUTTER_PT * 2.0
@@ -158,9 +121,6 @@ mod tests {
 
     #[test]
     fn the_bar_window_is_configured_at_the_size_the_hit_test_assumes() {
-        // The hit test describes the paint in window-local points, so a window
-        // sized differently from these constants would silently hand clicks to
-        // the wrong side. tauri.conf.json is the only other place it is stated.
         let config = std::fs::read_to_string("tauri.conf.json").expect("tauri.conf.json exists");
         let config: serde_json::Value = serde_json::from_str(&config).unwrap();
         let window = config["app"]["windows"]
@@ -205,8 +165,6 @@ mod tests {
 
     #[test]
     fn clicks_in_the_transparent_margin_are_not_the_bars_to_take() {
-        // The collapsed orb leaves 90% of the window transparent. A click there
-        // belongs to the document underneath, not to Slugtale.
         let far_right = (216.0, 38.0);
         let above_the_orb = (124.0, 2.0);
 
@@ -228,8 +186,6 @@ mod tests {
 
     #[test]
     fn the_corners_of_a_round_orb_are_not_part_of_it() {
-        // The orb is a circle inside a 44pt square. Treating the square as
-        // painted would quietly steal the four corners from the app underneath.
         let top_left_corner = (104.0, 18.0);
 
         assert!(!pointer_is_over_dictation_bar(
@@ -252,7 +208,6 @@ mod tests {
             BarPosition::BottomCenter,
             true
         ));
-        // ...but the straight middle of the same edge is.
         assert!(pointer_is_over_dictation_bar(
             (124.0, 17.0),
             (0, 0),
@@ -275,8 +230,6 @@ mod tests {
 
     #[test]
     fn expanding_hands_the_rest_of_the_pill_back_to_the_bar() {
-        // The same point that is dead space while collapsed is a live control
-        // once the bar has grown, which is what keeps Stop and Cancel clickable.
         let over_the_controls = (216.0, 38.0);
 
         assert!(!pointer_is_over_dictation_bar(
@@ -297,8 +250,6 @@ mod tests {
 
     #[test]
     fn hit_test_reads_the_pointer_in_the_windows_own_coordinates() {
-        // Pointer and window origin arrive in physical pixels on a 2x display;
-        // the orb is described in logical points.
         let window_origin = (1000, 500);
         let orb_centre_physical = (1000.0 + 124.0 * 2.0, 500.0 + 38.0 * 2.0);
 

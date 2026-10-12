@@ -6,8 +6,6 @@ import { runPage } from "./harness.mjs";
 
 const settingsHtml = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 
-// The Usage pane is driven entirely by one command's answer, so a test reads back
-// what the pane put on screen rather than reaching into the page.
 function loadSettingsScript({ invoke }) {
   const { api, elements } = runPage("index.html", {
     exports: [
@@ -59,13 +57,9 @@ test("Usage shows time saved as the hero and counts under it", async () => {
 });
 
 test("Usage never shows speaking duration as its own number", () => {
-  // Speaking duration is stored and is half of the Time Saved sum, but it is
-  // not a number the pane reports (ADR-0025).
   const usagePane = settingsHtml.match(/<section id="pane-usage"[\s\S]*?<\/section>/)[0];
   assert.doesNotMatch(usagePane, /speaking time as/i);
   assert.doesNotMatch(usagePane, /speaking_seconds/);
-  // The summary the pane renders from carries no duration field at all, so it
-  // cannot show one by accident.
   assert.doesNotMatch(settingsHtml, /usage\.\w+\.speaking/);
 });
 
@@ -86,7 +80,6 @@ test("with storing off the pane explains that nothing is stored and hides the ze
   assert.equal(elements.get("usage-store-toggle").checked, false);
   assert.equal(elements.get("usage-empty").hidden, false);
   assert.match(elements.get("usage-empty").textContent, /Nothing is being stored/);
-  // Still offer the baseline: the Typing Challenges work with the toggle off.
   assert.match(elements.get("usage-empty").textContent, /typing speed/);
   assert.equal(elements.get("usage-spans").hidden, true);
 });
@@ -127,10 +120,8 @@ test("counts show without a typing baseline and time saved stays a hole", async 
 
   assert.equal(elements.get("usage-hero-value").textContent, "—");
   assert.equal(elements.get("usage-hero").dataset.baseline, "false");
-  // The counts are real and are shown; only Time Saved is missing.
   assert.equal(elements.get("usage-all-counts").textContent, "40 dictations · 5200 words");
   assert.equal(elements.get("usage-today-saved").textContent, "—");
-  // And there is a way out of the hole.
   assert.equal(elements.get("usage-hero-action").hidden, false);
   assert.equal(elements.get("usage-baseline-button").textContent, "Measure my typing speed");
 });
@@ -161,7 +152,6 @@ test("a measured baseline replaces the estimate field rather than letting it be 
   assert.equal(elements.get("usage-estimate-row").hidden, true);
   assert.equal(elements.get("usage-estimate-input").disabled, true);
   assert.equal(elements.get("usage-estimate-save").disabled, true);
-  // Measured means the take-the-baseline action is done; Redo is the way back.
   assert.equal(elements.get("usage-hero-action").hidden, true);
   assert.equal(elements.get("usage-redo-button").hidden, false);
 });
@@ -198,11 +188,8 @@ test("turning storing off asks in the pane before deleting the counts", async ()
 
   assert.equal(elements.get("usage-confirm").hidden, false);
   assert.match(elements.get("usage-confirm-text").textContent, /delete/i);
-  // And it says what survives, because the challenges were the user's time.
   assert.match(elements.get("usage-confirm-text").textContent, /typing speed is kept/);
   assert.equal(elements.get("usage-confirm-accept").textContent, "Delete counts");
-  // Nothing is written until the question is answered, and the switch still
-  // shows what is actually stored.
   assert.equal(commands.length, 0);
   assert.equal(elements.get("usage-store-toggle").checked, true);
 });
@@ -268,8 +255,6 @@ test("turning storing on does not ask, because it only starts a count", async ()
 });
 
 test("a background refresh does not overwrite the estimate the user is typing", async () => {
-  // The pane refills the estimate from stored counts on every load, so a refresh
-  // landing mid-keystroke would wipe what the user has typed so far.
   const { elements, loadUsage } = loadSettingsScript({
     async invoke() {
       return summary({ measured_wpm: null, typed_estimate: 45, completed_challenges: 0 });
@@ -285,7 +270,6 @@ test("a background refresh does not overwrite the estimate the user is typing", 
 
   assert.equal(estimate.value, "47");
 
-  // Once the field loses focus the stored value is authoritative again.
   estimate.blur();
   await loadUsage();
   assert.equal(estimate.value, "45");
@@ -332,8 +316,6 @@ test("redoing the challenges warns that the time saved already on screen will mo
 
   await acceptUsageConfirm();
 
-  // Redoing drops the old results and opens the window on the first passage,
-  // rather than leaving the user to find their way back in.
   assert.deepEqual(commands, [
     "redo_typing_challenges",
     "get_usage_summary",

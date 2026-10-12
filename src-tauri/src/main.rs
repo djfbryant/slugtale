@@ -15,9 +15,6 @@ use slugtale_lib::AppFiles;
 
 use slugtale_lib::TypingChallengeOpen;
 
-// Every command the Settings and Dictation Bar windows can reach, imported by
-// name so the one `generate_handler!` list below reads as the app's whole wire
-// surface. Each adapter lives in the `commands` module for its domain.
 use commands::dictation::{dictation_bar_displays, dictation_bar_pointer_over, dictation_event};
 use commands::engines::{
     delete_local_model, download_local_model, get_local_model_status, install_engine_assets,
@@ -52,35 +49,18 @@ fn main() {
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-            // Every local file path resolves through this one store, so it has
-            // to exist before anything that reads or writes a file.
             app.manage(AppFiles::from_app(app.handle()));
-            // Usage writes happen off the Dictation Workflow path (ADR-0025), so
-            // the queue that carries them has to exist before the first segment.
             let usage =
                 slugtale_lib::UsageQueue::start(commands::usage::usage_writer(app.handle().clone()))
                     .map_err(std::io::Error::other)?;
-            // The dictation lifecycle host owns its own state; it is managed
-            // here, before the hotkey worker starts, so every activation input
-            // finds it in place. The Dictation Segment worker reaches the same
-            // host from its own thread, so the runtime is handed a second handle
-            // on it rather than a copy of anything the host already answers.
             let surface = Arc::new(commands::dictation::TauriSurface {
                 app: app.handle().clone(),
             });
-            // The host is handed the two roles separately: it depends on the
-            // effects it performs and the parts a segment runs on, not on one
-            // adapter object that happens to be both.
             let effects: Arc<dyn DictationEffects> = surface.clone();
             let parts: Arc<dyn DictationParts> = surface.clone();
             let host: Arc<DictationHost> = Arc::new(DictationHost::new(effects, parts, usage));
             app.manage(Arc::clone(&host));
             slugtale_lib::setup_tray(app)?;
-            // The Dictation Segment worker outlives every dictation: it is what
-            // keeps segments landing in the order they were spoken.
-            // The runtime probes the capture ring's voiced-sample watermark at
-            // the moment a Pause Flush is due — the microphone half of the
-            // watermark cut (ADR-0026).
             let watermark_host = Arc::clone(&host);
             let runtime_host = Arc::clone(&host);
             let runtime = slugtale_lib::DictationRuntime::start(
@@ -90,16 +70,7 @@ fn main() {
             .map_err(std::io::Error::other)?;
             host.set_runtime(Arc::new(runtime))
                 .map_err(std::io::Error::other)?;
-            // The hotkey worker starts last: from here on every activation
-            // input finds both the host and the runtime in place, so a press
-            // during setup cannot hit DictationHost::runtime()'s
-            // "dictation runtime started" panic.
             setup_configured_hotkey(app)?;
-            // Reconcile the OS login item with the stored preference so a moved or
-            // rebuilt app (dev binaries change path) does not drift out of sync.
-            // Launch at Login is informational and optional (slugtale-9bx): it
-            // is not a Dictation Readiness item, and this reconciliation never
-            // blocks dictation when the preference is off.
             let settings = commands::load_current_settings(app.handle());
             let _ =
                 commands::settings::set_launch_at_login_state(app.handle(), settings.launch_at_login);
@@ -108,16 +79,9 @@ fn main() {
                     .set_model_manager(model_manager);
             }
             commands::warm_effective_primary_engine(app.handle());
-            // Prepare Audio Capture while idle so the first Hotkey does not pay
-            // for device discovery and ring allocation (slugtale-g1o.3). Only
-            // when the microphone permission is already granted: preparation
-            // must never prompt, and a denied microphone stays on the normal
-            // permission path.
             if commands::platform::CurrentPlatform::new().microphone_granted() {
                 commands::dictation::dictation_host(app.handle()).prepare_capture(&settings);
             }
-            // Voice Activation is opt-in: the always-on listener only starts
-            // when a previously saved preference asks for it (slugtale-e95).
             if let Err(error) = voice_activation::sync_worker(
                 app.handle(),
                 commands::load_current_settings(app.handle()).voice_activation_enabled,

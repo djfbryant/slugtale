@@ -12,11 +12,6 @@ const {
 } = require("../scripts/run-tauri.js");
 const { runDev, defaultMacosSignIdentity } = require("../scripts/run-dev.js");
 
-// The developer-run build is the only path that produces a macOS bundle the OS
-// will keep permission grants for, so its identity and its signature are worth
-// pinning. The script is driven directly rather than read as text: the assertions
-// are about the commands it runs, and a rename inside the script should not be
-// able to pass by keeping the words it used to use.
 function runDeveloperBuild({ environment = {}, identityOutput = "1) abc \"Slugtale Dev\"" } = {}) {
   const commands = [];
   const logs = [];

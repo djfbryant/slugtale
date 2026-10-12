@@ -3,9 +3,6 @@ import test from "node:test";
 
 import { stylesheetOf } from "./harness.mjs";
 
-// The rules a browser applies come from the stylesheet the page links, not from a
-// block inside the page. Reading the page would find nothing now that the styles
-// ship as a file, and would keep passing if the link were dropped.
 const settingsCss = stylesheetOf("index.html");
 
 function cssRule(selector) {

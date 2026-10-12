@@ -1,6 +1,3 @@
-    // The window's wiring, grouped by what each group of controls does. `init`
-    // runs them once and then does the two startup actions; every group attaches
-    // exactly the listeners it did when this was one function.
     function init() {
       setupRail();
       setupPaneIcons();
@@ -53,8 +50,6 @@
       });
     }
 
-    // There is no in-app theme choice: the window follows the system, and the
-    // General pane says which way it currently is.
     function setupAppearance() {
       renderAppearance();
       window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", renderAppearance);
@@ -203,8 +198,6 @@
     }
 
     function setupRefreshHooks() {
-      // The only push Usage gets: a Counted Segment landed, or the Typing
-      // Challenge window changed the baseline every number here is read against.
       const listen = tauriEvent();
       if (listen) listen("usage-changed", () => loadUsage());
 

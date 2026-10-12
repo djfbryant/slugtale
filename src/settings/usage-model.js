@@ -1,8 +1,3 @@
-    // The Usage pane is one command's answer turned into a screen. What the
-    // answer MEANS — which states the counts put it in, what the take-the-challenge
-    // button should say, whether Time Saved is a number or a hole — is derived
-    // here, apart from the DOM, so `renderUsage` only paints and the derivations
-    // can be tested on their own.
     function plural(count, word) {
       return `${count} ${word}${count === 1 ? "" : "s"}`;
     }
@@ -24,9 +19,6 @@
       return "Not measured yet.";
     }
 
-    // Everything `renderUsage` reads, decided once from the summary. Time Saved
-    // arrives already worded from the backend — "About 12 min" — and `wpm === null`
-    // is the hole: no Typing Baseline, so no honest number to print.
     function usageModel(usage) {
       const measured = usage.measured_wpm !== null;
       const wpm = measured ? usage.measured_wpm : usage.typed_estimate;

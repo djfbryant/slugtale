@@ -25,8 +25,6 @@
       renderSearch();
     }
 
-    // Search runs over the rows already on every pane: a row stays when its
-    // words or keywords hold the query, and a card with no row left goes too.
     function renderSearch() {
       const query = searchQuery.toLowerCase();
       let matches = 0;
@@ -63,8 +61,6 @@
       renderPanes();
     }
 
-    // Each pane's count is how many required items it shows that are not ready,
-    // so the sidebar points at the problem without a page of its own.
     function renderBadges(report) {
       const outstanding = blockersOf(report);
 

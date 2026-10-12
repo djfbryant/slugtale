@@ -1,13 +1,3 @@
-//! The ring microphone samples land in: a bounded single-producer/single-consumer
-//! buffer with no lock, no allocation, and no wait on the audio thread.
-//!
-//! The CoreAudio callback is the sole producer while the stream is active. The
-//! recorder pauses the stream before it becomes the sole consumer, so neither
-//! side needs a lock. Every slot is allocated and initialized before `play`,
-//! which also prevents first-touch page faults on the audio thread.
-//!
-//! Positions are counts rather than indices, which is what lets a Segment Pause
-//! name the sample it wants to cut at without knowing where the ring wrapped.
 
 use crate::AudioCaptureError;
 use std::sync::Arc;
@@ -15,37 +5,13 @@ use std::sync::Arc;
 const MAX_RECORDING_SECONDS: usize = 5 * 60;
 const RECORDING_LIMIT_ERROR: &str = "recording exceeded the five-minute capture limit";
 
-/// How much quiet audio is kept *after* the last heard voice when a Segment
-/// Pause cuts its segment short.
-///
-/// This is an acoustic guard, not dead weight: word-final consonants decay
-/// below the perceptual voice threshold before they finish sounding, the level
-/// the watermark watches arrives one emitter tick late (~33 ms), and ASR
-/// benefits from a little trailing room. 250 ms covers all three with margin
-/// while staying far below the 500 ms ceiling slugtale-g1o.4 allows — against
-/// the five-second Segment Pause this removes roughly 95 percent of the quiet
-/// tail a segment used to carry to Transcription.
 pub const QUIET_TAIL_GUARD: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// A bounded single-producer/single-consumer ring for microphone samples.
-///
-/// The CoreAudio callback is the sole producer while the stream is active. The
-/// recorder pauses the stream before it becomes the sole consumer, so neither
-/// side needs a lock. Every slot is allocated and initialized before `play`,
-/// which also prevents first-touch page faults on the audio thread.
 pub(super) struct RealtimeCaptureBuffer {
     slots: Box<[std::sync::atomic::AtomicU32]>,
-    /// Monotonic count of samples ever pushed; never reset while recording
-    /// lives. Read and write positions are counts, not indices, so a cut can
-    /// be named by position without worrying about ring wrap.
     write_position: std::sync::atomic::AtomicUsize,
     read_position: std::sync::atomic::AtomicUsize,
     overflowed: std::sync::atomic::AtomicBool,
-    /// Ring position of the most recent sample that arrived while the voice
-    /// level was above the Segment threshold. Written by the real-time audio
-    /// callback (one atomic store on voiced buffers only) and shared with
-    /// whoever asked the recorder for its watermark cell, so a Pause Flush can
-    /// name its cut without taking the recorder's lock (slugtale-xqzs).
     last_voice_position: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -98,9 +64,6 @@ impl RealtimeCaptureBuffer {
             .store(write_position.wrapping_add(1), Ordering::Release);
     }
 
-    /// Record, from the real-time callback, that the sample just written was
-    /// voiced. One relaxed atomic store on voiced buffers only: lock-free,
-    /// allocation-free, and skipped entirely on quiet buffers.
     pub(super) fn mark_voice(&self) {
         use std::sync::atomic::Ordering;
 
@@ -148,8 +111,6 @@ impl RealtimeCaptureBuffer {
             .load(std::sync::atomic::Ordering::Acquire);
 
         let cut = cut.min(usize::MAX as u64) as usize;
-        // Never read later samples than exist, and never rewind into audio a
-        // previous segment already took.
         let end = write_position.min(cut.saturating_add(guard as usize));
         if end <= read_position {
             return Ok(Vec::new());
@@ -157,9 +118,6 @@ impl RealtimeCaptureBuffer {
         self.read_range(read_position, end)
     }
 
-    /// Read `[from, to)` and advance the read position to `to`. Shared by
-    /// [`Self::drain`] and [`Self::drain_through`]; both callers have already
-    /// clamped their range.
     fn read_range(&self, from: usize, to: usize) -> Result<Vec<f32>, AudioCaptureError> {
         use std::sync::atomic::Ordering;
 
@@ -177,14 +135,11 @@ impl RealtimeCaptureBuffer {
         Ok(samples)
     }
 
-    /// Discard pending audio between dictations without reallocating the ring.
     pub(super) fn clear(&self) {
         use std::sync::atomic::Ordering;
 
         let write_position = self.write_position.load(Ordering::Acquire);
         self.read_position.store(write_position, Ordering::Release);
-        // The watermark belongs to the previous dictation; park it at the same
-        // position so no stale cut can point into the next one.
         self.last_voice_position
             .store(write_position as u64, Ordering::Release);
         self.overflowed.store(false, Ordering::Relaxed);
@@ -196,8 +151,6 @@ mod tests {
     use super::*;
     use crate::captured_audio_from_interleaved_input;
 
-    /// A capture ring of `capacity` samples with the watermark cell it publishes
-    /// into, which is how the recorder builds one and how its caller reads it.
     fn a_ring(capacity: usize) -> (RealtimeCaptureBuffer, Arc<std::sync::atomic::AtomicU64>) {
         let watermark = Arc::new(std::sync::atomic::AtomicU64::new(0));
         (
@@ -206,16 +159,12 @@ mod tests {
         )
     }
 
-    /// The watermark a ring currently reports, read through its cell.
     fn watermark_of(watermark: &Arc<std::sync::atomic::AtomicU64>) -> u64 {
         watermark.load(std::sync::atomic::Ordering::Acquire)
     }
 
     #[test]
     fn a_prepared_ring_holds_no_samples_before_dictation_starts() {
-        // Preparation allocates the ring zero-initialised and never lets it
-        // fill: nothing captured before Dictation starts may leak into the
-        // first dictation.
         let (ring, _) = a_ring(1024);
 
         assert_eq!(ring.drain().unwrap().len(), 0);
@@ -223,10 +172,6 @@ mod tests {
 
     #[test]
     fn the_ring_publishes_its_watermark_into_the_cell_the_caller_already_holds() {
-        // The whole point of the cell (slugtale-xqzs): whoever asked the recorder
-        // for it reads the watermark of the live ring without going near the
-        // recorder, so the level-emitter thread can name a Pause Flush's cut
-        // while Stop or Cancel holds the recorder's lock and joins that thread.
         let (ring, cell) = a_ring(1024);
 
         for sample in 0..64 {
@@ -236,16 +181,12 @@ mod tests {
 
         assert_eq!(watermark_of(&cell), 64);
 
-        // A discarded dictation parks the watermark where the ring is, so no cut
-        // from it can point into the next dictation's audio.
         ring.clear();
         assert_eq!(watermark_of(&cell), 64);
     }
 
     #[test]
     fn a_pause_cut_ends_at_the_watermark_even_when_the_worker_is_slow() {
-        // Queue delay must not change the segment: audio arriving after the
-        // cut stays in the ring for the next segment.
         let (ring, ring_watermark) = a_ring(1024);
         for sample in 0..100 {
             ring.push_sample(sample as f32);
@@ -253,7 +194,6 @@ mod tests {
         ring.mark_voice();
         let watermark = watermark_of(&ring_watermark);
         for sample in 100..300 {
-            // Speech continues while the flush sits in the queue.
             ring.push_sample(sample as f32);
             if sample < 120 {
                 ring.mark_voice();
@@ -264,7 +204,6 @@ mod tests {
 
         assert_eq!(segment.len(), 100);
         assert_eq!(segment[99], 99.0);
-        // Nothing is lost: the rest drains afterwards.
         let remainder = ring.drain().unwrap();
         assert_eq!(remainder.len(), 200);
     }
@@ -293,8 +232,6 @@ mod tests {
         }
         assert_eq!(ring.drain().unwrap().len(), 50);
 
-        // A duplicate or stale job pointing behind the read position takes
-        // nothing and leaves the ring consistent.
         assert_eq!(ring.drain_through(10, 5).unwrap().len(), 0);
 
         for sample in 50..60 {
@@ -339,8 +276,6 @@ mod tests {
 
     #[test]
     fn cutting_at_the_watermark_keeps_speech_intact_while_dropping_most_of_the_quiet_tail() {
-        // The slugtale-g1o.4 win, measured on a synthetic phrase: half a second
-        // of speech followed by the full five-second Segment Pause of silence.
         const RATE: usize = 16_000;
         const SPEECH: usize = RATE / 2;
         const TAIL: usize = RATE * 9 / 2;
@@ -363,17 +298,12 @@ mod tests {
             .unwrap();
         let audio = captured_audio_from_interleaved_input(RATE as u32, 1, &segment).unwrap();
 
-        // Correctness: every voiced sample survives into the segment handed to
-        // Transcription.
         assert_eq!(
             segment.iter().filter(|sample| **sample != 0.0).count(),
             SPEECH
         );
-        // And the transcript-critical signal shape is unchanged by the cut.
         assert!(!audio.samples.is_empty());
 
-        // Efficiency: what used to be five seconds of audio is now speech plus
-        // the guard — at least an 80 percent reduction.
         let total = (SPEECH + TAIL) as f64;
         let reduction = 1.0 - segment.len() as f64 / total;
         assert!(

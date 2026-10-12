@@ -1,4 +1,3 @@
-//! Local fixture harness. Never use private recordings with --show-text.
 use slugtale_lib::{
     CapturedAudio, EngineAssetLifecycle, EngineTranscriber, ParakeetProvider, PhononProvider,
     PHONON_2,

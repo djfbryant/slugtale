@@ -31,8 +31,6 @@ const APPLE_SPEECH_DEPLOYMENT_TARGET: &str = "13.0";
 /// second copy of the Swift standard library into Slugtale.
 const MACOS_SWIFT_RUNTIME_DIR: &str = "/usr/lib/swift";
 
-/// Compile the Swift half of the Apple SpeechTranscriber engine
-/// (`swift/SlugtaleAppleSpeech.swift`) into a static archive and link it in.
 ///
 /// This exists because macOS 26's `SpeechAnalyzer` / `SpeechTranscriber` API is
 /// Swift-only — it is not exported to Objective-C, so no `objc2-*` crate can
@@ -49,9 +47,6 @@ fn build_apple_speech_bridge() {
     println!("cargo:rerun-if-changed=swift/SlugtaleAppleSpeech.swift");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
 
-    // Both gates, in the same order as `src/apple_speech.rs`: the feature can be
-    // enabled on Linux or Windows without breaking the build, it simply does
-    // nothing there and the provider reports an unsupported platform.
     if std::env::var_os("CARGO_FEATURE_APPLE_SPEECH_RUNTIME").is_none() {
         return;
     }
@@ -83,10 +78,6 @@ fn build_apple_speech_bridge() {
     // them again would be a second, silently drifting copy of the truth.
 }
 
-/// Raise whatever deployment target the build was handed up to the bridge's
-/// floor, leaving anything already at or above it alone. An unparseable value
-/// falls back to the floor rather than guessing: the failure mode of guessing
-/// low is a link error, and of guessing high is nothing at all.
 fn swift_deployment_target(requested: Option<&str>) -> String {
     let floor = APPLE_SPEECH_DEPLOYMENT_TARGET;
 
@@ -96,8 +87,6 @@ fn swift_deployment_target(requested: Option<&str>) -> String {
     }
 }
 
-/// A macOS version as comparable numbers, so "10.15" sorts below "13.0" the way
-/// a plain string comparison would not.
 fn version_parts(version: &str) -> Vec<u32> {
     version
         .split('.')
@@ -118,24 +107,15 @@ fn compile_swift_archive(source: &Path, archive: &Path) {
         Err(_) => panic!("cargo always sets CARGO_CFG_TARGET_ARCH"),
     };
 
-    // `xcrun` picks the active toolchain and SDK the same way Xcode would, so a
-    // machine with several Xcodes installed compiles the bridge against the one
-    // the developer actually selected.
     let mut swiftc = Command::new("xcrun");
     swiftc
         .arg("swiftc")
         .arg("-emit-library")
-        // A static archive rather than a dylib: one binary to run, nothing extra
-        // to find at load time, and no install-name to fix up in the bundle.
         .arg("-static")
         .arg("-module-name")
         .arg("SlugtaleAppleSpeech")
         .arg("-target")
         .arg(format!("{arch}-apple-macosx{deployment_target}"))
-        // Optimised in every profile. The bridge is a few hundred lines whose
-        // cost is dominated by the Speech framework behind it, and building it
-        // identically in debug and release removes a class of "only reproduces
-        // in release" report from a component that is already hard to observe.
         .arg("-O")
         .arg("-wmo")
         .arg("-o")

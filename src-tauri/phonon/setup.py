@@ -17,7 +17,6 @@ subprocess.run([
 sys.path.insert(0, str(root / "site"))
 from fermion._speech.fetch import _unpack
 
-# The archive was size/SHA-256 checked by Rust before this trusted unpacker.
 _unpack(root / "phonon-2.bps.tar.zst", root / "model")
 manifest = json.loads((root / "packed_manifest.json").read_text())
 container = root / "model" / "model.fermion"

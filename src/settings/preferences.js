@@ -1,6 +1,3 @@
-    // These three preferences write one field of the settings file and update
-    // their own row. They read and write `currentSettings` through `setSettings`
-    // (state.js) like every other writer, rather than re-merging defaults here.
     async function saveLaunchAtLogin(enabled) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };
@@ -37,7 +34,6 @@
       }
     }
 
-    // The next dictation opens the chosen microphone; nothing to restart.
     async function saveMicrophonePreference(enabled) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };
@@ -72,8 +68,6 @@
       }
     }
 
-    // Voice Activation (slugtale-e95). Unsupported builds hide the row. The
-    // backend starts or stops the listener before it saves the checkbox value.
     async function saveVoiceActivation(enabled) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };

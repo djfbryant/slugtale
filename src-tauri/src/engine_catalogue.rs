@@ -1,8 +1,3 @@
-//! The app's closed catalogue of local Transcription Engines.
-//!
-//! The catalogue owns provider lifetime, availability, Whisper runtime reuse,
-//! and Second Opinion selection. Settings and the Dictation Workflow ask the
-//! same module, so they cannot disagree about what can run.
 
 use crate::{
     engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticEvent, DiagnosticSink,
@@ -16,34 +11,17 @@ use std::sync::{Arc, Mutex};
 
 pub struct TranscriptionEngineCatalogue {
     model_dir: Mutex<Option<PathBuf>>,
-    /// The Local Model Manager the Whisper engine installs and removes its
-    /// assets through. Handed over at startup, and `None` before that — which is
-    /// also how a catalogue built for a test with only a model directory
-    /// answers: no manager, no install path.
     model_manager: Mutex<Option<LocalModelManager>>,
     whisper: WhisperRuntimeCache,
     parakeet: Mutex<Option<Arc<ParakeetProvider>>>,
     phonon: Mutex<Option<Arc<PhononProvider>>>,
     apple: Arc<AppleSpeechProvider>,
-    /// Bumped every time a warm-up is requested, so a slow warm-up started by
-    /// an older Settings state can recognise that it was superseded and stand
-    /// down instead of loading a model nobody selected any more.
     warm_generation: Arc<std::sync::atomic::AtomicU64>,
-    /// The engine the current resident models were kept for. Repeated
-    /// warm-ups of the same engine must not keep releasing the other models:
-    /// a Second Opinion or an unrelated caller may have reloaded them.
     released_for: Mutex<Option<TranscriptionEngine>>,
-    /// One in-flight gate for this catalogue's whole lifetime, shared by every
-    /// router it hands out, so a timed-out escalation still blocks the next
-    /// segment's escalation instead of piling up slow second engines.
     coordinator: SecondOpinionCoordinator,
 }
 
 impl TranscriptionEngineCatalogue {
-    /// A catalogue for a models directory, with no Local Model Manager behind
-    /// it. Production builds through [`Self::default`] and
-    /// [`Self::set_model_manager`]; this is the fixture for asking questions that
-    /// never install anything.
     pub fn new(model_dir: Option<PathBuf>) -> Self {
         let catalogue = Self {
             model_dir: Mutex::new(None),
@@ -82,9 +60,6 @@ impl TranscriptionEngineCatalogue {
         }
     }
 
-    /// Take over the Local Model Manager, and with it the model directory: one
-    /// handover so the engines cannot be given a directory whose manager points
-    /// somewhere else.
     pub fn set_model_manager(&self, manager: LocalModelManager) {
         *self
             .model_manager
@@ -100,9 +75,6 @@ impl TranscriptionEngineCatalogue {
             .and_then(|manager| manager.clone())
     }
 
-    /// The Local Model file this dictation would open: the Settings File's own
-    /// choice, then the managed default. Both Dictation Readiness and the
-    /// Whisper engine ask this, so they cannot answer from two different files.
     pub fn local_model(&self, settings: &Settings) -> Option<LocalModelRef> {
         let model_dir = self.model_dir.lock().ok();
         LocalModelRef::resolve(
@@ -111,18 +83,10 @@ impl TranscriptionEngineCatalogue {
         )
     }
 
-    /// The loaded Whisper model for `settings`, or `None` when no model path
-    /// resolves. Read-only: the Transcription Speed Profile is not here, because
-    /// this runtime is shared by every caller naming the same model path.
     fn whisper_runtime(&self, settings: &Settings) -> Option<Arc<LocalWhisperRuntime>> {
         Some(self.whisper.runtime_for(&self.local_model(settings)?))
     }
 
-    /// The Whisper provider for one caller, carrying the Transcription Speed
-    /// Profile that caller's Settings asked for and the Local Model Manager its
-    /// assets are installed through. The concrete type is what the tests read
-    /// the pinned profile from; production takes it as a
-    /// [`TranscriptionProvider`] through [`Self::whisper_provider`].
     fn whisper_transcription(&self, settings: &Settings) -> Option<WhisperTranscriptionProvider> {
         Some(WhisperTranscriptionProvider::new(
             self.whisper_runtime(settings)?,
@@ -131,17 +95,10 @@ impl TranscriptionEngineCatalogue {
         ))
     }
 
-    /// Which engine the next dictation would actually use, applying the same
-    /// fallback rule as the Second Opinion router and Dictation Readiness
-    /// ([`engine_that_can_run`]). Warm-up asks through here so it loads exactly
-    /// what dictation will use, never a hard-coded engine.
     fn effective_primary_engine(&self, settings: &Settings) -> Option<TranscriptionEngine> {
         engine_that_can_run(settings.primary_engine, &self.availability(settings))
     }
 
-    /// Prepare a warm-up of the effective primary engine, ready to run off the
-    /// caller's thread. `None` when no engine can run, in which case there is
-    /// nothing worth warming.
     pub fn prepare_primary_warm_up(&self, settings: &Settings) -> Option<EngineWarmUp> {
         let engine = self.effective_primary_engine(settings)?;
         let provider = self.provider(settings, engine)?;
@@ -156,14 +113,6 @@ impl TranscriptionEngineCatalogue {
         })
     }
 
-    /// Start warming the effective primary engine and return the warm-up, ready
-    /// to run off the caller's thread. `None` when no engine can run, in which
-    /// case there is nothing worth warming.
-    ///
-    /// Release-then-warm is the ordering, and it belongs here rather than at
-    /// the caller: releasing the models this engine replaces *before* loading
-    /// it is what keeps switching engines from leaving two large models
-    /// resident on a memory-constrained Mac.
     pub fn begin_primary_warm_up(&self, settings: &Settings) -> Option<EngineWarmUp> {
         let warm_up = self.prepare_primary_warm_up(settings)?;
         self.release_models_except(warm_up.engine());
@@ -225,10 +174,6 @@ impl TranscriptionEngineCatalogue {
         self.apple.clone()
     }
 
-    /// The provider for one engine, whatever its concrete type. Every question
-    /// the app asks an engine goes through here, so Settings, Dictation
-    /// Readiness, and the Second Opinion router can never answer about different
-    /// instances of the same engine.
     pub fn provider(
         &self,
         settings: &Settings,
@@ -300,11 +245,6 @@ impl TranscriptionEngineCatalogue {
         })
     }
 
-    /// The transcription stack one dictation runs on: the routed engines plus
-    /// the routing diagnostics and transcription-outcome logging, assembled
-    /// here so every dictation entry point gets the identical recipe. The two
-    /// paths that build this used to hand-copy it and could only disagree by
-    /// being noticed.
     pub fn dictation_stack<S>(
         &self,
         settings: &Settings,
@@ -348,14 +288,10 @@ pub struct EngineWarmUp {
 }
 
 impl EngineWarmUp {
-    /// The engine this warm-up will load.
     pub fn engine(&self) -> TranscriptionEngine {
         self.provider.engine()
     }
 
-    /// True when a newer warm-up request superseded this one. Rapid Settings
-    /// changes must not publish a stale engine as the current warm engine, so a
-    /// superseded warm-up stands down instead of loading.
     pub fn is_stale(&self) -> bool {
         self.generation.load(std::sync::atomic::Ordering::SeqCst) != self.expected_generation
     }
@@ -372,13 +308,6 @@ impl EngineWarmUp {
     }
 }
 
-/// The assembled transcription stack for one dictation: a [`SecondOpinionRouter`]
-/// reporting its routing decisions to the Local Diagnostic Log, and itself the
-/// [`crate::AsrRuntime`] the Dictation Workflow transcribes through.
-///
-/// Owns the router so callers never hold the pieces apart, and is the runtime
-/// rather than handing one out, so there is no way to hold a router that skips
-/// the log.
 pub struct DictationStack<S> {
     router: SecondOpinionRouter,
     log: SharedDiagnosticLog<S>,
@@ -388,9 +317,6 @@ impl<S> DictationStack<S>
 where
     S: DiagnosticSink + Send + Sync + 'static,
 {
-    /// Assemble the stack: routing decisions are reported to the same log the
-    /// transcription outcomes go to. There is no way to hold a router that
-    /// skips this, which is what keeps both dictation entry points identical.
     pub(crate) fn new(router: SecondOpinionRouter, log: SharedDiagnosticLog<S>) -> Self {
         let routing_log = log.clone();
         let router = router.observing(move |routing| {
@@ -492,8 +418,6 @@ mod tests {
         }
     }
 
-    /// The Settings row for one engine, from the same catalogue the Dictation
-    /// Runtime routes through, with no running app involved.
     fn engine_row(
         catalogue: &TranscriptionEngineCatalogue,
         settings: &Settings,
@@ -507,10 +431,6 @@ mod tests {
 
     #[test]
     fn every_engine_agrees_with_itself_about_its_own_assets() {
-        // Two shapes of a models directory — the Local Model on disk and absent —
-        // so every engine answers both "present" and "missing" for the same
-        // Settings. The row and the availability answer the same question twice,
-        // and this is where the two would be caught telling different stories.
         for model_present in [true, false] {
             let root = temp_root(&format!("row-agreement-{model_present}"));
             let files =
@@ -531,15 +451,10 @@ mod tests {
             for engine in TranscriptionEngine::ALL {
                 let row = engine_row(&catalogue, &settings, engine);
                 if engine == TranscriptionEngine::Whisper {
-                    // The Local Model is on disk or it is not, on every build and
-                    // every feature set, so this is the half of the agreement that
-                    // can be checked anywhere.
                     assert_eq!(row.assets.present, Some(model_present));
                     assert_eq!(row.assets.installed_bytes, model_present.then_some(4));
                 }
                 match row.assets.present {
-                    // Assets on disk and an engine that says it cannot run for
-                    // want of assets is the contradiction Settings must never show.
                     Some(true) => assert!(
                         !matches!(
                             row.availability,
@@ -549,8 +464,6 @@ mod tests {
                         ),
                         "{engine} has its assets on disk but reports them missing"
                     ),
-                    // Assets Slugtale measures, none of them there, and an engine
-                    // that claims it can run: the same contradiction the other way.
                     Some(false) => {
                         assert!(
                             !row.metadata.system_managed,
@@ -561,12 +474,9 @@ mod tests {
                             "{engine} can run with none of its assets on disk"
                         );
                     }
-                    // The operating system's own bytes: the engine's availability is
-                    // the only honest answer, and this test must not overrule it.
                     None => assert!(row.metadata.system_managed),
                 }
 
-                // An install button is never a claim about bytes Slugtale has.
                 assert!(
                     !row.installable
                         || matches!(
@@ -583,8 +493,6 @@ mod tests {
         }
     }
 
-    /// A throwaway directory the app store could be pointed at, so these tests
-    /// ask the real questions against real files instead of faking a manager.
     fn temp_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "slugtale-catalogue-{name}-{}-{}",
@@ -606,9 +514,6 @@ mod tests {
 
     #[test]
     fn an_engine_catalogue_without_a_model_manager_offers_no_install_path() {
-        // Startup hands the catalogue a Local Model Manager alongside the model
-        // directory. Without one, Whisper can neither measure nor install the
-        // Local Model, and must say so instead of guessing.
         let model_dir = temp_model_dir("no-manager");
         let catalogue = TranscriptionEngineCatalogue::new(Some(model_dir.clone()));
         let settings = Settings::default();
@@ -617,7 +522,6 @@ mod tests {
         assert_eq!(whisper.assets, crate::EngineAssets::unmeasured());
         assert!(!whisper.installable);
 
-        // The other two engines are unaffected: they own their assets outright.
         assert!(
             engine_row(&catalogue, &settings, TranscriptionEngine::Parakeet)
                 .assets
@@ -635,8 +539,6 @@ mod tests {
 
     #[test]
     fn a_handed_over_model_manager_makes_the_local_model_the_whisper_row_reads() {
-        // One handover gives the catalogue both the directory it resolves models
-        // against and the manager that installs them, so the two cannot disagree.
         let root = temp_root("with-manager");
         let files =
             crate::AppFiles::from_dirs_for_test(Some(root.join("config")), Some(root.clone()));
@@ -718,8 +620,6 @@ mod tests {
         assert_eq!(selected.unwrap().engine(), TranscriptionEngine::Parakeet);
     }
 
-    /// A provider whose warm-up is observable, so tests can prove whether a
-    /// warm-up actually loaded anything.
     struct WarmCountingProvider {
         warm_calls: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -774,7 +674,6 @@ mod tests {
             }),
         };
 
-        // A newer Settings state requested a warm-up before this one started.
         generation.store(2, std::sync::atomic::Ordering::SeqCst);
 
         assert!(warm_up.is_stale());
@@ -809,8 +708,6 @@ mod tests {
         let catalogue = TranscriptionEngineCatalogue::new(Some(PathBuf::from("models")));
         let settings = Settings::default();
 
-        // A polled caller repeats the same request; the second release must
-        // not clear a runtime another engine legitimately reloaded.
         let before_release = catalogue.whisper_runtime(&settings).unwrap();
         catalogue.release_models_except(TranscriptionEngine::Parakeet);
         let after_first_release = catalogue.whisper_runtime(&settings).unwrap();
@@ -840,11 +737,6 @@ mod tests {
         assert!(error.to_string().contains("could not resolve"));
     }
 
-    /// A wake check runs on the always-listening microphone while no dictation
-    /// is running, and it decodes greedily because the user's wider Beam Search
-    /// buys nothing on a two-word phrase. The runtime it borrows is the very one
-    /// the next dictation borrows, so the profile has to travel with the
-    /// provider rather than sit in the model.
     #[test]
     fn a_wake_check_does_not_change_the_profile_the_next_dictation_uses() {
         let catalogue = TranscriptionEngineCatalogue::new(Some(PathBuf::from("models")));
@@ -857,8 +749,6 @@ mod tests {
             ..dictation_settings.clone()
         };
 
-        // The exact handoff that used to leak: a dictation's provider is built,
-        // then a wake check runs over the same model, then the next dictation.
         let next_dictation = catalogue
             .whisper_transcription(&dictation_settings)
             .unwrap();
@@ -873,12 +763,6 @@ mod tests {
         );
     }
 
-    /// `provider()` — and through it `availability()`, `router()`,
-    /// `effective_primary_engine()`, and `prepare_primary_warm_up()` — is
-    /// reached by every "can this engine run?" question the app asks, and each
-    /// one is asked on whatever Settings the asker happens to hold. A Settings
-    /// pane poll, a Voice Activation save, or a warm-up must not re-decode a
-    /// dictation that is already under way.
     #[test]
     fn asking_availability_leaves_the_decode_strategy_alone() {
         let catalogue = TranscriptionEngineCatalogue::new(Some(PathBuf::from("models")));
@@ -900,12 +784,6 @@ mod tests {
         assert_eq!(in_flight.speed_profile(), crate::SpeedProfile::Accurate);
     }
 
-    /// Every dictation stack is built from one Settings value and decodes with
-    /// the profile that value carries, for all three profiles. A stack is the
-    /// routed providers plus the log; Whisper's leg is this provider. All three
-    /// are asked for up front, as three dictations in flight would be, so a
-    /// profile stored in the shared model would show up here as the last write
-    /// winning three times over.
     #[test]
     fn each_dictation_stack_pins_exactly_the_profile_its_settings_carried() {
         let catalogue = TranscriptionEngineCatalogue::new(Some(PathBuf::from("models")));

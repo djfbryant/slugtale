@@ -1,14 +1,3 @@
-//! Measures repeated microphone startup through the same `CpalAudioRecorder`
-//! used by the app (slugtale-op3, slugtale-g1o.3). No captured audio is
-//! persisted.
-//!
-//! Reports three paths so idle-time preparation can be judged on its own:
-//!   cold     — first start on a fresh recorder, nothing prepared
-//!   prepared — prepare() ran first; start() validates and consumes it
-//!   reused   — start/stop cycles that retain the paused stream
-//!
-//! Usage:
-//!   cargo run --example startup_probe -- [starts] [max-warm-start-ms]
 
 use slugtale_lib::{CpalAudioRecorder, DictationRecorder};
 use std::time::{Duration, Instant};
@@ -26,16 +15,12 @@ fn main() {
 
     assert!(starts >= 2, "at least two starts are required");
 
-    // Cold path: a fresh recorder with no preparation at all. This is what the
-    // very first Hotkey paid before slugtale-g1o.3.
     let cold_start = {
         let mut recorder = CpalAudioRecorder::new();
         time_start(&mut recorder)
     };
     println!("cold start: {:.1} ms", millis(cold_start));
 
-    // Prepared path: the work Audio Capture does while the app is idle, then
-    // the start the first Hotkey would pay afterwards.
     let (prepare_time, prepared_start) = {
         let mut recorder = CpalAudioRecorder::new();
         let started = Instant::now();
@@ -52,7 +37,6 @@ fn main() {
         millis(prepared_start)
     );
 
-    // Reused path: every later dictation, which resumes the paused stream.
     let mut recorder = CpalAudioRecorder::new();
     recorder.prepare().expect("prepare capture");
     let mut startup_times = Vec::with_capacity(starts);
@@ -62,9 +46,6 @@ fn main() {
         let elapsed = started.elapsed();
         startup_times.push(elapsed);
         println!("start {}: {:.1} ms", index + 1, millis(elapsed));
-        // Let the real callback run, then end through the normal completed-
-        // dictation path. This verifies that the retained stream survives
-        // `stop` draining the capture buffer, not only the cheaper cancel path.
         std::thread::sleep(Duration::from_millis(20));
         let _ = recorder.stop().expect("stop capture");
     }

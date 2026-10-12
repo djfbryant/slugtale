@@ -1,17 +1,3 @@
-//! The cpal backend: the audio stream, the ring it fills, and the level
-//! publisher its callback feeds.
-//!
-//! This is the only module that names a device, and everything it does is in
-//! service of one rule — the real-time audio callback must never allocate, lock,
-//! wait, or cross an IPC boundary. A Tauri `emit` from inside it stalls the
-//! ALSA/PipeWire period and the driver drops capture buffers, garbling the
-//! transcription (slugtale-65l). The callback therefore stores one level in an
-//! atomic and one sample per frame in the ring, and a separate emitter thread
-//! forwards the level at a UI cadence.
-//!
-//! The rest is the preparation and reuse policy the recorder follows: build the
-//! stream stopped, keep it across dictations while the device and format are
-//! unchanged, and rebuild on any change.
 
 use crate::audio_capture::device_policy::{
     paused_stream_is_reusable, prepare_state_after, recording_device, should_attempt_prepare,
@@ -25,12 +11,6 @@ use crate::audio_capture::signal::captured_audio_from_interleaved_input;
 use crate::{is_voice_level, voice_level_from_rms, AudioCaptureError, CapturedAudio};
 use std::sync::Arc;
 
-/// Publishes the dictation waveform level from the audio callback to a
-/// dedicated emitter thread. The audio callback must stay real-time safe — a
-/// Tauri `emit` (IPC into the webview) from inside it stalls the ALSA/PipeWire
-/// period and the driver drops capture buffers, garbling transcription
-/// (slugtale-65l) — so the callback only stores the latest level in an atomic
-/// and the emitter thread forwards it at a UI cadence.
 struct LevelEmitter {
     running: std::sync::Arc<std::sync::atomic::AtomicBool>,
     handle: std::thread::JoinHandle<()>,
@@ -58,8 +38,6 @@ impl LevelEmitter {
         Ok(Self { running, handle })
     }
 
-    /// Stop and join the emitter so no stale level is emitted after the
-    /// recording ends (the Tauri layer resets the waveform to zero right after).
     fn stop(self) {
         self.running
             .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -67,8 +45,6 @@ impl LevelEmitter {
     }
 }
 
-/// Builds the input stream for one concrete sample type; one row of
-/// [`INPUT_STREAM_BUILDERS`].
 type StreamBuilder =
     fn(
         &cpal::Device,
@@ -77,10 +53,6 @@ type StreamBuilder =
         Arc<std::sync::atomic::AtomicU64>,
     ) -> Result<(cpal::Stream, std::sync::Arc<RealtimeCaptureBuffer>), AudioCaptureError>;
 
-/// The input sample formats the capture callback can convert, each with its
-/// concrete stream builder. The supported-format policy is this table: a
-/// format without a row (cpal's 24-bit, 64-bit, and DSD encodings) fails
-/// stream construction as unsupported.
 const INPUT_STREAM_BUILDERS: &[(cpal::SampleFormat, StreamBuilder)] = &[
     (
         cpal::SampleFormat::I8,
@@ -129,12 +101,7 @@ pub struct CpalAudioRecorder {
     stream_identity: Option<InputStreamIdentity>,
     stream_active: bool,
     buffer: Option<std::sync::Arc<RealtimeCaptureBuffer>>,
-    /// The voiced-sample watermark every ring this recorder builds publishes
-    /// into. Created once, for the recorder's whole life, so a caller holding
-    /// the cell keeps reading the current ring's watermark across a stream
-    /// rebuild (slugtale-xqzs).
     voice_watermark: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// How far idle-time preparation has got; see [`PrepareState`].
     prepare_state: PrepareState,
     level_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
     level_emitter: Option<LevelEmitter>,
@@ -181,11 +148,6 @@ impl CpalAudioRecorder {
             .build_input_stream(
                 *config,
                 move |data: &[T], _: &cpal::InputCallbackInfo| {
-                    // Real-time audio callback: the pre-allocated ring and
-                    // atomics below perform no allocation, locking, waiting, or
-                    // IPC. Input is downmixed before storage so the ring's
-                    // capacity maps exactly to five minutes of dictation rather
-                    // than multiplying memory by the device channel count.
                     let mut sum_of_squares = 0.0f32;
                     for frame in data.chunks_exact(channels) {
                         let mut mono_sum = 0.0f32;
@@ -199,10 +161,6 @@ impl CpalAudioRecorder {
                     if !data.is_empty() {
                         let rms = (sum_of_squares / data.len() as f32).sqrt().clamp(0.0, 1.0);
                         let level = voice_level_from_rms(rms);
-                        // Pair the perceptual level with the ring position it
-                        // belongs to: the watermark a Pause Flush cuts at.
-                        // One extra atomic store on voiced buffers only — the
-                        // callback stays lock-free and allocation-free.
                         if is_voice_level(level) {
                             callback_buffer.mark_voice();
                         }
@@ -219,8 +177,6 @@ impl CpalAudioRecorder {
         Ok((stream, buffer))
     }
 
-    /// Hardware-bound: builds a real cpal stream for the device. The
-    /// supported-format policy above is unit-tested; this wrapper is not.
     fn build_stream_for_format(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
@@ -234,10 +190,6 @@ impl CpalAudioRecorder {
         builder(device, config, level_bits, voice_watermark)
     }
 
-    /// Build a stream for `identity` and hold it with its ring, replacing any
-    /// previous stream. Never plays: the microphone stays off until `play`
-    /// (see [`DictationRecorder::prepare`]). The old stream is dropped first so a
-    /// failed build leaves nothing stale behind.
     fn install_stream(
         &mut self,
         device: &cpal::Device,
@@ -248,8 +200,6 @@ impl CpalAudioRecorder {
 
         self.stream.take();
         self.buffer = None;
-        // A new ring starts a new dictation's watermark: a cut left over from the
-        // previous one would point into audio that is not there.
         self.voice_watermark.store(0, Ordering::Release);
         let (stream, buffer) = Self::build_stream_for_format(
             device,
@@ -273,8 +223,6 @@ impl CpalAudioRecorder {
 
         if let Some(stream) = self.stream.as_ref() {
             if let Err(error) = stream.pause() {
-                // Dropping the stream still stops capture. Forget its identity so
-                // the next start builds fresh rather than reusing the failed one.
                 eprintln!("could not pause audio input stream; rebuilding next time: {error}");
                 self.stream.take();
                 self.stream_identity = None;
@@ -301,10 +249,6 @@ impl DictationRecorder for CpalAudioRecorder {
         self.prefer_built_in_microphone = prefer;
     }
 
-    /// Validate the default input device, allocate the capture ring, and build
-    /// the input stream stopped while the app is idle, so the first Hotkey only
-    /// pays for `play`. Never plays the stream (that is what activates the
-    /// microphone) and never requests permission — see [`DictationRecorder::prepare`].
     fn prepare(&mut self) -> Result<(), AudioCaptureError> {
         use cpal::traits::DeviceTrait;
 
@@ -327,12 +271,8 @@ impl DictationRecorder for CpalAudioRecorder {
             };
 
             self.sample_rate_hz = config.sample_rate;
-            // The callback downmixes each input frame before placing it in the
-            // ring, exactly as Start configures it.
             self.channels = 1;
 
-            // Building allocates the ring zero-initialised too, so first-touch
-            // page faults land here rather than on the hotkey path.
             self.install_stream(&device, &config, &identity)?;
 
             Ok(identity)
@@ -348,9 +288,6 @@ impl DictationRecorder for CpalAudioRecorder {
         self.pause_active_stream();
         self.stop_level_emitter();
 
-        // The chosen device is part of the stream identity below, so turning
-        // the preference on or off rebuilds the stream rather than reusing one
-        // opened on the other microphone.
         let device = recording_device(&cpal::default_host(), self.prefer_built_in_microphone)?;
         let supported_config = device
             .default_input_config()
@@ -365,7 +302,6 @@ impl DictationRecorder for CpalAudioRecorder {
         };
 
         self.sample_rate_hz = config.sample_rate;
-        // The callback downmixes each input frame before placing it in the ring.
         self.channels = 1;
         if let Some(buffer) = self.buffer.as_ref() {
             buffer.clear();
@@ -374,10 +310,6 @@ impl DictationRecorder for CpalAudioRecorder {
         self.level_bits
             .store(0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
 
-        // Building a CoreAudio stream costs hundreds of milliseconds and was
-        // paid on every hotkey press. Keep the paused stream when the default
-        // device and format are unchanged; `stop`/`cancel` pause it, and `play`
-        // resumes it in roughly 40 ms on the reference Mac (slugtale-op3).
         let reused_stream = paused_stream_is_reusable(
             self.stream.is_some(),
             self.buffer.is_some(),
@@ -393,9 +325,6 @@ impl DictationRecorder for CpalAudioRecorder {
                 return Err(AudioCaptureError::new(error.to_string()));
             }
 
-            // A retained stream can become unusable after a device interruption
-            // without its identity changing. Fall back to a cold start once so a
-            // stale stream never strands dictation.
             self.install_stream(&device, &config, &identity)?;
             self.stream
                 .as_ref()
@@ -404,15 +333,11 @@ impl DictationRecorder for CpalAudioRecorder {
                 .map_err(|error| AudioCaptureError::new(error.to_string()))?;
         }
         self.stream_active = true;
-        // Start has validated the device and format right now, which is the
-        // freshest preparation there is: record it so a later `prepare` call
-        // knows the work is already done.
         self.prepare_state = PrepareState::Prepared { identity };
 
         if let Some(callback) = self.level_callback.clone() {
             match LevelEmitter::spawn(self.level_bits.clone(), callback) {
                 Ok(emitter) => self.level_emitter = Some(emitter),
-                // The waveform is cosmetic; capture must not fail without it.
                 Err(error) => eprintln!("could not start audio level emitter: {error}"),
             }
         }
@@ -456,9 +381,6 @@ impl DictationRecorder for CpalAudioRecorder {
     }
 }
 
-/// The listener opens and closes the same stream; only taking a chunk differs,
-/// so it borrows the Dictation implementation rather than copying the device
-/// work behind it.
 impl VoiceActivationRecorder for CpalAudioRecorder {
     fn start(&mut self) -> Result<(), AudioCaptureError> {
         DictationRecorder::start(self)
@@ -469,17 +391,6 @@ impl VoiceActivationRecorder for CpalAudioRecorder {
     }
 
     fn take_segment(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
-        // Deliberately no pause and no emitter shutdown: the stream keeps
-        // running and the ring keeps filling behind this read. That is safe
-        // because `RealtimeCaptureBuffer` is a single-producer/single-consumer
-        // ring whose Acquire/Release pairs already order the audio thread's
-        // writes against this drain — the caller is simply becoming the consumer
-        // earlier than `stop` would.
-        //
-        // The one cost is that the resampler's window cannot span the cut, so a
-        // segment boundary loses sub-millisecond accuracy at the join. Boundaries
-        // only ever fall in the middle of a five-second silence, so there is no
-        // speech there to damage.
         let samples = self
             .buffer
             .as_ref()
@@ -525,8 +436,6 @@ mod tests {
             );
         }
 
-        // The 24-bit, 64-bit, and DSD encodings have no row: they fail stream
-        // construction as unsupported rather than mistranscribing samples.
         for format in [
             cpal::SampleFormat::I24,
             cpal::SampleFormat::I64,

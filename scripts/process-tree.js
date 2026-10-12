@@ -1,9 +1,5 @@
 #!/usr/bin/env node
 
-// One wall-clock cap for the runners in this directory (`run-node-tests.js` and
-// `run-cargo.js`). Both need the same three guarantees, and all three are easy
-// to get subtly wrong in one copy of the code and correct in the other:
-//
 // 1. **The child leads its own process group.** On POSIX that means spawning
 //    `detached: true`. Without it the child stays in *this* process's group, so
 //    a negative-pid kill is aimed at a group this runner does not lead: it
@@ -12,20 +8,17 @@
 //    frontend test was still running. The group is also what keeps the child
 //    out of the runner's own group, so the timeout kill cannot reach the
 //    runner itself.
-//
 // 2. **A timeout kills the whole tree, not just the direct child.** Cargo
 //    spawns rustc; a hung screen test spawns its own children. POSIX has the
 //    group signal for this. Windows has no process groups for this purpose and
 //    a negative pid means nothing there, so it needs `taskkill /T /F`, which
 //    walks the process tree natively.
-//
 // 3. **A timeout exits 124 on every platform.** The runner reports the
 //    conventional "timed out" status rather than whatever the OS happened to
 //    report for a killed process, because a Windows kill arrives as an exit
 //    code while a POSIX kill arrives as a signal. Deriving the status from the
 //    signal alone is what made the old Node runner's Windows path report a
 //    plain failure instead of a timeout.
-//
 // A regular non-timeout exit code is always passed through untouched, and the
 // timer is always cleared when the child ends so a finished run holds no timer
 // open. While the call is pending, both timers stay referenced: they are the
@@ -36,7 +29,6 @@
 
 const { spawn: defaultSpawn, spawnSync: defaultSpawnSync } = require("node:child_process");
 
-/** The conventional shell status for "killed because it ran too long". */
 const TIMEOUT_EXIT_CODE = 124;
 
 /**
@@ -48,18 +40,6 @@ const TIMEOUT_EXIT_CODE = 124;
  */
 const POST_KILL_GRACE_MS = 2000;
 
-/**
- * Spawn a child that leads its own process group on POSIX, so that
- * {@link killProcessTree} can later reach it *and its descendants* with a
- * single signal.
- *
- * @param {object} [system] injection seam for tests.
- * @param {Function} [system.spawn]
- * @param {string} [system.platform]
- * @param {string} command
- * @param {string[]} args
- * @param {object} options node child_process spawn options.
- */
 function spawnInOwnGroup(command, args, options = {}, system = {}) {
   const {
     spawn = defaultSpawn,
@@ -69,19 +49,10 @@ function spawnInOwnGroup(command, args, options = {}, system = {}) {
   return spawn(command, args, {
     ...options,
     shell: false,
-    // Windows keeps its own tree semantics; `killProcessTree` uses `taskkill`
-    // there instead of a group signal.
     detached: platform !== "win32",
   });
 }
 
-/**
- * Kill a child and every process below it, on whichever platform this is.
- *
- * @param {number|undefined} pid
- * @param {object} [system] injection seam for tests.
- * @returns {boolean} whether a kill was delivered.
- */
 function killProcessTree(pid, system = {}) {
   const {
     platform = process.platform,
@@ -109,27 +80,10 @@ function killProcessTree(pid, system = {}) {
     kill(-pid, "SIGKILL");
     return true;
   } catch {
-    // The tree is already gone; the caller still reports the timeout.
     return false;
   }
 }
 
-/**
- * Run a child with a hard wall-clock cap that stops the whole tree.
- *
- * Resolves once the child has ended (or once the cap has proven it cannot be
- * stopped), so callers can turn the result into a process exit status without
- * duplicating the signal/exit-code reasoning.
- *
- * @param {object} run
- * @param {string} run.command
- * @param {string[]} run.args
- * @param {object} [run.options] spawn options, e.g. `cwd` and `stdio`.
- * @param {number} run.timeoutSeconds `0` disables the cap.
- * @param {string} run.label human name used in the timeout message.
- * @param {object} [system] injection seam for tests.
- * @returns {Promise<{exitCode: number, timedOut: boolean, signal: string|null}>}
- */
 function runChildWithTimeout(run, system = {}) {
   const { command, args, options = {}, timeoutSeconds, label } = run;
   const {
@@ -150,8 +104,6 @@ function runChildWithTimeout(run, system = {}) {
     let timer = null;
     let graceTimer = null;
 
-    // Every exit path goes through here, so the timers are released exactly
-    // once and a late `exit` after the grace window cannot resolve twice.
     const finish = (exitCode, signal) => {
       if (settled) {
         return;
@@ -169,10 +121,6 @@ function runChildWithTimeout(run, system = {}) {
         log(`${label} timed out after ${timeoutSeconds}s. Killing the process tree.`);
         killProcessTree(child.pid, killSystem);
 
-        // If the kill never reached the child there is no exit event coming,
-        // and waiting for one is the very hang this cap exists to prevent. The
-        // grace timer is the promise's own deadline, so it stays referenced
-        // while it runs; `finish` clears it either way.
         graceTimer = setTimeout(() => finish(TIMEOUT_EXIT_CODE, null), graceMs);
       }, timeoutSeconds * 1000);
     }
@@ -184,8 +132,6 @@ function runChildWithTimeout(run, system = {}) {
 
     child.on("exit", (code, signal) => {
       if (timedOut) {
-        // The OS's own report for a killed process is not the contract: a
-        // caller (npm, CI) only needs to know the cap fired.
         finish(TIMEOUT_EXIT_CODE, signal ?? null);
         return;
       }

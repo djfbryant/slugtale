@@ -1,13 +1,3 @@
-//! The cached Whisper runtime: one loaded model per model path, shared by every
-//! caller whose Settings name that path.
-//!
-//! The cache exists because reading and parsing the model file is expensive and
-//! must happen once, not on every dictation. It also owns two lifetimes the
-//! engine catalogue needs to be able to end:
-//!
-//! - [`WhisperRuntimeCache::release`] drops the reference without ending the
-//!   cache, so a warm-up can start again later.
-//! - [`WhisperRuntimeCache::shutdown`] stops accepting work and releases the
 //!   loaded context now. Tauri's default `run` path ends in `process::exit`,
 //!   which skips Rust destructors, so this is the only place ggml's Metal
 //!   globals are torn down in a determinate order (slugtale-p1u).
@@ -18,9 +8,6 @@ use crate::AsrError;
 use crate::LocalModelRef;
 use std::sync::{Arc, Mutex};
 
-/// Caches the loaded Whisper runtime across transcriptions so the model file is
-/// read from disk once rather than on every call. The runtime is rebuilt only
-/// when the configured model path changes.
 #[derive(Default)]
 pub struct WhisperRuntimeCache(Mutex<WhisperRuntimeCacheState>);
 
@@ -35,9 +22,6 @@ impl WhisperRuntimeCache {
         let mut state = self.0.lock().expect("whisper runtime cache mutex poisoned");
         let runtime = Self::runtime_for_locked(&mut state, model);
         if state.shutting_down {
-            // A dictation task can race ExitRequested after obtaining the app
-            // handle. Return a permanently stopped runtime so it cannot create
-            // a new Metal context after shutdown has already drained the cache.
             runtime.shutdown();
         }
         runtime
@@ -153,8 +137,6 @@ mod tests {
         cache.release();
         let runtime = cache.runtime_for(&LocalModelRef::at(model_path));
 
-        // A released runtime must behave like a shut-down one: the next warm-up
-        // or transcription fails instead of creating a new context.
         assert!(runtime.warm_up().is_err());
         std::fs::remove_dir_all(&model_dir).ok();
     }

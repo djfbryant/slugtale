@@ -41,18 +41,6 @@ function createTauriEnvironment({
   return buildEnvironment;
 }
 
-// Whisper is the baseline every developer-run build carries: it is the only
-// engine available on every platform, and Metal costs nothing extra on macOS.
-// macOS includes Phonon MLX setup and the opt-in Voice Activation listener.
-// The MLX provider runs only on Apple silicon macOS 14+, with ONNX retained
-// on other targets. Voice Activation's Settings toggle
-// remains off until the user turns it on.
-// Other optional engines are opt-in at compile time (src-tauri/Cargo.toml) because
-// each drags in a native toolchain — ONNX Runtime for Parakeet, the Swift
-// compiler for Apple SpeechTranscriber — so they are compiled in only when a
-// developer names them in SLUGTALE_ENGINE_FEATURES. Without that, Settings
-// reports those engines as `RuntimeNotBuilt`, which is the truth about the
-// binary rather than about the machine.
 function resolveRuntimeFeatures({
   platform = process.platform,
   environment = process.env,
@@ -71,17 +59,9 @@ function resolveRuntimeFeatures({
     .map((feature) => feature.trim())
     .filter(Boolean);
 
-  // Cargo rejects an unknown feature name with a clear message of its own, so
-  // this deliberately does not second-guess the list in Cargo.toml.
   return [...new Set([...baseline, ...requested])].join(",");
 }
 
-// Build and dev invocations must never pin their own Cargo feature list:
-// scripts/run-dev.js and install-macos-app.js resolve the platform baseline
-// (Metal on macOS) through resolveRuntimeFeatures, and an `npm run build`
-// that hardcodes `local-whisper-runtime` would silently ship a CPU-only
-// binary where the developer-run build has GPU acceleration. When the caller
-// names --features explicitly, their list wins untouched.
 function withResolvedRuntimeFeatures(args, { platform, environment } = {}) {
   if (
     !args.length ||

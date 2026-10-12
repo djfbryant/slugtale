@@ -32,8 +32,6 @@
       wrap.hidden = false;
       messageEl.classList.remove("error");
 
-      // Name the model actually being fetched, from the status the pane rendered,
-      // not a hardcoded id — a different model must not be labelled "base.en".
       const label = `Downloading ${latestModelStatus.id}…`;
       const pct = progressPercent(progress.downloaded, progress.total);
       if (pct === null) {

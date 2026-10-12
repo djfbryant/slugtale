@@ -3,8 +3,6 @@ import test from "node:test";
 
 import { runPage } from "./harness.mjs";
 
-// A stand-in for one row of the `transcription_engines` command's output: just
-// the fields the engine list reads.
 function engineFixture(id, displayName, { primary = false, unavailableReason = null, capability = "" } = {}) {
   return {
     id,

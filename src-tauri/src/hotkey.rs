@@ -1,26 +1,17 @@
 use crate::ActivationMode;
 
-/// A raw hotkey signal delivered by the OS hotkey adapter (ADR-0021). The
-/// adapter only reports key transitions; interpreting them into dictation
-/// lifecycle events is the job of [`DictationLifecycle`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyInput {
     Pressed,
     Released,
 }
 
-/// Which globally observed key produced a transition. The configured Hotkey
-/// follows the user's hold/toggle setting; Escape always abandons an active
-/// dictation on its press edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DictationKey {
     Hotkey,
     Escape,
 }
 
-/// An explicit dictation lifecycle event handed to the dictation pipeline.
-/// `Stop` ends dictation and keeps the resulting transcription; `Cancel`
-/// abandons the dictation and discards it (CONTEXT.md: Dictation Bar).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DictationEvent {
     Start,
@@ -28,10 +19,6 @@ pub enum DictationEvent {
     Cancel,
 }
 
-/// The configurable hotkey lifecycle (ADR-0004). Translates raw [`HotkeyInput`]
-/// transitions into [`DictationEvent`]s according to the active
-/// [`ActivationMode`], so the dictation pipeline receives explicit start, stop,
-/// and cancel events without knowing how the hotkey behaves.
 pub struct DictationLifecycle {
     mode: ActivationMode,
     dictating: bool,
@@ -63,7 +50,6 @@ impl DictationLifecycle {
         Some(DictationEvent::Start)
     }
 
-    /// Stop a dictation from a control such as the Dictation Bar.
     pub fn stop(&mut self) -> Option<DictationEvent> {
         if !self.dictating {
             return None;
@@ -82,8 +68,6 @@ impl DictationLifecycle {
                 Some(DictationEvent::Stop)
             }
             HotkeyInput::Pressed if self.dictating => {
-                // A non-key source started a Hold-mode dictation. Claim this
-                // physical press so its release can stop the active dictation.
                 self.hotkey_down = true;
                 None
             }

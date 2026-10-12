@@ -1,25 +1,3 @@
-//! Second Opinion routing (slugtale-vjs.3): run one Transcription Engine
-//! normally, and ask a second local engine only when the first result looks
-//! uncertain or anomalous.
-//!
-//! The shape of this is deliberate. Asking two engines to transcribe every
-//! dictation would double the wait on a machine that already answers in a few
-//! hundred milliseconds, and it still gives no answer when the two disagree.
-//! Asking a second listener only when the first one says "I think that was
-//! *slug tail*" costs nothing on the normal path and helps exactly where help
-//! is needed (docs/research/2026-07-24-small-local-asr-and-model-collaboration.md).
-//!
-//! Three properties this module is built to guarantee:
-//!
-//! 1. **Exactly one transcript is inserted.** Slugtale selects between complete
-//!    transcripts; it never merges words from two engines. Word-level fusion is
-//!    a later experiment that first needs evidence of an oracle gap.
-//! 2. **The rules are fixed and inspectable.** Every escalation and every
-//!    selection produces a non-content reason code, so a user or a maintainer
-//!    can ask "why did it do that?" and get an answer that contains no speech.
-//! 3. **The first usable transcript always survives.** A second opinion that
-//!    times out, errors, or is unavailable can only ever fail to improve the
-//!    result — it can never lose the dictation.
 
 use crate::{
     captured_audio_duration, second_opinion_transport, AsrError, CapturedAudio, EngineTranscriber,
@@ -29,42 +7,23 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Whether Slugtale may ask a second local engine for another opinion. Stored
-/// in the Settings File; `Off` is the default and reproduces today's behaviour
-/// exactly — one engine, no router overhead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SecondOpinionMode {
-    /// Only the primary engine ever runs.
     Off,
-    /// A second engine runs when, and only when, the primary result trips one
-    /// of the escalation rules below.
     Automatic,
 }
 
 impl Default for SecondOpinionMode {
-    /// Off until slugtale-9dv has measured that escalation actually helps, and
-    /// which thresholds to use. Shipping a second engine on by default would
-    /// spend the user's battery on an unproven benefit.
     fn default() -> Self {
         Self::Off
     }
 }
 
-/// Why the primary engine's result was not trusted on its own.
-///
-/// Every variant names a property of the *result shape*, never its content, so
-/// these are safe to write to the Local Diagnostic Log and to show the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EscalationReason {
-    /// The engine returned nothing for a recording long enough to contain
-    /// speech. The most clearly recoverable failure there is.
     EmptyTranscript,
-    /// The engine's own confidence fell below its threshold. Compared only
-    /// against that engine's threshold — never against another engine's score,
-    /// which is on a different scale until calibrated.
-    ///
     /// **This rule is inert today.** Neither engine currently shipped reports
     /// confidence: whisper.cpp gives Slugtale plain segment text, and
     /// `parakeet-rs` 0.3.6 discards the joint logits after its argmax, so it
@@ -73,50 +32,29 @@ pub enum EscalationReason {
     /// anyway because the alternative — adding it later, under pressure, to a
     /// router already in users' hands — is how selection logic goes wrong.
     LowConfidence,
-    /// The same short phrase repeats several times in a row. Whisper's
-    /// characteristic failure: it loops rather than admitting it heard nothing.
     RepeatedPhrase,
-    /// Far too few words came back for how long the user spoke.
     ImplausiblyShortForDuration,
 }
 
-/// Why the router inserted the transcript it did. Non-content, like
-/// [`EscalationReason`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SelectionReason {
-    /// Nothing looked wrong, so no second engine ran. The normal path.
     PrimaryAccepted,
-    /// A second opinion ran and the primary still read better under the rules.
     PrimaryKeptAfterSecondOpinion,
-    /// A second opinion ran and read better, so it replaced the primary.
     SecondOpinionSelected,
-    /// A second opinion was wanted but could not run — unavailable engine,
-    /// error, timeout, or one already in flight. The primary's flawed
-    /// transcript is still the best available, so it is inserted rather than
-    /// losing the dictation.
     PrimaryKeptSecondOpinionUnavailable,
 }
 
-/// The router's complete, non-content account of one dictation, plus the single
-/// transcript to insert.
 #[derive(Debug, Clone, PartialEq)]
 struct RoutedTranscription {
-    /// The one transcript to insert. Never a merge of two engines.
     selected: EngineTranscription,
-    /// Which rule fired, if any. `None` means the primary was trusted outright.
     escalation: Option<EscalationReason>,
     selection: SelectionReason,
-    /// Which engine was asked for a second opinion, when one was asked.
     second_opinion_engine: Option<TranscriptionEngine>,
-    /// Wall-clock time for the whole routed dictation, including any escalation.
     total_latency: Duration,
 }
 
 impl RoutedTranscription {
-    /// The non-content summary safe to record in the Local Diagnostic Log.
-    /// Deliberately returns owned copies of only the codes and the timings, so
-    /// a caller cannot reach the transcript through it by accident.
     fn diagnostics(&self) -> RoutingDiagnostics {
         RoutingDiagnostics {
             selected_engine: self.selected.engine,
@@ -133,8 +71,6 @@ impl RoutedTranscription {
 /// engine identity, reason codes, and a duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutingDiagnostics {
-    /// The engine whose transcript was actually inserted — which is the second
-    /// opinion whenever it won, not the primary.
     pub selected_engine: TranscriptionEngine,
     pub escalation: Option<EscalationReason>,
     pub selection: SelectionReason,
@@ -142,33 +78,12 @@ pub struct RoutingDiagnostics {
     pub total_latency_ms: u64,
 }
 
-/// The fixed rules that decide whether a result deserves a second opinion.
-///
-/// These are thresholds, not a learned model, so a maintainer can read them and
-/// predict the behaviour. The defaults are deliberately conservative: they are
-/// placeholders until slugtale-9dv measures real escalation rates, and an
-/// over-eager router costs every user latency to rescue a few dictations.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EscalationPolicy {
-    /// Escalate below this confidence. Only consulted for engines that actually
-    /// report confidence; a silent engine is not an uncertain one, and as of
-    /// today only Apple SpeechTranscriber reports one at all (see
-    /// [`EscalationReason::LowConfidence`]). The number is a placeholder until
-    /// slugtale-9dv calibrates it against real dictations.
     minimum_confidence: f32,
-    /// Escalate below this many words per second of recording. Ordinary speech
-    /// runs 2–3 words per second, so this only catches near-total loss rather
-    /// than someone speaking slowly.
     pub minimum_words_per_second: f32,
-    /// Recordings shorter than this are not judged on length or emptiness. A
-    /// half-second of silence legitimately transcribes to nothing, and treating
-    /// that as a failure would escalate every accidental hotkey press.
     minimum_judged_duration: Duration,
-    /// How many consecutive repeats of the same short phrase count as a loop.
     repeated_phrase_run: usize,
-    /// How long a second opinion may take before the router gives up and keeps
-    /// the first result. Bounded so a slow or wedged engine can never hold a
-    /// dictation hostage.
     pub second_opinion_budget: Duration,
 }
 
@@ -185,27 +100,18 @@ impl Default for EscalationPolicy {
 }
 
 impl EscalationPolicy {
-    /// Override the second-opinion budget, so a test can prove the router gives
-    /// up rather than holding the dictation.
     #[cfg(test)]
     pub(crate) fn with_budget(mut self, budget: Duration) -> Self {
         self.second_opinion_budget = budget;
         self
     }
 
-    /// Override the words-per-second floor, so a threshold can be checked at a
-    /// number other than the default rather than only in passing.
     #[cfg(test)]
     pub(crate) fn with_minimum_words_per_second(mut self, words_per_second: f32) -> Self {
         self.minimum_words_per_second = words_per_second;
         self
     }
 
-    /// The first rule this result trips, or `None` when it looks healthy.
-    ///
-    /// Rules are checked in order of how confident we are that they indicate a
-    /// real failure, so the reported reason is the strongest explanation rather
-    /// than whichever happened to be checked first.
     fn escalation_for(
         &self,
         result: &EngineTranscription,
@@ -248,10 +154,6 @@ impl EscalationPolicy {
     /// calibrated on the same recordings. Every tie keeps the primary, so the
     /// router is deterministic and a second opinion can only ever fix a result
     /// it can positively explain.
-    /// The primary is deliberately not read here. Every rule below asks only
-    /// "is the second opinion good enough to displace what we already have?",
-    /// judged against an absolute standard. Keeping the primary in the
-    /// signature documents that it is the incumbent and the default answer.
     pub fn select(
         &self,
         _primary: &EngineTranscription,
@@ -262,22 +164,12 @@ impl EscalationPolicy {
         let second_is_healthy = self.escalation_for(second, audio_duration).is_none();
 
         let second_wins = match escalation {
-            // The primary gave us nothing, so anything intelligible is better.
             EscalationReason::EmptyTranscript => !second.text().trim().is_empty(),
-            // Take the second opinion only if it did not loop as well.
             EscalationReason::RepeatedPhrase => {
                 !has_repeated_phrase(second.text().trim(), self.repeated_phrase_run)
                     && !second.text().trim().is_empty()
             }
-            // Prefer the transcript with a plausible amount of text for the
-            // recording — but only when the second one is plausible outright,
-            // never merely longer, so a hallucinating engine cannot win by
-            // producing more words.
             EscalationReason::ImplausiblyShortForDuration => second_is_healthy,
-            // Confidence is the one signal we cannot compare across engines, so
-            // the second opinion must clear its *own* threshold and show no
-            // other anomaly. An engine that reports no confidence at all cannot
-            // clear it, and the primary is kept.
             EscalationReason::LowConfidence => {
                 second_is_healthy && second.confidence.escalation_score().is_some()
             }
@@ -291,44 +183,21 @@ impl EscalationPolicy {
     }
 }
 
-/// The in-flight gate shared by every [`SecondOpinionRouter`] built for one
-/// Engine Catalogue lifetime.
-///
-/// Dictation builds a fresh router per segment, but the gate must not be
-/// per-segment: a timed-out escalation whose detached worker is still decoding
-/// has to block the *next* segment's escalation too, or slow second engines
-/// pile up on the CPU behind the primary transcription the user is waiting
-/// on. Clone this coordinator into every router; they then contend for one
-/// Boolean. `Default` starts unowned.
 #[derive(Clone, Default)]
 pub struct SecondOpinionCoordinator {
     gate: second_opinion_transport::InFlightGate,
 }
 
-/// Runs the primary engine and, when its result trips a rule, one second
-/// opinion. Owns the escalation budget and the guarantee that exactly one
-/// transcript comes out.
-///
-/// It holds [`EngineTranscriber`] and nothing else: a router that decides
-/// whether to ask another engine has no business being able to install or
-/// delete one.
 pub struct SecondOpinionRouter {
     primary: Arc<dyn EngineTranscriber>,
     second: Option<Arc<dyn EngineTranscriber>>,
     mode: SecondOpinionMode,
     policy: EscalationPolicy,
-    /// Shared in-flight state; see [`SecondOpinionCoordinator`]. Set while a
-    /// second opinion is running. A dictation that starts while an earlier
-    /// escalation is still decoding skips its own escalation rather than
-    /// putting two model runtimes on the CPU at once — on the 8 GB reference
-    /// machine that would slow the dictation the user is waiting on.
     coordinator: SecondOpinionCoordinator,
     observer: Option<Arc<dyn Fn(RoutingDiagnostics) + Send + Sync>>,
 }
 
 impl SecondOpinionRouter {
-    /// A router that only ever runs one engine. This is the shape the app uses
-    /// when Second Opinion is Off, and it costs nothing beyond the primary call.
     pub fn single(primary: Arc<dyn EngineTranscriber>) -> Self {
         Self {
             primary,
@@ -355,28 +224,17 @@ impl SecondOpinionRouter {
         }
     }
 
-    /// Contend for `coordinator`'s shared gate instead of a private one. Every
-    /// router built for one Engine Catalogue lifetime must share it, so an
-    /// escalation that outlives its caller's timeout blocks later segments.
     pub fn with_coordinator(mut self, coordinator: SecondOpinionCoordinator) -> Self {
         self.coordinator = coordinator;
         self
     }
 
-    /// Production runs the default policy; only the tests below change a
-    /// threshold, which is why this door is closed outside the test build.
     #[cfg(test)]
     fn with_policy(mut self, policy: EscalationPolicy) -> Self {
         self.policy = policy;
         self
     }
 
-    /// Report every routing decision to a non-content observer — in the app,
-    /// the Local Diagnostic Log.
-    ///
-    /// The observer receives [`RoutingDiagnostics`], which is a closed set of
-    /// codes and a duration. That type, rather than the router's discipline, is
-    /// what makes it impossible to log the user's speech from here.
     pub fn observing(
         mut self,
         observer: impl Fn(RoutingDiagnostics) + Send + Sync + 'static,
@@ -385,13 +243,6 @@ impl SecondOpinionRouter {
         self
     }
 
-    /// Route one dictation, escalating only if the primary result trips a rule.
-    /// Fails only when the *primary* fails: once there is a usable first
-    /// transcript, nothing the second engine does can turn this into an error.
-    ///
-    /// Named `route` rather than `transcribe` so it reads distinctly from the
-    /// [`crate::AsrRuntime`] implementation below, which discards the reason
-    /// codes this returns.
     fn route(&self, audio: &CapturedAudio) -> Result<RoutedTranscription, AsrError> {
         let routed = self.routed(audio)?;
         if let Some(observer) = self.observer.as_ref() {
@@ -457,9 +308,6 @@ impl SecondOpinionRouter {
         })
     }
 
-    /// Whether this result should be escalated at all. Returns `None` the moment
-    /// Second Opinion is Off or no second engine is configured, so the normal
-    /// path does not even inspect the transcript.
     fn escalation_for(
         &self,
         primary: &EngineTranscription,
@@ -471,19 +319,11 @@ impl SecondOpinionRouter {
         self.policy.escalation_for(primary, audio_duration)
     }
 
-    /// The second engine, if it is configured and can actually run right now.
-    /// Availability is checked before decoding rather than after, so an engine
-    /// whose assets were removed costs nothing.
     fn available_second_opinion(&self) -> Option<Arc<dyn EngineTranscriber>> {
         let second = self.second.as_ref()?;
         second.availability().is_available().then(|| second.clone())
     }
 
-    /// Run the second engine, giving up at the budget.
-    ///
-    /// The escalation policy above owns the budget; the thread, the channel, and
-    /// the gate belong to [`crate::second_opinion_transport`], which is the only
-    /// place this module knows how to run an engine off the caller's thread.
     fn second_opinion_within_budget(
         &self,
         provider: Arc<dyn EngineTranscriber>,
@@ -499,25 +339,12 @@ impl SecondOpinionRouter {
     }
 }
 
-/// Lets the router stand in wherever the Dictation Workflow expects a single
-/// engine, so adding Second Opinion changed no part of the insertion path.
-///
-/// The reason codes are dropped here rather than lost: [`SecondOpinionRouter::observing`]
-/// has already handed them to the Local Diagnostic Log by the time this
-/// returns, and the workflow itself has no use for them.
 impl crate::AsrRuntime for SecondOpinionRouter {
     fn transcribe(&self, audio: CapturedAudio) -> Result<crate::FinalTranscription, AsrError> {
         Ok(self.route(&audio)?.selected.transcription)
     }
 }
 
-/// Whether the same short phrase repeats `minimum_run` times back to back.
-///
-/// Checks phrases of one to four words because that is the shape engines
-/// actually loop in — "the the the", or "I don't know. I don't know. I don't
-/// know." Comparison ignores case and punctuation so a looped sentence is still
-/// caught when the engine punctuates each repeat differently. The scan is
-/// quadratic in the word count, which is irrelevant at a dictation's length.
 fn has_repeated_phrase(text: &str, minimum_run: usize) -> bool {
     if minimum_run < 2 {
         return false;
@@ -565,8 +392,6 @@ mod tests {
 
     #[test]
     fn second_opinion_is_off_until_the_benchmark_says_otherwise() {
-        // Shipping a second engine on by default would spend every user's
-        // battery on a benefit slugtale-9dv has not yet measured.
         assert_eq!(SecondOpinionMode::default(), SecondOpinionMode::Off);
     }
 
@@ -588,8 +413,6 @@ mod tests {
 
     #[test]
     fn automatic_mode_off_leaves_an_anomalous_result_alone() {
-        // Off must reproduce today's behaviour exactly: one engine, whatever it
-        // says, even when the result is obviously broken.
         let primary = FakeProvider::new(TranscriptionEngine::Whisper, "");
         let second = FakeProvider::new(TranscriptionEngine::Parakeet, "the rescue transcript");
         let second_calls = second.calls.clone();
@@ -619,14 +442,11 @@ mod tests {
         assert_eq!(routed.selection, SelectionReason::SecondOpinionSelected);
         assert_eq!(routed.selected.text(), "Book the meeting for Tuesday");
         assert_eq!(routed.selected.engine, TranscriptionEngine::Parakeet);
-        // Exactly one second opinion, never a retry loop.
         assert_eq!(second_calls.load(std::sync::atomic::Ordering::Acquire), 1);
     }
 
     #[test]
     fn a_brief_recording_is_allowed_to_transcribe_to_nothing() {
-        // An accidental hotkey tap is silence, not a failure. Escalating it
-        // would run a second model every time the user brushed the key.
         let primary = FakeProvider::new(TranscriptionEngine::Whisper, "");
         let second = FakeProvider::new(TranscriptionEngine::Parakeet, "invented words");
         let second_calls = second.calls.clone();
@@ -656,8 +476,6 @@ mod tests {
 
     #[test]
     fn a_second_opinion_that_loops_too_does_not_replace_the_primary() {
-        // Both engines failed the same way. Swapping one loop for another is
-        // churn, so the deterministic tie-break keeps the primary.
         let primary = FakeProvider::new(TranscriptionEngine::Whisper, "yes yes yes yes");
         let second = FakeProvider::new(TranscriptionEngine::Parakeet, "no no no no");
         let router = router_with(primary, second, SecondOpinionMode::Automatic);
@@ -674,9 +492,6 @@ mod tests {
 
     #[test]
     fn low_confidence_only_yields_to_a_second_engine_that_reports_its_own_confidence() {
-        // Confidence from two engines is not on the same scale until it has been
-        // calibrated on the same recordings, so the second opinion must clear
-        // its own threshold. An engine that reports nothing cannot clear it.
         let primary = FakeProvider::new(TranscriptionEngine::Whisper, "meet at the sluggish tail")
             .with_confidence(0.2);
 
@@ -715,8 +530,6 @@ mod tests {
             SelectionReason::PrimaryKeptSecondOpinionUnavailable
         );
         assert_eq!(routed.selected.text(), "");
-        // Availability is checked before decoding, so an unavailable engine
-        // costs nothing at all.
         assert_eq!(second_calls.load(std::sync::atomic::Ordering::Acquire), 0);
     }
 
@@ -761,9 +574,6 @@ mod tests {
 
     #[test]
     fn a_timed_out_escalation_blocks_a_later_segments_router_too() {
-        // Each dictation segment builds its own router. The gate must still be
-        // shared: otherwise a slow second engine that outlived its caller's
-        // timeout starts over behind every following segment.
         let coordinator = SecondOpinionCoordinator::default();
         let slow = FakeProvider::new(TranscriptionEngine::Parakeet, "too late")
             .slow(Duration::from_millis(600));
@@ -782,8 +592,6 @@ mod tests {
             SelectionReason::PrimaryKeptSecondOpinionUnavailable
         );
 
-        // While the timed-out worker is still decoding, the next segment's
-        // router must skip its escalation without starting another worker.
         let next_second = FakeProvider::new(TranscriptionEngine::AppleSpeech, "never starts");
         let next_calls = next_second.calls.clone();
         let next_segment = SecondOpinionRouter::new(
@@ -800,7 +608,6 @@ mod tests {
             SelectionReason::PrimaryKeptSecondOpinionUnavailable
         );
         assert_eq!(next_calls.load(std::sync::atomic::Ordering::Acquire), 0);
-        // Exactly one worker exists: the one from the first segment.
         assert_eq!(slow_calls.load(std::sync::atomic::Ordering::Acquire), 1);
     }
 
@@ -826,8 +633,6 @@ mod tests {
             SelectionReason::PrimaryKeptSecondOpinionUnavailable
         );
 
-        // Wait past the worker's own runtime: the gate must be released by the
-        // worker itself, not by the caller that timed out.
         std::thread::sleep(Duration::from_millis(400));
 
         let later_segment = SecondOpinionRouter::new(
@@ -862,8 +667,6 @@ mod tests {
         );
         assert_eq!(routed.selected.text(), "kept");
 
-        // The gate must have been recovered from the panic: the very next
-        // escalation attempt is not locked out.
         let after = SecondOpinionRouter::new(
             Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
             Arc::new(FakeProvider::new(TranscriptionEngine::AppleSpeech, "rescued")),
@@ -910,8 +713,6 @@ mod tests {
 
     #[test]
     fn a_primary_failure_is_still_a_failure() {
-        // The router rescues bad transcripts, not a dead primary engine. The
-        // caller needs the real error so the Dictation Workflow can report it.
         let primary = FakeProvider::new(TranscriptionEngine::Whisper, "").failing();
         let second = FakeProvider::new(TranscriptionEngine::Parakeet, "unreachable");
         let router = router_with(primary, second, SecondOpinionMode::Automatic);
@@ -939,8 +740,6 @@ mod tests {
             diagnostics.selection,
             SelectionReason::SecondOpinionSelected
         );
-        // The whole point of the reason codes: a maintainer can read why the
-        // router acted without the log ever holding what the user said.
         assert!(
             !json.contains("rescued"),
             "diagnostics leaked transcript text: {json}"
@@ -985,8 +784,6 @@ mod tests {
             policy.escalation_for(&plain("ok"), long_recording),
             Some(EscalationReason::ImplausiblyShortForDuration)
         );
-        // Slow, deliberate speech is not a failure — the threshold sits well
-        // below the 2–3 words per second of ordinary dictation.
         assert_eq!(
             policy.escalation_for(
                 &plain("please book the meeting room for the team on Tuesday morning"),
@@ -998,13 +795,10 @@ mod tests {
 
     #[test]
     fn the_words_per_second_floor_is_the_number_the_router_uses() {
-        // The floor is a placeholder until slugtale-9dv calibrates it, so it has
-        // to be checkable at a number other than the default.
         let ten_seconds = Duration::from_secs(10);
         let four_words = plain("book the flight please");
         let rate = |policy: &EscalationPolicy| policy.escalation_for(&four_words, ten_seconds);
 
-        // Four words in ten seconds is 0.4 per second, exactly the default floor.
         assert_eq!(rate(&EscalationPolicy::default()), None);
 
         let stricter = EscalationPolicy::default().with_minimum_words_per_second(0.5);
@@ -1128,8 +922,6 @@ mod tests {
         }
     }
 
-    /// What this fake owns on disk. The router never asks, which is the point:
-    /// a router that could see this could act on it.
     impl EngineAssetLifecycle for FakeProvider {
         fn assets(&self) -> EngineAssets {
             EngineAssets {

@@ -1,11 +1,3 @@
-//! The Text Insertion and Insertion Rescue domains (CONTEXT.md).
-//!
-//! [`TextInsertionPipeline`] is the primary path: it tries a clipboard-free
-//! insertion first and falls back to a clipboard paste. When insertion fails
-//! entirely, [`ClipboardInsertionRescue`] preserves the transcription by
-//! copying it to the clipboard and notifying the user. The `*System` traits are
-//! the platform-adapter seam (the OS adapters live in the `macos` module), so
-//! the pipeline and rescue stay fully unit-testable without a running runtime.
 
 use crate::FinalTranscription;
 
@@ -31,10 +23,6 @@ impl std::fmt::Display for TextInsertionError {
 impl std::error::Error for TextInsertionError {}
 
 pub trait TextInsertion {
-    /// Insert the transcription, preferring Clipboard-Free Insertion and falling
-    /// back to the clipboard. The result says only whether the text landed; which
-    /// path it took is a question for the Local Diagnostic Log, because a user can
-    /// otherwise only tell by looking at their clipboard.
     fn insert(&self, transcription: &FinalTranscription) -> Result<(), TextInsertionError>;
 }
 
@@ -99,8 +87,6 @@ impl std::fmt::Display for InsertionRescueError {
 impl std::error::Error for InsertionRescueError {}
 
 pub trait InsertionRescue {
-    /// Preserve the transcription after Text Insertion failed: copy it to the
-    /// clipboard and tell the user it is there.
     fn rescue(&self, transcription: &FinalTranscription) -> Result<(), InsertionRescueError>;
 }
 

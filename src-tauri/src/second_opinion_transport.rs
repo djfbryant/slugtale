@@ -1,24 +1,3 @@
-//! The Second Opinion worker: how one engine runs off the dictation thread
-//! without ever being able to hold it.
-//!
-//! The router in [`crate::second_opinion`] owns the *policy* — when is a second
-//! opinion worth asking, and which of the two transcripts wins. This module
-//! owns the *transport*: the thread, the channel, the timeout, and the shared
-//! in-flight gate. They are separate because the transport has no opinion about
-//! engines: it runs one bounded job and reports either an answer or "it did not
-//! finish", and it must never be the place that decides whether to run.
-//!
-//! Three rules the transport exists to hold, in the order they matter:
-//!
-//! 1. **A wedged engine cannot block dictation.** The work runs on its own
-//!    thread and the caller waits only as long as its budget allows. A thread
-//!    still decoding after that keeps its thread, and can only fail to improve
-//!    the result.
-//! 2. **A panicking engine cannot hold the shared gate.** The panic is caught
-//!    here, at the module edge, and reported as an unavailable second opinion
-//!    like any other failure.
-//! 3. **A late answer is dropped, not queued.** The channel holds one result;
-//!    once the caller has moved on, a `try_send` is the honest outcome.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -28,12 +7,6 @@ use std::time::Duration;
 
 use crate::{AsrError, CapturedAudio, EngineTranscriber, EngineTranscription};
 
-/// Whether a second opinion is already running anywhere in this Engine
-/// Catalogue lifetime.
-///
-/// Newtype over the shared Boolean so the transport is the only module that
-/// performs the acquire/release pair: a router asks for the gate, and the
-/// worker is the code that gives it back.
 #[derive(Clone, Default)]
 pub(crate) struct InFlightGate(Arc<AtomicBool>);
 
@@ -67,9 +40,6 @@ pub(crate) fn run_within_budget(
         return None;
     }
 
-    // The recording is cloned because the thread outlives this call: that
-    // allocation is the price of a bounded wait, and it only happens on the
-    // escalation path, which is rare by design.
     let audio = audio.clone();
     let (sender, receiver) = mpsc::sync_channel(1);
     let worker_gate = gate.clone();
@@ -82,8 +52,6 @@ pub(crate) fn run_within_budget(
                         "second opinion engine panicked".to_string(),
                     ))
                 });
-        // A full channel means the router already gave up and moved on;
-        // dropping the late result is exactly what should happen.
         let _ = sender.try_send(result);
     });
 
@@ -136,9 +104,6 @@ mod tests {
         }
     }
 
-    /// An engine with a scripted answer, delay, and outcome, so the transport
-    /// can be driven without a model. It is an [`EngineTranscriber`] only: the
-    /// transport is not allowed to know engines have assets.
     struct Worker {
         text: String,
         delay: Option<Duration>,
@@ -173,7 +138,6 @@ mod tests {
             self
         }
 
-        /// The same engine as the trait object the transport accepts.
         fn as_transcriber(worker: &Arc<Worker>) -> Arc<dyn EngineTranscriber> {
             worker.clone() as Arc<dyn EngineTranscriber>
         }
@@ -248,9 +212,6 @@ mod tests {
 
     #[test]
     fn a_failing_worker_reports_no_answer_rather_than_an_error() {
-        // The caller cannot tell a failure from a timeout from "another worker
-        // holds the gate", and must not need to: in every case the primary
-        // transcript stands.
         let answered = run_within_budget(
             Arc::new(Worker::new("never").failing()),
             &audio(),
@@ -267,9 +228,6 @@ mod tests {
         let worker = Arc::new(Worker::new("never").panicking());
 
         assert_eq!(answered_for(&worker, &gate), None);
-        // The panic was caught at this module edge and reported as an
-        // unavailable second opinion; the shared gate must have been given back
-        // so a later escalation is not locked out forever.
         wait_for(|| gate.try_acquire(), "the gate to be released");
     }
 
@@ -298,8 +256,6 @@ mod tests {
         let worker = Arc::new(Worker::new("the answer").slow(Duration::from_millis(120)));
 
         assert_eq!(answered_for(&worker, &gate), None);
-        // Past the worker's own runtime the transport must have released the
-        // gate, so the next escalation is not skipped for a thread that is gone.
         wait_for(|| gate.try_acquire(), "the gate to reopen");
     }
 

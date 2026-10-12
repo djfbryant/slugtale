@@ -1,6 +1,5 @@
 use serde::{de::DeserializeOwned, Serialize};
 
-// A loader must not quarantine a valid file that an app save replaced after the read.
 static JSON_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn load_or_default<T>(path: &std::path::Path) -> T

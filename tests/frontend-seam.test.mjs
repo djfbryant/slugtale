@@ -2,14 +2,6 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 
-// The Rust↔JS seam is stringly typed by necessity: Tauri events and command
-// arguments cross it as bare names. A typo on either side compiles fine and
-// silently does nothing. These tests pin both sides of the seam to the same
-// vocabulary so drift fails here instead of at a user's desk.
-//
-// Both directions matter. A frontend name the backend does not have fails at the
-// user's desk; a backend name no frontend reaches is a command nothing can call,
-// which reads in the source as a feature and behaves as none.
 
 const rustDir = new URL("../src-tauri/src/", import.meta.url);
 const rustSources = readdirSync(rustDir, { recursive: true })
@@ -17,18 +9,12 @@ const rustSources = readdirSync(rustDir, { recursive: true })
   .map((name) => readFileSync(new URL(String(name), rustDir), "utf8"))
   .join("\n");
 
-// Every file the frontend actually ships: the HTML pages, the stylesheets they
-// link, and the scripts they load. Reading only the `.html` would make every
-// assertion here blind to the code that now lives outside it, which is exactly
-// the drift these tests exist to catch.
 const srcDir = new URL("../src/", import.meta.url);
 const frontendSources = readdirSync(srcDir, { recursive: true })
   .filter((name) => /\.(html|css|js)$/.test(String(name)))
   .map((name) => readFileSync(new URL(String(name), srcDir), "utf8"))
   .join("\n");
 
-// The stylesheet a page links, so a style assertion names the file a browser
-// fetches rather than a block inside the page.
 function stylesheetFor(page) {
   const html = readFileSync(new URL(page, srcDir), "utf8");
   const linked = [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)]
@@ -49,9 +35,6 @@ function emittedEventNames(source) {
 
 function listenedEventNames(source) {
   const names = new Set();
-  // Matches direct calls and the frontends' `events.listen("name", ...)` wrapper.
-  // Word-boundary on the left so `unlisten("name")` teardown calls never count
-  // as a listener.
   for (const match of source.matchAll(/\blisten\(\s*"([^"]+)"/g)) {
     names.add(match[1]);
   }
@@ -60,9 +43,6 @@ function listenedEventNames(source) {
 
 function invokedCommandNames(source) {
   const names = new Set();
-  // A literal argument is the obvious case. A command name that travels as data —
-  // through a readiness action table, or as a parameter — is just as much a
-  // crossing, so those sites are read too.
   for (const match of source.matchAll(/invoke\(\s*"([a-z_]+)"/g)) {
     names.add(match[1]);
   }
@@ -77,8 +57,6 @@ function invokedCommandNames(source) {
 
 function declaredCommandNames(source) {
   const names = new Set();
-  // The adapter may be `pub(crate) fn` (the binary's `commands` modules), so the
-  // visibility marker is allowed between the attribute and `fn`.
   for (const match of source.matchAll(
     /#\[tauri::command\]\s*(?:pub(?:\(crate\))?\s+)?(?:async\s+)?fn\s+([a-z_]+)/g,
   )) {
@@ -125,10 +103,6 @@ test("every event a frontend listens for is an event the backend emits", () => {
 });
 
 test("the voice level threshold is one number in Rust and in the bar", () => {
-  // The Dictation Bar holds the bar open on voice, and the Segment Pause
-  // detector and the capture ring's watermark both hold a flush off on the same
-  // thing. A user watching the bar has to be able to read why a flush did or did
-  // not happen, which is only true while the two numbers are the same number.
   const rust = rustSources.match(
     /pub const VOICE_LEVEL: f32 = ([0-9.]+);/,
   );
@@ -195,9 +169,6 @@ test("every Tauri command is registered, or the app cannot call it", () => {
 });
 
 test("a command no frontend can reach is either gone or listed as not yet wired", () => {
-  // `voice_activation_supported` backs a toggle the settings window marks Coming
-  // Soon, so nothing can call it yet. Listing it keeps the check honest instead of
-  // switched off, and the allowlist empties as the feature lands.
   const notYetReachable = new Set(["voice_activation_supported"]);
 
   const declared = declaredCommandNames(rustSources);
@@ -211,8 +182,6 @@ test("a command no frontend can reach is either gone or listed as not yet wired"
     "commands no frontend reaches and no allowlist entry explains — dead surface",
   );
 
-  // A command that has become reachable must leave the list, so the exception
-  // cannot become a place to hide a live command.
   const nowReachable = [...notYetReachable].filter((command) => invoked.has(command));
   assert.deepEqual(
     nowReachable,
@@ -222,9 +191,6 @@ test("a command no frontend can reach is either gone or listed as not yet wired"
 });
 
 test("a command name a frontend sends as data is still a real command", () => {
-  // `open_microphone_settings`, `open_text_insertion_settings`, `set_usage_storing`
-  // and `set_typing_estimate` cross the seam as a value rather than a literal,
-  // so a typo in one of those sites is a command that silently does nothing.
   const asData = new Set([
     ...frontendSources.matchAll(/\bcommand:\s*"([a-z_]+)"/g),
     ...frontendSources.matchAll(/\bsaveUsage\(\s*"([a-z_]+)"/g),
@@ -237,12 +203,6 @@ test("a command name a frontend sends as data is still a real command", () => {
 });
 
 test("the settings window knows every readiness item the backend can report", () => {
-  // A readiness id is a wire string with no compiler link across the seam. The
-  // backend names items with one enum; the settings window used to name them in
-  // four separate tables plus its own fallback report. A rename compiled in both
-  // languages and silently stripped an item of its guidance, its Set up button,
-  // its pane badge, its banner routing, and the model warm-up the backend starts
-  // off the same id. So the id set is read out of both sides and diffed.
   const source = readFileSync(new URL("../src-tauri/src/readiness.rs", import.meta.url), "utf8");
   const enumBlock = source.match(/pub enum ReadinessItemId \{([\s\S]*?)\n\}/);
   assert.ok(enumBlock, "expected a ReadinessItemId enum in readiness.rs");
@@ -301,9 +261,6 @@ test("the settings window calls every readiness item the same name the backend d
   );
   assert.ok(backend.size >= 6, `expected the readiness labels, found ${backend.size}`);
 
-  // The report already carries the label, so the fallback copy is only used when
-  // there is no backend at all. It has to say the same thing, or the settings
-  // window renames a row the moment the app is running.
   const fallbackBlock = frontendSources.match(/const fallbackReport = \{([\s\S]*?)\n    \};/);
   assert.ok(fallbackBlock, "expected a fallbackReport for the browser");
   const inFallback = new Map(
@@ -323,11 +280,6 @@ function snakeCase(name) {
 }
 
 test("every configured window label is a label the WindowLabel type names", () => {
-  // A window label is a wire string on both sides: tauri.conf.json declares the
-  // windows that exist at startup, and the binary finds them through WindowLabel.
-  // A rename on either side that misses the other is a window that silently never
-  // appears, which is why both directions are resolved from the source rather than
-  // from one hand-copied list.
   const source = readFileSync(
     new URL("../src-tauri/src/window_label.rs", import.meta.url),
     "utf8",

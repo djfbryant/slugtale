@@ -1,11 +1,3 @@
-//! What this machine can give the local Whisper decoder: the decode strategy the
-//! Transcription Speed Profile asks for, and the thread count to run it with.
-//!
-//! Every answer here is a pure function of the machine and the profile. The
-//! only thing that reads the machine is
-//! [`recommended_whisper_decode_settings`], and it is asked per transcription
-//! rather than caching a count, so a process that gains or loses CPUs does not
-//! keep decoding on yesterday's number.
 
 #[cfg(any(test, feature = "local-whisper-runtime"))]
 use crate::SpeedProfile;
@@ -26,11 +18,6 @@ pub(super) struct WhisperDecodeSettings {
     pub(super) n_threads: i32,
 }
 
-/// Map a Transcription Speed Profile to the decode strategy the local Whisper
-/// runtime uses: a wider Beam Search is more accurate but slower (CONTEXT.md);
-/// Fast skips Beam Search entirely with greedy decoding. Values were picked
-/// from measured latency on real speech clips — greedy is fastest, beam 2 costs
-/// little over greedy, and beam 5 (the pre-profile default) is 25-45% slower on
 /// longer clips (docs/research/whisper-decode-benchmark.md). Note whisper.cpp
 /// ignores greedy `best_of` at its default temperature, so meaningfully wider
 /// search requires the BeamSearch strategy, not a larger `best_of`.
@@ -82,9 +69,6 @@ mod tests {
 
     #[test]
     fn speed_profiles_map_to_progressively_wider_decode_search() {
-        // Mapping chosen from measured latency on real speech clips
-        // (docs/research/whisper-decode-benchmark.md): Fast skips Beam Search
-        // entirely, Balanced uses a narrow beam, Accurate uses the widest beam.
         assert_eq!(
             decode_strategy_for_speed_profile(SpeedProfile::Fast),
             WhisperDecodeStrategy::Greedy { best_of: 1 }
@@ -101,10 +85,6 @@ mod tests {
 
     #[test]
     fn whisper_threads_prefer_physical_cores_over_smt_siblings() {
-        // ggml's compute threads contend on shared FP units, so hyperthread
-        // siblings slow decoding down instead of speeding it up: on the 6C/12T
-        // Linux reference box an 11s clip took 6.1s with 12 threads vs 1.6s with
-        // 6 (slugtale-jwy). Use the physical core count, never the SMT total.
         assert_eq!(
             whisper_thread_count(6, NonZeroUsize::new(12).unwrap()),
             NonZeroUsize::new(6).unwrap()
@@ -113,8 +93,6 @@ mod tests {
 
     #[test]
     fn whisper_threads_never_exceed_available_parallelism() {
-        // A containerized/affinity-restricted process can see fewer logical CPUs
-        // than the machine has physical cores; stay within what we may use.
         assert_eq!(
             whisper_thread_count(8, NonZeroUsize::new(4).unwrap()),
             NonZeroUsize::new(4).unwrap()

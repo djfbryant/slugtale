@@ -1,27 +1,3 @@
-//! Apple SpeechTranscriber as a Transcription Engine (slugtale-vjs.2).
-//!
-//! Apple ships a speech recognizer with macOS 26 that runs entirely on the
-//! user's machine and whose model assets the operating system installs, stores,
-//! and updates. That makes it the one engine Slugtale can offer without asking
-//! the user to download anything from Slugtale, and the one engine whose weights
-//! Slugtale must never touch: the assets stay Apple's, and nothing here reads,
-//! copies, bundles, or redistributes them.
-//!
-//! **The provider type exists on every platform.** Slugtale ships on Linux and
-//! Windows too, and Settings has to be able to say *why* an engine is missing
-//! rather than silently omitting it. So [`AppleSpeechProvider`] compiles
-//! everywhere; what varies is the answer it gives:
-//!
-//! | Build | [`EngineTranscriber::availability`] |
-//! |---|---|
-//! | Linux, Windows | [`EngineUnavailable::UnsupportedPlatform`] |
-//! | macOS without the `apple-speech-runtime` feature | [`EngineUnavailable::RuntimeNotBuilt`] |
-//! | macOS with the feature | whatever the machine actually reports |
-//!
-//! Every call into Apple's API is behind **both** `cfg(target_os = "macos")` and
-//! `cfg(feature = "apple-speech-runtime")`, so turning the feature on in a Linux
-//! build is a no-op rather than a build failure.
-//!
 //! **How it reaches Apple's API.** `SpeechAnalyzer` and `SpeechTranscriber` are
 //! Swift-only — they are not exported to Objective-C, so the `objc2-speech`
 //! crate cannot see them (it binds the older `SFSpeechRecognizer`, a different
@@ -29,7 +5,6 @@
 //! library with a C ABI, which lives in `swift/SlugtaleAppleSpeech.swift` and is
 //! compiled into a static archive by `build.rs`. This module declares those four
 //! functions and owns every policy decision above them.
-//!
 //! **Assets are per-application, not per-machine.** Measured on macOS 26.5:
 //! `AssetInventory` reports a locale as not installed to an application that has
 //! never asked for it, *even when another application on the same Mac already
@@ -40,22 +15,11 @@
 //! download when it does not. A developer-run build (ADR-0020) is identified by
 //! its ad-hoc signature, so this reappears after a rebuild; a signed Slugtale
 //! keeps its registration across updates.
-//!
-//! **Nothing leaves the machine.** `SpeechAnalyzer` has no server mode to
-//! misconfigure, and on top of that the bridge refuses to transcribe unless
-//! macOS reports the locale's assets as *installed* — so a machine that is still
-//! fetching them is reported unavailable rather than allowed to fall back to
-//! anything. Slugtale never uses this engine's output to train, fine-tune, or
-//! improve another model, and no transcript, alternative, or confidence score
-//! reaches the Local Diagnostic Log or the network.
 
 use crate::{
     AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssetLifecycle, EngineAssets,
     EngineAvailability, EngineMetadata, EngineTranscriber, EngineTranscription, TranscriptionEngine,
 };
-// Named separately because only the portable half and the tests refer to it by
-// this path; on macOS with the runtime the bridge imports its own. The import
-// stays unconditional so the doc links above it keep resolving.
 #[cfg_attr(
     all(target_os = "macos", feature = "apple-speech-runtime"),
     allow(unused_imports)
@@ -63,10 +27,6 @@ use crate::{
 use crate::EngineUnavailable;
 use std::sync::Mutex;
 
-/// Items that describe the C ABI's own conventions. They are compiled on every
-/// platform so their behaviour stays unit-testable from a Linux or Windows
-/// checkout, but only the macOS bridge ever calls them — hence the allowance
-/// rather than a `cfg` that would take the tests away with them.
 macro_rules! bridge_convention {
     ($($item:item)*) => {
         $(
@@ -79,46 +39,20 @@ macro_rules! bridge_convention {
     };
 }
 
-/// The engine this module provides.
 const APPLE_SPEECH_ENGINE: TranscriptionEngine = TranscriptionEngine::AppleSpeech;
 
-/// The operating systems this engine can ever run on. Used in both the Settings
-/// metadata and the unsupported-platform reason, so the two cannot drift.
 const APPLE_SPEECH_SUPPORTED_PLATFORMS: &str = "macOS 26 and later";
 
-/// The Dictation Language the provider assumes when the caller does not name
-/// one. Slugtale is English-only by default (ADR-0011), and Apple keys its
-/// speech assets by locale rather than by language, so this has to be a full
-/// locale identifier rather than a bare `en`.
 const DEFAULT_APPLE_SPEECH_LOCALE: &str = "en-US";
 
 bridge_convention! {
-    /// The macOS this engine needs, phrased for the Settings copy that renders
-    /// [`EngineUnavailable::UnsupportedOsVersion`].
     const APPLE_SPEECH_REQUIRED_OS: &str = "macOS 26 or later";
 
-    /// Separates whole-transcript alternatives in the single string the Swift
-    /// bridge returns. ASCII RS (0x1E) is a control character no transcriber
-    /// emits, which keeps the C ABI to one owned pointer rather than an array of
-    /// arrays.
     const ALTERNATIVE_SEPARATOR: char = '\u{1E}';
 
-    /// What the bridge writes to a confidence out-parameter when
-    /// `SpeechTranscriber` reported no confidence at all. It sits outside the
-    /// valid `0.0..=1.0` range on purpose: a silent engine is not a
-    /// low-confidence engine, and the Second Opinion router must not confuse the
-    /// two.
     const CONFIDENCE_UNREPORTED: f64 = -1.0;
 }
 
-/// The same answer as an [`EngineUnavailable`], for the places that need the
-/// reason without its wrapper. Built through the boundary's own helper so this
-/// provider words the Linux and Windows case exactly as every other one does.
-///
-/// Exists only where something reads it: the portable half of the provider
-/// (every build other than macOS with the runtime) and the tests. On a macOS
-/// runtime build the bridge owns the availability answer and this would be
-/// dead code, which is why it is not compiled there.
 #[cfg(any(test, not(all(target_os = "macos", feature = "apple-speech-runtime"))))]
 fn unsupported_platform_reason() -> EngineUnavailable {
     match EngineAvailability::unsupported_platform(
@@ -132,20 +66,8 @@ fn unsupported_platform_reason() -> EngineUnavailable {
     }
 }
 
-/// Apple SpeechTranscriber behind the Transcription Engine boundary.
-///
-/// Construction is free and touches nothing: the first
-/// [`EngineTranscriber::availability`] call does the real probe — OS
-/// version, hardware, locale, installed assets — and every call after it reads
-/// the cached answer. That matters because availability is consulted on the
-/// dictation fast path as well as in Settings, and asking macOS about its asset
-/// inventory takes long enough to be felt if it happened on every dictation.
-/// [`AppleSpeechProvider::refresh_availability`] is the way back out of the
-/// cache after the user installs the assets.
 pub struct AppleSpeechProvider {
     locale: String,
-    /// `None` until the first probe. The mutex is held across the probe so a
-    /// burst of concurrent first calls costs one system query, not several.
     cached_availability: Mutex<Option<EngineAvailability>>,
 }
 
@@ -156,15 +78,10 @@ impl Default for AppleSpeechProvider {
 }
 
 impl AppleSpeechProvider {
-    /// A provider for the default Dictation Language.
     pub fn new() -> Self {
         Self::for_locale(DEFAULT_APPLE_SPEECH_LOCALE)
     }
 
-    /// A provider for a specific Dictation Language, as a locale identifier such
-    /// as `en-US`. Apple resolves this loosely — asking for a regional variant
-    /// it does not carry can legitimately land on a broader asset — so callers
-    /// should pass what the user chose and let macOS decide the match.
     pub fn for_locale(locale: impl Into<String>) -> Self {
         Self {
             locale: locale.into(),
@@ -172,17 +89,10 @@ impl AppleSpeechProvider {
         }
     }
 
-    /// The Dictation Language this provider asks Apple for.
     pub fn locale(&self) -> &str {
         &self.locale
     }
 
-    /// Re-probe the machine and replace the cached availability.
-    ///
-    /// Availability is otherwise cached forever, which is right for the OS
-    /// version and the hardware but wrong for installed assets — those change
-    /// the moment [`AppleSpeechProvider::request_asset_installation`] finishes,
-    /// or when the user adds a language in System Settings.
     fn refresh_availability(&self) -> EngineAvailability {
         let probed = probe_availability(&self.locale);
         *self.lock_cache() = Some(probed.clone());
@@ -206,8 +116,6 @@ impl AppleSpeechProvider {
     }
 
     fn lock_cache(&self) -> std::sync::MutexGuard<'_, Option<EngineAvailability>> {
-        // A poisoned cache holds a perfectly good availability answer, and
-        // panicking here would take down a dictation over a stale probe.
         self.cached_availability
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -226,25 +134,15 @@ impl EngineTranscriber for AppleSpeechProvider {
                          and managed by the system itself. Nothing to download, no extra \
                          disk space used beyond what macOS already provides.",
             model_id: "com.apple.speech.SpeechTranscriber",
-            // There is no revision for Slugtale to pin. macOS chooses, installs,
-            // and updates these assets; saying "system-managed" is the honest
-            // answer, and pretending to a version number would imply a control
-            // Slugtale does not have.
             revision: "system-managed by macOS",
-            // Apple does not publish an installed size, and it varies by locale
-            // and by what other system features already share the assets.
             approximate_bytes: None,
-            // Slugtale never downloads these. There is nothing to link to.
             source_url: None,
             license: "Apple system service. The speech models are installed, \
                       stored, and updated by macOS under the macOS Software \
                       Licence Agreement; Slugtale neither bundles nor \
                       redistributes them.",
             license_url: "https://www.apple.com/legal/sla/",
-            // Apple asks for no credit for using a system API, so claiming one
-            // would be inventing an obligation rather than honouring one.
             attribution: None,
-            // Slugtale changes nothing: it calls the system engine as shipped.
             modifications: None,
             system_managed: true,
             supported_platforms: APPLE_SPEECH_SUPPORTED_PLATFORMS,
@@ -262,9 +160,6 @@ impl EngineTranscriber for AppleSpeechProvider {
     }
 
     fn transcribe(&self, audio: &CapturedAudio) -> Result<EngineTranscription, AsrError> {
-        // Availability first, and from the cache: an engine that cannot run here
-        // must say so without touching the recording, so the Second Opinion
-        // router can fall back rather than report a failure to the user.
         if let EngineAvailability::Unavailable(reason) = self.availability() {
             return Err(AsrError::EngineUnavailable {
                 engine: APPLE_SPEECH_ENGINE,
@@ -276,15 +171,8 @@ impl EngineTranscriber for AppleSpeechProvider {
     }
 }
 
-/// Apple's weights are macOS's: Slugtale measures neither their size nor their
-/// presence, cannot download them, and cannot remove them. The one action it
-/// *can* offer is asking the operating system to install them, which is why
-/// this engine's install is a refusal to pretend rather than a no-op.
 impl EngineAssetLifecycle for AppleSpeechProvider {
     fn assets(&self) -> EngineAssets {
-        // macOS neither publishes the installed size nor lets an application
-        // inventory another application's copy, so there is nothing to report
-        // that the availability probe has not already said.
         EngineAssets::unmeasured()
     }
 
@@ -296,13 +184,9 @@ impl EngineAssetLifecycle for AppleSpeechProvider {
         &self,
         on_progress: &mut dyn FnMut(DownloadProgress),
     ) -> Result<AssetInstall, String> {
-        // A blocking system request rather than a download, so it reports no
-        // progress and never did: the progress sink is simply unused here.
         let _ = on_progress;
         self.request_asset_installation()?;
         Ok(AssetInstall {
-            // The Dictation Runtime asks macOS for these assets on its first
-            // use anyway, so an install is not a reason to load anything.
             warm_up: false,
         })
     }
@@ -316,10 +200,6 @@ impl EngineAssetLifecycle for AppleSpeechProvider {
     }
 }
 
-/// Reject a recording the engine cannot do anything with, before it crosses the
-/// C ABI. Unlike Whisper, Apple's analyzer converts sample rates itself, so the
-/// only thing to police here is that there is audio at all and that its rate is
-/// meaningful.
 fn validate_recording(audio: &CapturedAudio) -> Result<(), AsrError> {
     if audio.sample_rate_hz == 0 {
         return Err(AsrError::UnsupportedAudio(
@@ -335,9 +215,6 @@ fn validate_recording(audio: &CapturedAudio) -> Result<(), AsrError> {
 }
 
 bridge_convention! {
-    /// Turn one of the bridge's confidence out-parameters into the boundary's
-    /// optional score. Anything outside `0.0..=1.0` — including the `-1.0`
-    /// sentinel and any NaN — means "not reported", never "reported as bad".
     fn reported_confidence(value: f64) -> Option<f32> {
         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
             return None;
@@ -345,10 +222,6 @@ bridge_convention! {
         Some(value as f32)
     }
 
-    /// Split the bridge's record-separated alternatives back into whole
-    /// transcripts. Empty entries are dropped rather than inserted as blank
-    /// alternatives, which would look to the router like the engine proposing
-    /// silence.
     fn split_alternatives(joined: &str) -> Vec<String> {
         joined
             .split(ALTERNATIVE_SEPARATOR)
@@ -359,14 +232,9 @@ bridge_convention! {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The macOS path: everything below is behind both gates.
-// ---------------------------------------------------------------------------
 
 #[cfg(all(target_os = "macos", feature = "apple-speech-runtime"))]
 mod bridge {
-    //! The Rust half of the C ABI declared in `swift/SlugtaleAppleSpeech.swift`.
-    //! Nothing outside this module touches a raw pointer.
 
     use super::{
         reported_confidence, split_alternatives, APPLE_SPEECH_ENGINE, APPLE_SPEECH_REQUIRED_OS,
@@ -379,8 +247,6 @@ mod bridge {
     use std::ffi::{c_char, CStr, CString};
     use std::ptr;
 
-    /// Status codes returned by every bridge function. They are a numbered
-    /// contract with the Swift file: add at the end, never renumber.
     const STATUS_OK: i32 = 0;
     const STATUS_UNSUPPORTED_OS: i32 = 1;
     const STATUS_UNSUPPORTED_LOCALE: i32 = 2;
@@ -432,16 +298,12 @@ mod bridge {
         Some(owned)
     }
 
-    /// A locale identifier as a C string. An identifier containing an interior
-    /// NUL cannot be a locale, so it is reported as an unsupported one rather
-    /// than being smuggled to macOS truncated.
     fn locale_argument(locale: &str) -> Result<CString, EngineUnavailable> {
         CString::new(locale).map_err(|_| EngineUnavailable::UnsupportedLocale {
             detected: locale.to_string(),
         })
     }
 
-    /// Ask macOS whether it can transcribe `locale` right now.
     pub(super) fn probe_availability(locale: &str) -> EngineAvailability {
         let identifier = match locale_argument(locale) {
             Ok(identifier) => identifier,
@@ -461,9 +323,6 @@ mod bridge {
         }
     }
 
-    /// Map a non-zero status onto the boundary's vocabulary. The Swift side
-    /// chooses what `detail` carries per status — a version string, a locale
-    /// identifier, or a sentence — and it never contains speech.
     fn unavailable_reason(status: i32, detail: Option<String>, locale: &str) -> EngineUnavailable {
         match status {
             STATUS_UNSUPPORTED_OS => EngineUnavailable::UnsupportedOsVersion {
@@ -478,10 +337,6 @@ mod bridge {
                     "macOS has not installed the speech assets for this language yet.".to_string()
                 }),
             },
-            // The Mac is new enough but cannot run the on-device transcriber.
-            // That is a property of this hardware, not of the build or the
-            // assets, so it belongs with the other "wrong machine" answers and
-            // must not offer the user an install button.
             STATUS_UNSUPPORTED_HARDWARE => EngineUnavailable::UnsupportedPlatform {
                 detail: detail.unwrap_or_else(|| {
                     "This Mac's hardware cannot run the on-device transcriber.".to_string()
@@ -551,17 +406,12 @@ mod bridge {
         };
         let latency = started.elapsed();
 
-        // Drain every out-parameter before branching on the status, so no
-        // early return can leave a bridge allocation behind.
         let text = take_string(text);
         let alternatives = take_string(alternatives);
         let detail = take_string(detail);
 
         match status {
             STATUS_OK => {}
-            // A decode that fell over is an engine that broke, not an engine
-            // that was never for this machine; the router treats the two
-            // differently, so they must not share an error.
             STATUS_FAILED => {
                 return Err(AsrError::Runtime(detail.unwrap_or_else(|| {
                     "Apple SpeechTranscriber could not transcribe the recording.".to_string()
@@ -581,8 +431,6 @@ mod bridge {
 
         Ok(EngineTranscription {
             engine: APPLE_SPEECH_ENGINE,
-            // Matches the Whisper engine: leading and trailing whitespace is an
-            // artefact of segment joining, not something the user said.
             transcription: FinalTranscription::plain(text.trim()),
             alternatives: alternatives
                 .as_deref()
@@ -615,19 +463,7 @@ fn transcribe_with_apple_speech(
     bridge::transcribe(locale, audio)
 }
 
-// ---------------------------------------------------------------------------
-// The portable path: macOS builds without the feature, and every other OS.
-// ---------------------------------------------------------------------------
 
-/// Why this build cannot reach Apple SpeechTranscriber at all.
-///
-/// The two cases stay distinct because they lead somewhere different: a Linux
-/// user needs a different machine, while a macOS developer looking at
-/// `RuntimeNotBuilt` needs `--features apple-speech-runtime`.
-///
-/// The branch is `cfg!` rather than `#[cfg]` on purpose: both arms then compile
-/// on every platform, so a macOS developer machine type-checks the Linux and
-/// Windows answer instead of leaving it to a build nobody runs until CI.
 #[cfg(not(all(target_os = "macos", feature = "apple-speech-runtime")))]
 fn unreachable_engine_reason() -> EngineUnavailable {
     if cfg!(target_os = "macos") {
@@ -652,8 +488,6 @@ fn transcribe_with_apple_speech(
     _locale: &str,
     _audio: &CapturedAudio,
 ) -> Result<EngineTranscription, AsrError> {
-    // Unreachable through the trait — `transcribe` checks availability first —
-    // but it has to exist and it has to be honest if it is ever called directly.
     Err(AsrError::EngineUnavailable {
         engine: APPLE_SPEECH_ENGINE,
         reason: unreachable_engine_reason(),
@@ -666,13 +500,6 @@ mod tests {
 
     #[test]
     fn neither_half_of_the_engine_ever_prints_anything() {
-        // Audio, transcripts, alternatives, and confidence must reach neither
-        // stdout, stderr, nor the Local Diagnostic Log (ADR-0019) — and the
-        // Swift half is the easier place to forget that, because it is compiled
-        // by a separate toolchain that nothing else in this repo lints. The
-        // cheapest durable guard is to forbid the calls outright in both files.
-        // The names are assembled at runtime so this test does not put the
-        // forbidden text into the sources it scans.
         let rust = include_str!("apple_speech.rs");
         for stem in ["print", "eprint", "dbg"] {
             for macro_name in [format!("{stem}!"), format!("{stem}ln!")] {
@@ -695,8 +522,6 @@ mod tests {
 
     #[test]
     fn on_linux_and_windows_the_engine_names_itself_and_where_it_runs() {
-        // Settings renders this verbatim on machines that will never run the
-        // engine, so it has to read as an explanation rather than an error.
         assert_eq!(
             EngineAvailability::Unavailable(unsupported_platform_reason()),
             EngineAvailability::Unavailable(EngineUnavailable::UnsupportedPlatform {
@@ -709,15 +534,11 @@ mod tests {
 
     #[test]
     fn an_unsupported_platform_offers_the_user_nothing_to_fix() {
-        // A missing-assets answer earns an install button; "you are on Linux"
-        // must not, or Settings would offer a dead end.
         assert!(!unsupported_platform_reason().is_user_resolvable());
     }
 
     #[test]
     fn metadata_says_the_assets_belong_to_macos() {
-        // The compliance surface: Slugtale must not imply it ships, downloads,
-        // or is owed credit for Apple's model.
         let metadata = AppleSpeechProvider::new().metadata();
 
         assert_eq!(metadata.engine, TranscriptionEngine::AppleSpeech);
@@ -736,9 +557,6 @@ mod tests {
         assert!(metadata.license.contains("macOS"));
     }
 
-    /// The refusal that lives with the engine that owns the bytes, so nobody
-    /// outside this module has to word it on Apple's behalf. Asserted as one
-    /// literal because it reaches the user verbatim.
     #[test]
     fn removing_assets_it_does_not_own_is_refused_in_apples_own_words() {
         let error = AppleSpeechProvider::new().remove_assets().unwrap_err();
@@ -752,9 +570,6 @@ mod tests {
 
     #[test]
     fn the_assets_are_macos_to_measure_and_macos_to_install() {
-        // Slugtale measures neither the size nor the presence of Apple's weights,
-        // and the install it can offer is macOS's own request rather than a
-        // download Slugtale performs.
         let provider = AppleSpeechProvider::new();
 
         assert_eq!(provider.assets(), EngineAssets::unmeasured());
@@ -764,8 +579,6 @@ mod tests {
 
     #[test]
     fn the_default_dictation_language_is_a_full_locale_identifier() {
-        // Apple keys speech assets by locale, not by language, so a bare `en`
-        // would resolve to nothing.
         let provider = AppleSpeechProvider::new();
         assert_eq!(provider.locale(), "en-US");
         assert!(provider.locale().contains('-'));
@@ -775,8 +588,6 @@ mod tests {
 
     #[test]
     fn an_engine_that_reports_no_confidence_is_not_an_uncertain_engine() {
-        // The router escalates on low confidence. Reading the bridge's "not
-        // reported" sentinel as 0.0 would escalate every dictation.
         assert_eq!(reported_confidence(CONFIDENCE_UNREPORTED), None);
         assert_eq!(reported_confidence(f64::NAN), None);
         assert_eq!(reported_confidence(1.5), None);
@@ -797,7 +608,6 @@ mod tests {
                 "SlugTail turns speech into text".to_string(),
             ]
         );
-        // An engine that offered nothing must not look like one offering silence.
         assert!(split_alternatives("").is_empty());
         assert!(split_alternatives("\u{1E}\u{1E}").is_empty());
     }
@@ -819,8 +629,6 @@ mod tests {
                 "the recording has no sample rate".to_string()
             ))
         );
-        // Any sample rate is fine otherwise: unlike Whisper, Apple's analyzer
-        // converts the recording to whatever format it wants itself.
         assert_eq!(
             validate_recording(&CapturedAudio {
                 sample_rate_hz: 44_100,
@@ -832,21 +640,15 @@ mod tests {
 
     #[test]
     fn availability_is_probed_once_and_then_read_from_cache() {
-        // Availability is consulted on the dictation fast path; a second call
-        // must not re-ask macOS about its asset inventory.
         let provider = AppleSpeechProvider::new();
         let first = provider.availability();
         assert_eq!(provider.availability(), first);
-        // Refreshing is the documented way back out after an asset install.
         assert_eq!(provider.refresh_availability(), first);
     }
 
     #[cfg(not(all(target_os = "macos", feature = "apple-speech-runtime")))]
     #[test]
     fn a_build_that_cannot_reach_apple_speech_refuses_before_touching_the_audio() {
-        // The Second Opinion router has to be able to tell "not for this
-        // machine" from "this engine broke", so the refusal is an
-        // EngineUnavailable rather than a Runtime error.
         let provider = AppleSpeechProvider::new();
         let error = provider
             .transcribe(&CapturedAudio::mono_16khz(vec![0.0; 16_000]))
@@ -876,33 +678,12 @@ mod tests {
         assert!(installed.is_err(), "there is nothing here to install into");
     }
 
-    /// The end-to-end check for the Apple OS and hardware matrix
-    /// (slugtale-vjs.2). Ignored by default because it needs macOS 26, Apple
-    /// silicon, and the en-US speech assets already installed — three things a
-    /// build machine may not have. Run it deliberately:
-    ///
-    /// ```text
-    /// node scripts/run-cargo.js test --lib --features apple-speech-runtime -- --ignored
-    /// ```
-    ///
-    /// To exercise the network-denied requirement as well, run the built test
-    /// binary with every socket taken away — it must still transcribe, because
-    /// nothing on this path reaches for a server:
-    ///
-    /// ```text
-    /// sandbox-exec -p '(version 1)(allow default)(deny network*)' \
-    ///   target/debug/deps/slugtale_lib-* --ignored --exact \
-    ///   apple_speech::tests::a_real_recording_comes_back_as_text_with_confidence
-    /// ```
     #[cfg(all(target_os = "macos", feature = "apple-speech-runtime"))]
     #[test]
     #[ignore = "needs macOS 26 with the en-US speech assets installed"]
     fn a_real_recording_comes_back_as_text_with_confidence() {
         let provider = AppleSpeechProvider::new();
         let availability = match provider.availability() {
-            // Asking for `--ignored` is the explicit action the install flow
-            // requires; macOS registers the already-downloaded assets for this
-            // binary in well under a second (see the module docs).
             EngineAvailability::Unavailable(EngineUnavailable::AssetsMissing { .. }) => provider
                 .request_asset_installation()
                 .expect("macOS could install the en-US speech assets"),
@@ -924,9 +705,6 @@ mod tests {
                 .contains("spoken words into text"),
             "the engine heard something unexpected"
         );
-        // Apple reports per-word confidence, which is the whole reason this
-        // engine can be escalated *from* on a threshold rather than only on the
-        // transcript anomaly rules.
         let score = result
             .confidence
             .escalation_score()
@@ -935,13 +713,6 @@ mod tests {
         assert!(result.latency > std::time::Duration::ZERO);
     }
 
-    /// Speak `sentence` with the system voice and return it as Captured Audio.
-    ///
-    /// Real speech rather than a synthetic tone: a recognizer given noise
-    /// returns an empty transcript, which would make the test pass for the wrong
-    /// reason. `say` and `afconvert` are macOS components invoked on the
-    /// developer's own machine, exactly as the insertion rescue invokes
-    /// `pbcopy` — nothing is redistributed.
     #[cfg(all(target_os = "macos", feature = "apple-speech-runtime"))]
     fn synthesized_speech(sentence: &str) -> CapturedAudio {
         let directory = std::env::temp_dir().join(format!(
@@ -976,11 +747,9 @@ mod tests {
         CapturedAudio::mono_16khz(mono_16_bit_wave_samples(&bytes))
     }
 
-    /// Pull the samples out of a canonical 16-bit mono WAVE file by walking its
-    /// chunks, because `afconvert` is free to put metadata ahead of the audio.
     #[cfg(all(target_os = "macos", feature = "apple-speech-runtime"))]
     fn mono_16_bit_wave_samples(bytes: &[u8]) -> Vec<f32> {
-        let mut cursor = 12; // past "RIFF" <size> "WAVE"
+        let mut cursor = 12;
         while cursor + 8 <= bytes.len() {
             let id = &bytes[cursor..cursor + 4];
             let size =
@@ -1001,10 +770,6 @@ mod tests {
     #[cfg(all(target_os = "macos", feature = "apple-speech-runtime"))]
     #[test]
     fn a_real_probe_answers_in_the_boundary_s_vocabulary() {
-        // The outcome depends on the machine — OS version, hardware, which
-        // languages the user has installed — so this asserts the *shape* of the
-        // answer rather than a particular verdict, and that nothing in it could
-        // be mistaken for speech.
         let availability = AppleSpeechProvider::new().availability();
 
         match availability {

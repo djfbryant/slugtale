@@ -1,34 +1,11 @@
-//! Bare-Escape arming (ADR-0014, ADR-0004): the invariant that there is never
-//! an active but uncancellable Dictation.
-//!
-//! Bare Escape may only be global while a dictation is active — otherwise
-//! Slugtale steals Escape from whatever the user is doing. Every activation
-//! path (Hotkey press, Voice Activation wake phrase) arms Escape *before*
-//! recording starts and disarms it the moment the lifecycle leaves dictating,
-//! including on rollback when a later step fails. This module owns that
-//! decision: one arbiter holds the armed fact and answers each request by
-//! running exactly the one OS change (if any) that satisfies it. Callers never
-//! touch the flag.
-//!
-//! The armed fact is only recorded once the OS has accepted the change
-//! ([`EscapeArbiter::apply`]). A failed registration is not a decision, it is a
-//! request the OS refused: leaving the fact behind it would make the next Arm
-//! look already satisfied, and the dictation after that would run with no global
-//! Escape at all (slugtale-7kxk).
 
-/// A request to change bare Escape's global registration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EscapeCommand {
-    /// Make Escape global now — recording is about to start.
     Arm,
-    /// Make Escape local again — dictation ended or its begin rolled back.
     Disarm,
-    /// Bring the registration in line with whether a dictation is active.
     MatchDictation(bool),
 }
 
-/// Whether bare Escape is currently global. The single writer for the whole
-/// app; the OS change it names is applied elsewhere, once per real transition.
 #[derive(Default)]
 pub struct EscapeArbiter {
     armed: bool,
@@ -39,8 +16,6 @@ impl EscapeArbiter {
         Self::default()
     }
 
-    /// Whether Escape currently has an armed registration. Test-only: production
-    /// changes arming through `apply` and never asks whether it already holds.
     #[cfg(test)]
     pub fn is_armed(&self) -> bool {
         self.armed
@@ -84,9 +59,6 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// An operating system that answers whatever the test scripted, and records
-    /// what it was asked — the injected outcome, so a failed registration is
-    /// tested without a desktop session.
     #[derive(Clone, Default)]
     struct FakeOs {
         calls: Arc<Mutex<Vec<bool>>>,
@@ -152,8 +124,6 @@ mod tests {
 
     #[test]
     fn a_failed_begin_rolls_back_to_one_register_and_one_unregister() {
-        // Begin arms before recording starts; the failed step rolls back. The
-        // OS sees exactly one of each, whatever order the requests arrive in.
         let mut arbiter = EscapeArbiter::new();
         let os = FakeOs::default();
 
@@ -192,8 +162,6 @@ mod tests {
 
     #[test]
     fn cancel_and_restart_within_one_lifecycle_stays_consistent() {
-        // Stop ends one dictation and Start begins the next before the worker
-        // drains: the last command decides, without duplicate registrations.
         let mut arbiter = EscapeArbiter::new();
         let os = FakeOs::default();
 
@@ -210,9 +178,6 @@ mod tests {
 
     #[test]
     fn a_refused_registration_leaves_the_next_arm_retryable() {
-        // The bug: the armed fact was written before the OS was asked, so a
-        // registration that failed looked done. The next Start then skipped the
-        // registration and recorded with no global Escape (slugtale-7kxk).
         let mut arbiter = EscapeArbiter::new();
         let refusing = FakeOs::refusing();
 
@@ -227,7 +192,6 @@ mod tests {
         );
         assert_eq!(refusing.accepting(), [true]);
 
-        // The next Arm reaches the OS again rather than looking satisfied.
         let os = FakeOs::default();
         assert_eq!(arbiter.apply(EscapeCommand::Arm, os.change()), Ok(()));
         assert_eq!(os.accepting(), [true]);
@@ -236,9 +200,6 @@ mod tests {
 
     #[test]
     fn a_refused_unregistration_stays_retryable_and_keeps_the_key_global() {
-        // The other direction: while the fact says armed, a refusal must not
-        // leave the arbiter believing Escape is local when the OS still has it
-        // global.
         let mut arbiter = EscapeArbiter::new();
         let accepting = FakeOs::default();
         assert_eq!(arbiter.apply(EscapeCommand::Arm, accepting.change()), Ok(()));
@@ -267,8 +228,6 @@ mod tests {
 
     #[test]
     fn a_refused_registration_is_repeated_rather_than_skipped() {
-        // Two Arm requests after one refusal: the arbiter is still unarmed, so
-        // neither is already satisfied and both reach the OS.
         let mut arbiter = EscapeArbiter::new();
         let refusing = FakeOs::refusing();
         assert!(arbiter.apply(EscapeCommand::Arm, refusing.change()).is_err());
@@ -279,8 +238,6 @@ mod tests {
 
     #[test]
     fn a_satisfied_request_still_runs_no_os_change() {
-        // The commit-after-success rule must not invent work: once a request has
-        // been satisfied by a committed change, repeating it touches nothing.
         let mut arbiter = EscapeArbiter::new();
         let os = FakeOs::default();
 

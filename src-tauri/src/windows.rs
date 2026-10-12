@@ -1,45 +1,8 @@
-//! Windows implementation of the Platform Adapter seams (ADR-0021, PRD
-//! slugtale-5pc). This module mirrors `macos.rs`: it fills the same
-//! permission reads, `TextInsertion`, `InsertionRescue`, permission-setup,
-//! and focus-targeting seams so the core Dictation Workflow runs unchanged on
-//! Windows.
-//!
-//! This started as the scaffold from issue slugtale-5pc.1; the follow-on
-//! Windows issues have since filled every body, so the adapter surface is
-//! complete:
-//!
 //! * 5pc.2 — `WindowsPlatform` readiness (implemented: both microphone
 //!   ConsentStore toggles are read — the global one and the `NonPackaged` one
 //!   that gates unpackaged desktop apps — and both must allow; insertion is
 //!   effectively always granted, since Windows has no synthesized-input trust
 //!   gate — the analogous failure is UIPI against an elevated target).
-//! * 5pc.3 — `WindowsTextInsertionSystem` (implemented: SendInput with
-//!   KEYEVENTF_UNICODE for clipboard-free insertion, and CF_UNICODETEXT +
-//!   SendInput Ctrl+V for the clipboard-paste fallback). The Unicode path uses
-//!   a virtual Return event for each line break, so direct and clipboard paths
-//!   preserve the same text structure; live-target validation remains in
-//!   slugtale-z81.
-//! * 5pc.4 — `WindowsInsertionRescueSystem` (implemented: CF_UNICODETEXT
-//!   clipboard copy shared with the paste fallback — both take the global
-//!   clipboard lock with a short retry, since ordinary contention is not an
-//!   error — and a detached-thread MessageBox notification, the OQ-2 fallback
-//!   for unpackaged dev-run builds, which cannot post WinRT toasts without an
-//!   AUMID/shortcut).
-//! * 5pc.5 — focus targeting (implemented: `frontmost_app_pid` via
-//!   `GetForegroundWindow` + `GetWindowThreadProcessId`, `activate_app` via
-//!   `EnumWindows` + `SetForegroundWindow`, both wired in main.rs alongside
-//!   the macOS paths).
-//! * 5pc.6 — audible feedback (implemented: `PlaySoundW` with system event
-//!   aliases, called from the recording_feedback.rs Windows arm).
-//! * 5pc.7 — permission setup (implemented: mic deep-links to
-//!   `ms-settings:privacy-microphone` from the setup workflow's open phase,
-//!   since unpackaged apps have no prompt API; insertion permission is
-//!   trivially granted per OQ-1 — there is no gate, so request returns true
-//!   and open-settings is a documented no-op).
-//!
-//! The adapter is selected from `CurrentPlatform` in `main.rs`, which also
-//! wires permission commands and the transcription insertion/rescue workflow
-//! on Windows (5pc.11).
 
 use crate::{
     ClipboardInsertionRescue, DictationSound, FinalTranscription, InsertionRescue,
@@ -132,10 +95,6 @@ fn microphone_consent_allows(value: &str) -> bool {
     value.eq_ignore_ascii_case(MICROPHONE_ALLOWED)
 }
 
-/// Decide microphone readiness from the two ConsentStore toggles that gate an
-/// unpackaged desktop app. Kept free of Win32 so the policy is unit-testable and
-/// the registry reads stay in the thin wrappers above (ADR-0021).
-///
 /// Both toggles must allow access. `non_packaged` is `None` on Windows builds
 /// predating the split desktop-apps switch, where the global value is the whole
 /// answer; treating an absent key as a denial there would report every such
@@ -147,8 +106,6 @@ fn microphone_access_granted(global: Option<&str>, non_packaged: Option<&str>) -
 }
 
 fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<String, String> {
-    // Kept before the wide-encoding shadows them, so a failure names the key it
-    // actually tried to read rather than a hardcoded guess.
     let key_description = format!("HKCU\\{subkey}\\{value_name}");
     let subkey = wide_null(subkey);
     let value_name = wide_null(value_name);
@@ -237,28 +194,19 @@ struct WindowsTextInsertionSystem;
 
 impl TextInsertionSystem for WindowsTextInsertionSystem {
     fn insert_clipboard_free(&self, text: &str) -> Result<(), TextInsertionError> {
-        // The direct analog of the macOS CGEventKeyboardSetUnicodeString path:
-        // inject each UTF-16 code unit as a synthesized key press with
         // KEYEVENTF_UNICODE. SendInput can be silently blocked by UIPI when the
         // foreground target runs at a higher integrity level; reporting the
         // short insert as an error lets the pipeline fall through to the
-        // clipboard paste and, failing that, the rescue.
         send_unicode_text(text).map_err(TextInsertionError::new)
     }
 
     fn insert_from_clipboard(&self, text: &str) -> Result<(), TextInsertionError> {
-        // Set CF_UNICODETEXT then synthesize Ctrl+V. The paste keystroke is also
-        // a synthesized event, so the same UIPI failure mode falls through to the
-        // rescue. The brief pause mirrors macos.rs: it lets the clipboard settle
-        // before the target receives the paste.
         set_clipboard_text(text).map_err(TextInsertionError::new)?;
         std::thread::sleep(std::time::Duration::from_millis(30));
         send_paste_shortcut().map_err(TextInsertionError::new)
     }
 }
 
-/// One synthesized keyboard event carrying a single UTF-16 code unit
-/// (`KEYEVENTF_UNICODE`), for the key-down (`key_up == false`) or key-up half.
 fn unicode_key_event(code_unit: u16, key_up: bool) -> INPUT {
     let mut flags = KEYEVENTF_UNICODE;
     if key_up {
@@ -267,8 +215,6 @@ fn unicode_key_event(code_unit: u16, key_up: bool) -> INPUT {
     keyboard_input(0, code_unit, flags)
 }
 
-/// One synthesized virtual-key event (e.g. Ctrl, V), for the key-down or key-up
-/// half.
 fn virtual_key_event(virtual_key: u16, key_up: bool) -> INPUT {
     let flags = if key_up { KEYEVENTF_KEYUP } else { 0 };
     keyboard_input(virtual_key, 0, flags)
@@ -289,7 +235,6 @@ fn keyboard_input(virtual_key: u16, scan_code: u16, flags: u32) -> INPUT {
     }
 }
 
-/// Inject a batch of synthesized keyboard events in one `SendInput` call.
 /// `SendInput` returns the count actually inserted; a short count means the
 /// events were blocked (typically UIPI against a higher-integrity target), which
 /// we surface as an error so the caller can fall back.
@@ -346,8 +291,6 @@ fn direct_text_input_events(text: &str) -> Vec<INPUT> {
     inputs
 }
 
-/// Synthesize Ctrl+V to paste the current clipboard contents into the focused
-/// control.
 fn send_paste_shortcut() -> Result<(), String> {
     let inputs = [
         virtual_key_event(VK_CONTROL, false),
@@ -368,7 +311,6 @@ fn send_paste_shortcut() -> Result<(), String> {
 const CLIPBOARD_OPEN_ATTEMPTS: u32 = 10;
 const CLIPBOARD_OPEN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// Take the global clipboard lock, retrying briefly while another app holds it.
 fn open_clipboard_with_retry() -> Result<(), String> {
     for attempt in 1..=CLIPBOARD_OPEN_ATTEMPTS {
         if unsafe { OpenClipboard(ptr::null_mut::<std::ffi::c_void>() as HWND) } != 0 {
@@ -384,9 +326,6 @@ fn open_clipboard_with_retry() -> Result<(), String> {
     ))
 }
 
-/// Place `text` on the clipboard as `CF_UNICODETEXT`. On success the system owns
-/// the moveable global memory; on failure it is freed here. Shared with the
-/// insertion rescue path (5pc.4).
 fn set_clipboard_text(text: &str) -> Result<(), String> {
     // UTF-16 with the terminating NUL that CF_UNICODETEXT requires.
     let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
@@ -463,12 +402,8 @@ impl InsertionRescueSystem for WindowsInsertionRescueSystem {
     }
 }
 
-/// Show a user-facing notification via `MessageBoxW` on a detached thread.
-///
 /// This is the OQ-2 fallback: unpackaged dev-run builds cannot post WinRT
 /// toasts without an AUMID/shortcut, and a message box needs no registration.
-/// The box is modal only to its own throwaway thread, so the dictation
-/// workflow never blocks on the user dismissing it. Unlike the macOS
 /// osascript path, `Ok` here means the box was dispatched, not shown — a
 /// `MessageBoxW` failure after detach can only be logged. `MB_SETFOREGROUND`
 /// does pull focus from the paste target, but a tray-resident app has no
@@ -495,14 +430,9 @@ fn notify_user(title: &str, body: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Play the audible dictation cue through winmm using system event aliases, so
-/// v1 ships no bundled audio assets (the Windows analog of the macOS adapter's
 /// afplay cue). SND_ASYNC returns immediately so the recording
 /// lifecycle never blocks on audio.
 pub(crate) fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
-    // Asterisk is the softer "information" chime for the start edge; Default is
-    // the plain system ding for the stop edge — the closest asset-free pairing
-    // to the macOS Tink/Pop cues.
     let alias = match sound {
         DictationSound::Start => "SystemAsterisk",
         DictationSound::Stop => "SystemDefault",
@@ -521,11 +451,6 @@ pub struct WindowsMicrophonePermissionSetup;
 
 impl MicrophonePermissionSetup for WindowsMicrophonePermissionSetup {
     fn request_microphone_access(&self) -> Result<(), String> {
-        // Windows has no per-process prompt API for unpackaged desktop apps —
-        // mic consent is the global ConsentStore toggle read by readiness.
-        // `run_microphone_permission_setup` invokes the open phase next, which
-        // performs the single Settings deep link; launching it here too would
-        // open the page twice.
         Ok(())
     }
 
@@ -545,22 +470,14 @@ impl TextInsertionPermissionSetup for WindowsTextInsertionPermissionSetup {
     }
 
     fn open_text_insertion_settings(&self) -> Result<(), String> {
-        // OQ-1: no settings page exists for a gate that does not exist. This is
-        // an intentional no-op; readiness always reports insertion granted, so
-        // the settings UI never needs to route users here (UI copy is
-        // reconciled in 5pc.12).
         Ok(())
     }
 }
 
-/// Deep-link to the Windows microphone privacy page, where the global "let
-/// desktop apps access your microphone" toggle lives.
 pub fn open_microphone_settings() -> Result<(), String> {
     open_settings_uri("ms-settings:privacy-microphone")
 }
 
-/// Launch an `ms-settings:` URI. `explorer` resolves the URI through the shell
-/// without flashing a console window; the spawned helper returns immediately.
 fn open_settings_uri(uri: &str) -> Result<(), String> {
     std::process::Command::new("explorer")
         .arg(uri)
@@ -569,9 +486,6 @@ fn open_settings_uri(uri: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Reveal `path` in File Explorer, selecting the file when `select` is set.
-/// The spawned helper returns immediately. Reached from local_model through
-/// the Platform Adapter boundary (ADR-0021).
 pub(crate) fn reveal_in_file_manager(path: &std::path::Path, select: bool) -> std::io::Result<()> {
     reveal_command(path, select).spawn()?;
     Ok(())
@@ -587,8 +501,6 @@ fn reveal_command(path: &std::path::Path, select: bool) -> std::process::Command
     command
 }
 
-/// The process id of the foreground window's owning app — captured at record
-/// start so insertion can re-target it (parallels the macOS `frontmost_app_pid`).
 pub fn frontmost_app_pid() -> Option<i32> {
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.is_null() {
@@ -604,18 +516,9 @@ struct ActivateTarget {
     activated: bool,
 }
 
-/// Bring the app with `pid` back to the foreground before synthesized input.
-/// The pid-based seam matches macOS; the pid's window is re-found here because
-/// an HWND captured at record start could die while the user dictates. Like
-/// the macOS `activateWithOptions` path this works at app granularity — for a
-/// multi-window app it foregrounds the process's topmost visible window, not
-/// necessarily the exact window that had focus at record start.
-///
 /// Foreground-lock (PRD risk R3): the hotkey press grants Slugtale
 /// foreground-set rights, but transcription can take seconds and the right can
 /// lapse if the user clicks elsewhere meanwhile. A failed activation returns
-/// false and the caller proceeds; a misdirected insert then falls through the
-/// pipeline to the clipboard rescue like any other delivery failure.
 pub fn activate_app(pid: i32) -> bool {
     if pid <= 0 {
         return false;
@@ -651,22 +554,16 @@ unsafe extern "system" fn activate_first_visible_window(hwnd: HWND, lparam: LPAR
     0
 }
 
-/// Show a user-facing notification. Exposed for the Tauri layer; parallels the
-/// macOS `notify` free function.
 pub fn notify(title: &str, body: &str) -> Result<(), String> {
     notify_user(title, body)
 }
 
-/// Which day the user's Windows locale calls the first of the week, for the
-/// Usage pane's "this week" (ADR-0025).
-///
 /// `LOCALE_IFIRSTDAYOFWEEK` counts from Monday = 0, unlike Cocoa's Sunday = 1,
 /// so the two platform adapters cannot share a mapping. It is returned as a
 /// decimal string, which is why this asks for the text and parses it rather
 /// than using the `LOCALE_RETURN_NUMBER` form.
 pub fn locale_week_start() -> WeekStart {
     let mut buffer = [0u16; 8];
-    // A null locale name is Win32's LOCALE_NAME_USER_DEFAULT.
     let written = unsafe {
         GetLocaleInfoEx(
             ptr::null::<u16>() as PCWSTR,
@@ -684,9 +581,6 @@ pub fn locale_week_start() -> WeekStart {
     week_start_from_first_day_of_week(text.trim().parse::<i64>().ok())
 }
 
-/// The mapping from Windows' Monday-based weekday to the two weeks Usage
-/// supports. Split out from the framework call so it can be tested without a
-/// live locale.
 fn week_start_from_first_day_of_week(first_day: Option<i64>) -> WeekStart {
     match first_day {
         Some(6) => WeekStart::Sunday,
@@ -700,9 +594,6 @@ mod tests {
 
     #[test]
     fn a_sunday_start_locale_is_the_only_thing_that_moves_the_week_off_monday() {
-        // Windows counts from Monday = 0, so Sunday is 6 — the opposite end from
-        // Cocoa's Sunday = 1. Getting this backwards would put a US user's week
-        // a day out, so it is worth pinning.
         assert_eq!(
             week_start_from_first_day_of_week(Some(6)),
             WeekStart::Sunday
@@ -715,7 +606,6 @@ mod tests {
             week_start_from_first_day_of_week(Some(5)),
             WeekStart::Monday
         );
-        // A locale that will not answer must not silently become Sunday.
         assert_eq!(week_start_from_first_day_of_week(None), WeekStart::Monday);
     }
 
@@ -734,8 +624,6 @@ mod tests {
 
     #[test]
     fn blocking_desktop_apps_denies_the_microphone_even_when_the_global_toggle_allows() {
-        // The case the global-only read got wrong: readiness reported ready
-        // while WASAPI capture would return nothing.
         assert!(!microphone_access_granted(Some("Allow"), Some("Deny")));
     }
 
@@ -746,8 +634,6 @@ mod tests {
 
     #[test]
     fn an_absent_desktop_apps_toggle_falls_back_to_the_global_answer() {
-        // Windows builds predating the split switch have no NonPackaged key;
-        // treating that as a denial would report them as never-ready.
         assert!(microphone_access_granted(Some("Allow"), None));
         assert!(!microphone_access_granted(Some("Deny"), None));
     }

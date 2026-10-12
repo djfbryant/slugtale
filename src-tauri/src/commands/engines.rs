@@ -1,6 +1,3 @@
-//! Transcription Engine and Local Model commands: the Settings rows for every
-//! engine, engine asset install and removal, and the Whisper Local Model's
-//! download, status, delete and reveal actions.
 
 use std::sync::Arc;
 
@@ -12,12 +9,6 @@ use super::{
     load_current_settings, model_manager, update_current_settings, warm_effective_primary_engine,
 };
 
-/// The provider for one Transcription Engine, as the Settings surface sees it.
-///
-/// Every engine question in this module goes through here and through
-/// [`slugtale_lib::EngineView`], so no command knows which engines exist.
-/// `None` means this build resolved no provider for the engine, and the engine
-/// itself words why.
 fn engine_provider(
     app: &tauri::AppHandle,
     settings: &slugtale_lib::Settings,
@@ -28,9 +19,6 @@ fn engine_provider(
         .ok_or_else(|| engine.missing_provider_reason().to_string())
 }
 
-/// Build one engine's Settings row from its provider. Never re-probes: every
-/// fact is read off a provider the catalogue already built, matching how the
-/// dictation path itself asks these questions.
 fn build_engine_view(
     app: &tauri::AppHandle,
     settings: &slugtale_lib::Settings,
@@ -43,8 +31,6 @@ fn build_engine_view(
     ))
 }
 
-/// Engine availability for the readiness report, asked of the same providers the
-/// dictation path uses so the two cannot disagree.
 pub(crate) fn current_engine_availability(
     app: &tauri::AppHandle,
     settings: &slugtale_lib::Settings,
@@ -56,8 +42,6 @@ pub(crate) fn current_engine_availability(
         .availability(settings)
 }
 
-/// Every Transcription Engine Settings can show, in [`slugtale_lib::TranscriptionEngine::ALL`]
-/// order. Read-only and non-blocking: see [`build_engine_view`].
 #[tauri::command]
 pub(crate) fn transcription_engines(
     app: tauri::AppHandle,
@@ -84,18 +68,10 @@ pub(crate) fn set_transcription_engines(
         slugtale_lib::apply_engine_settings(settings, primary_engine, second_opinion);
         Ok(())
     })?;
-    // Start warming the newly effective engine now so the first dictation
-    // after the change does not pay for a cold model load.
     warm_effective_primary_engine(&app);
     Ok(settings)
 }
 
-/// The progress sink every download command forwards to.
-///
-/// Throttle IPC traffic: the initial update, then one per ~1 MB, plus the final
-/// update (slugtale-dtl). Written once because a 64 KiB-chunked download would
-/// otherwise flood the channel, and because two copies of this rule is two
-/// chances to change one of them.
 fn forward_download_progress(
     on_progress: tauri::ipc::Channel<slugtale_lib::DownloadProgress>,
 ) -> impl FnMut(slugtale_lib::DownloadProgress) {
@@ -104,9 +80,6 @@ fn forward_download_progress(
     })
 }
 
-/// Install one engine's assets as an explicit user action (slugtale-vjs.4).
-///
-/// One call, because the mechanism is the engine's own: some engines fetch pinned
 /// artefacts over HTTP and report progress here, and one asks the operating
 /// system to install assets it owns, which blocks and reports nothing.
 #[tauri::command]
@@ -131,9 +104,6 @@ pub(crate) async fn install_engine_assets(
     build_engine_view(&app, &load_current_settings(&app), engine)
 }
 
-/// Remove one engine's installed assets as an explicit user action
-/// (slugtale-vjs.4). An engine whose assets the operating system owns refuses in
-/// its own words rather than pretending to free space Slugtale never claimed.
 #[tauri::command]
 pub(crate) fn remove_engine_assets(
     app: tauri::AppHandle,

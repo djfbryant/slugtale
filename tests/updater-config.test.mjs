@@ -82,8 +82,6 @@ test("the app has no install command or frontend install call", () => {
   const settings = shippedSource("index.html");
 
   assert.doesNotMatch(`${main}\n${appUpdate}\n${updates}`, /install_app_update|download_and_install/);
-  // Read every file the page ships, not just its markup: the update call lives in
-  // the script, so a markup-only read would pass a page that no longer checks.
   assert.doesNotMatch(settings.all, /install_app_update|installAppUpdate|app-update-install-button/);
   assert.match(settings.scripts, /invoke\("check_for_app_update"\)/);
   for (const id of [

@@ -10,8 +10,6 @@ function loadSettingsScript({ invoke }) {
     userAgent: "Mozilla/5.0 (X11; Linux x86_64)"
   });
 
-  // The readiness pane polls after asking the OS for a permission, and the
-  // harness never fires a timer on its own, so each poll is stepped by hand.
   return { elements, ...api, flushNextTimer: flushNextTimeout };
 }
 
@@ -65,8 +63,6 @@ test("readiness permission action shows not-yet-granted message after polling ti
   }
   await action;
 
-  // The harness runs with a Linux (X11) navigator, so the copy is the
-  // platform-aware Linux variant (guidance rather than an OS permission grant).
   assert.equal(
     elements.get("settings-message").textContent,
     "Still not ready. Connect a microphone or switch to an X11 session, then reopen this window."
@@ -137,9 +133,6 @@ test("background readiness refresh does not overwrite active permission polling 
 });
 
 test("a blocked transcription engine shows the reason the backend reported", async () => {
-  // slugtale-bre: the model can be downloaded and dictation still impossible
-  // because this build compiled no runtime for it. Only the backend knows that,
-  // so the checklist must render its `detail` rather than the static copy.
   const report = {
     dictation_available: false,
     items: [
@@ -189,8 +182,6 @@ test("changing one dictation bar setting still sends the complete appearance the
 
   await saveDictationBarSettings({ accentColor: "violet" });
 
-  // The accent moved; the position and display came along at their current
-  // values rather than being sent as undefined and cleared.
   assert.deepEqual(calls.at(-1), {
     command: "save_dictation_bar_settings",
     args: {
@@ -264,8 +255,6 @@ test("changing the primary engine still sends the current second opinion mode", 
 
   await saveEngineSettings({ primaryEngine: "parakeet" });
 
-  // The primary engine moved; Second Opinion (Off by default) came along at
-  // its current value rather than being sent as undefined.
   const call = calls.find((entry) => entry.command === "set_transcription_engines");
   assert.deepEqual(call.args, { primaryEngine: "parakeet", secondOpinion: "off" });
 });

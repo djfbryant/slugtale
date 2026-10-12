@@ -5,21 +5,15 @@ import { runPage, shippedSource } from "./harness.mjs";
 
 const challenge = shippedSource("typing-challenge.html");
 
-// Let every pending promise settle. The window loads its state asynchronously on
-// open and again after each score, and counting microtasks by hand is brittle.
 function flush() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// The whole point of the challenge is that thirty seconds elapse, and no test
-// should actually wait for them, so the clock and the tick are the test's.
 function loadChallengeScript({ invoke, now = { value: 1_000_000 } }) {
   const { api, document, elements, tickIntervals } = runPage("typing-challenge.html", {
     exports: [],
     invoke,
     now: () => now.value,
-    // The Typing Challenge starts itself on open, so its tests drive the page
-    // through the listeners it registered rather than around them.
     runBootstrap: true
   });
 
@@ -27,7 +21,6 @@ function loadChallengeScript({ invoke, now = { value: 1_000_000 } }) {
     api,
     document,
     elements,
-    // Type into the box the way a person would: set the value, then fire input.
     type(text) {
       const box = elements.get("typing");
       box.value = text;
@@ -50,7 +43,6 @@ const state = {
 };
 
 test("the clock does not start until the user starts typing", async () => {
-  // Reading the passage must not cost the user any of their thirty seconds.
   const now = { value: 1_000_000 };
   const { elements, tick } = loadChallengeScript({
     async invoke() {
@@ -63,7 +55,6 @@ test("the clock does not start until the user starts typing", async () => {
   assert.equal(elements.get("clock").textContent, "30");
   assert.equal(elements.get("clock").dataset.running, "false");
 
-  // Thirty seconds of reading pass. The clock still says thirty.
   now.value += 30_000;
   tick();
   assert.equal(elements.get("clock").textContent, "30");
@@ -92,7 +83,6 @@ test("typing starts the clock and the deadline is wall-clock, not a tick count",
   tick();
   assert.equal(elements.get("clock").textContent, "20");
 
-  // One tick after a long stall still ends the run rather than counting down.
   now.value += 100_000;
   tick();
   await flush();
@@ -118,8 +108,6 @@ test("the passage marks words right and wrong as they are typed, in order", asyn
   assert.equal(passage.querySelector('[data-index="0"]').dataset.state, "correct");
   assert.equal(passage.querySelector('[data-index="1"]').dataset.state, "wrong");
   assert.equal(passage.querySelector('[data-index="2"]').dataset.state, "correct");
-  // The word being typed is not yet judged — otherwise every word flashes wrong
-  // on its first letter.
   assert.equal(passage.querySelector('[data-index="3"]').dataset.state, "current");
 });
 
@@ -188,8 +176,6 @@ test("the next challenge waits for a deliberate click rather than starting itsel
   tick();
   await flush();
 
-  // Scored, and waiting. Three runs back to back with no pause is not a
-  // measurement of typing.
   assert.equal(elements.get("next").hidden, false);
   assert.equal(elements.get("typing").disabled, true);
   assert.match(elements.get("message").textContent, /1 of 3 done/);
@@ -213,8 +199,6 @@ test("closing part-way keeps the challenges already finished", async () => {
 
   click("close");
 
-  // Nothing resets or discards: the backend keeps whatever was stored, and the
-  // outstanding slot is served again next time the window opens.
   assert.deepEqual(
     commands.filter((command) => command !== "get_typing_challenge"),
     ["close_typing_challenge"]
@@ -242,9 +226,6 @@ test("a failed score leaves the run retryable instead of eating it", async () =>
 });
 
 test("the window ships its passages rather than fetching them", () => {
-  // Local-Only Processing (CONTEXT.md): nothing here reaches the network. Read
-  // every file the page ships — markup, stylesheet and script — because the
-  // fetch would live in the script, not the markup.
   assert.doesNotMatch(challenge.all, /\bfetch\s*\(/);
   assert.doesNotMatch(challenge.all, /XMLHttpRequest/);
   assert.doesNotMatch(challenge.all, /https?:\/\//);

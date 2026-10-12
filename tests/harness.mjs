@@ -1,14 +1,3 @@
-/**
- * Every file a page ships: its markup, its stylesheets and its scripts.
- *
- * The shipped pages keep their JavaScript and CSS in files rather than inline, so
- * a test that greps the `.html` for behaviour it ships would find nothing — and
- * would keep passing if the page stopped shipping that behaviour at all. This
- * reads what a browser would load.
- *
- * @param {string} file page name under `src/`
- * @returns {{markup: string, styles: string, scripts: string, all: string}}
- */
 export function shippedSource(file) {
   const html = readFileSync(new URL(file, SRC), "utf8");
   const styles = stylesheetOf(file);
@@ -26,19 +15,6 @@ export function shippedSource(file) {
   };
 }
 
-// One harness for the three pages Slugtale ships.
-//
-// Each page is a plain HTML file with an inline `<script>`, and each one was
-// loaded by a hand-rolled copy of this file: extract the first `<script>` with a
-// regex, rewrite the trailing `init();` into an export block, and stand up a DOM
-// that invented an element for whatever `getElementById` was asked for. Five
-// copies meant the harness interface was the shape of the page's source text
-// rather than the shape of the page, and a fake that answers any id makes a test
-// pass against a page whose markup the script has since broken.
-//
-// `runPage` runs the page's own scripts against the page's own markup. It fails
-// loudly rather than degrading: a script block with a `src`, a handle the page
-// does not expose, a selector the fake cannot answer honestly.
 
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
@@ -56,8 +32,6 @@ const VOID = new Set([
   "source", "track", "wbr"
 ]);
 
-// Only what this matcher can answer honestly. Anything else is an error rather
-// than a query that quietly finds nothing.
 const SUPPORTED_SELECTOR = /^(\*|[a-zA-Z][\w-]*)?((?:[#.][\w-]+|\[[\w:-]+(?:[~|^$*]?="[^"]*")?\])*)$/;
 const BOOL_PROPERTIES = ["checked", "disabled", "hidden", "selected", "readOnly"];
 const STYLE_PROPERTY = /^--[\w-]+$|^[a-zA-Z][\w]*$/;
@@ -80,7 +54,6 @@ function readAttributes(source) {
   return attributes;
 }
 
-// A text run is a child, not a node: it answers `textContent` and nothing else.
 function textRun(value) {
   const text = String(value);
   return { children: [], text, textContent: text };
@@ -172,7 +145,6 @@ function createNode(tagName, registry) {
     },
     append(...children) {
       children.forEach((child) => {
-        // A page may append a bare string, which a browser turns into a text run.
         const entry = typeof child === "string" || typeof child === "number" ? textRun(child) : child;
         node.children.push(entry);
       });
@@ -278,8 +250,6 @@ function createNode(tagName, registry) {
   return node;
 }
 
-// Parsing the markup on assignment is what lets a page query into what it
-// painted, instead of each test hand-parsing the selectors its own page uses.
 function appendFragment(host, html, registry) {
   const stack = [host];
   let cursor = 0;
@@ -354,26 +324,8 @@ function descendants(node, found = []) {
   return found;
 }
 
-// A `src` that the page means as a local asset: a relative path, optionally with a
-// query string or fragment. Anything absolute, protocol-relative or remote is
-// refused, because the harness has no way to fetch it and a test that silently ran
-// without a module would pass against a page that cannot load one in the app.
 const LOCAL_SCRIPT = /^(?!\/)(?![\w-]+:)([^"'\s?#]+)(?:[?#][^"'\s]*)?$/;
 
-/**
- * Read one page and the scripts it runs, in document order.
- *
- * The shipped pages carry their JavaScript in external files, because the app's
- * script CSP allows no inline script (slugtale-9bx follow-up). So the harness
- * follows `src` the way a browser would for a local file — in the order the page
- * lists them, since that order decides who may call whom at load time.
- *
- * @param {string} file page name under `src/`, or an absolute path when `baseDir`
- *   says the page's references resolve somewhere else.
- * @param {string|undefined} markup page source to use instead of reading `src/`
- * @param {URL} baseDir directory the page's own relative `src` values resolve
- *   against; defaults to `src/`
- */
 function readPage(file, markup, baseDir = SRC) {
   const html = markup ?? readFileSync(new URL(file, baseDir), "utf8");
 
@@ -407,8 +359,6 @@ function buildDocument(page) {
   const documentListeners = new Map();
   const registry = { byId, document: null };
 
-  // Parse the page's own shell, so `document.body` and `document.head` are the
-  // ones the page ships — `dictation-bar.html` puts its bar position on its body.
   const parsed = createNode("html", registry);
   appendFragment(parsed, page.shell, registry);
 
@@ -448,18 +398,6 @@ function buildDocument(page) {
   return { byId, document, rootStyle: html.styles };
 }
 
-/**
- * The CSS a browser would apply to a page: every local stylesheet it links, in
- * the order the page lists them.
- *
- * A test that asserts on styling has to read this rather than the page's markup.
- * The shipped pages keep their styles in files, so a `<style>`-block search finds
- * nothing and, worse, would keep finding nothing if the page ever stopped linking
- * the stylesheet at all.
- *
- * @param {string} file page name under `src/`
- * @returns {string} the concatenated stylesheets
- */
 export function stylesheetOf(file) {
   const html = readFileSync(new URL(file, SRC), "utf8");
   const linked = [...html.matchAll(/<link[^>]*\brel="stylesheet"[^>]*>/g)].map(([tag]) => {
@@ -472,27 +410,6 @@ export function stylesheetOf(file) {
   return linked.map((href) => readFileSync(new URL(href, SRC), "utf8")).join("\n");
 }
 
-/**
- * Run a page against a fake DOM built from the page's own markup.
- *
- * @param {string} file            page name under `src/`, e.g. `index.html`
- * @param {object} [options]
- * @param {string} [options.markup]  page source to run instead of reading `src/`
- * @param {URL} [options.baseDir]  directory a page's own relative `src` values
- *   resolve against, for a fixture page that lives outside `src/`
- * @param {Function} [options.invoke]  stands in for the Tauri bridge
- * @param {string[]} [options.exports]  handles the test will read, and that the page must expose
- * @param {string} [options.exportSource]  raw export block, for a handle that closes over private state
- * @param {string[]} [options.bootstrap]  top-level calls to strip, default `["init"]`
- * @param {boolean} [options.runBootstrap]  keep the bootstrap call instead of stripping it
- * @param {string} [options.userAgent]
- * @param {number|Function} [options.now]  what the page's `Date.now()` returns
- * @param {boolean} [options.reduceMotion]  what `matchMedia` reports
- * @param {string} [options.exportName]  where the handles are published
- * @returns {{api: object, document: object, elements: Map, intervals: Array,
- *   timeouts: Array, rootStyle: Map, flushNextTimeout: Function, tickIntervals: Function,
- *   keydown: Function, windowEvent: Function}}
- */
 export function runPage(file, options = {}) {
   const {
     bootstrap = ["init"],
@@ -507,9 +424,6 @@ export function runPage(file, options = {}) {
   const page = readPage(file, options.markup, options.baseDir);
   const { byId, document, rootStyle } = buildDocument(page);
 
-  // Timers are always queued and never fire on their own. A test that needs one
-  // to happen asks for it, so a page cannot pass a test by waiting and fail for
-  // a real user, or the other way round.
   const timeouts = [];
   const intervals = [];
   const cleared = new Set();
@@ -530,8 +444,6 @@ export function runPage(file, options = {}) {
     }
   };
 
-  // Strip the bootstrap calls wherever they sit on a line of their own, so a page
-  // can start itself from a second script block.
   let source = page.script;
   bootstrap.forEach((name) => {
     source = source.replace(new RegExp(`^\\s*${name}\\(\\);?\\s*$`, "gm"), "");
@@ -564,8 +476,6 @@ export function runPage(file, options = {}) {
     console,
     document,
     navigator: { userAgent: options.userAgent || "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" },
-    // A page's animation loop is driven by the test through the page's own
-    // render call, so a frame is never scheduled behind a test's back.
     requestAnimationFrame: () => 0,
     setInterval: timers.setInterval,
     setTimeout: timers.setTimeout,
@@ -612,8 +522,6 @@ export function runPage(file, options = {}) {
     intervals,
     rootStyle,
     timeouts,
-    // A page queues its next timer from inside a promise callback, so waiting for
-    // one to appear is part of flushing one.
     async flushNextTimeout() {
       for (let spin = 0; timeouts.length === 0; spin += 1) {
         if (spin >= 20) throw new Error(`No pending timer after ${spin} turns of the event loop`);
@@ -621,7 +529,6 @@ export function runPage(file, options = {}) {
       }
       timeouts.shift().callback();
     },
-    // Fire every interval the page still has running, the way a real clock would.
     tickIntervals(...args) {
       intervals.forEach(({ callback }) => callback(...args));
     },

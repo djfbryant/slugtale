@@ -4,28 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PROTOTYPE — Slugtale Settings (B1 Omarchy Linux & macOS Preview)</title>
-  <!--
-    THROWAWAY PROTOTYPE — not shipped in production bundle.
-    Original task: slugtale-dsi.
-
-    Round 5: B1 Layout in Omarchy Linux (Hyprland / Arch) & macOS comparison:
-      - OS Toggle: Omarchy Linux (Hyprland Wayland) vs macOS
-      - Omarchy Themes: Gruvbox Dark, Gruvbox Light, Catppuccin Mocha, Tokyo Night, Standard
-      - Hyprland Active Borders, Linux Keycaps (Super/Ctrl), Wayland Display Session, PipeWire audio
-      - Full feature suite: Status, Dictation, Bar, Usage, Engine, General
-
-    Interactive Switcher:
-      ?os=omarchy|macos
-      ?variant=B1|B2|B3|B4
-      ?theme=gruvbox-dark|gruvbox-light|catppuccin-mocha|tokyo-night|dark|light|auto
-      ?state=ready|partial|fresh
-  -->
   <style>
-    /* =========================================================================
-       CSS Tokens & Theme Palettes
-       ========================================================================= */
 
-    /* Default Light */
     :root, [data-theme="light"] {
       --bg: #eef0ef;
       --surface: #ffffff;
@@ -57,7 +37,6 @@
       --hypr-border: #2674a6;
       --window-border: rgba(0, 0, 0, 0.08);
 
-      /* Fixed 6-swatch palette for Dictation Bar Orb (ADR-0004) */
       --accent-swatch-red: #ff5a52;
       --accent-swatch-amber: #f5a524;
       --accent-swatch-green: #35c76a;
@@ -71,7 +50,6 @@
       line-height: 1.45;
     }
 
-    /* Standard Dark */
     [data-theme="dark"] {
       --bg: #16181b;
       --surface: #202428;
@@ -106,7 +84,6 @@
       color-scheme: dark;
     }
 
-    /* Omarchy: Gruvbox Dark (Default on this machine) */
     [data-theme="gruvbox-dark"] {
       --bg: #282828;
       --surface: #32302f;
@@ -141,7 +118,6 @@
       color-scheme: dark;
     }
 
-    /* Omarchy: Gruvbox Light */
     [data-theme="gruvbox-light"] {
       --bg: #fbf1c7;
       --surface: #f2e5bc;
@@ -176,7 +152,6 @@
       color-scheme: light;
     }
 
-    /* Omarchy: Catppuccin Mocha */
     [data-theme="catppuccin-mocha"] {
       --bg: #1e1e2e;
       --surface: #181825;
@@ -211,7 +186,6 @@
       color-scheme: dark;
     }
 
-    /* Omarchy: Tokyo Night */
     [data-theme="tokyo-night"] {
       --bg: #1a1b26;
       --surface: #24283b;
@@ -261,7 +235,6 @@
       -webkit-user-select: none;
     }
 
-    /* Background backdrop according to OS */
     [data-os="omarchy"] body {
       background: radial-gradient(circle at 50% 20%, #2b2826 0%, #141414 100%);
     }
@@ -272,9 +245,6 @@
       background: #0c0e10;
     }
 
-    /* =========================================================================
-       Window Shell — 480x520
-       ========================================================================= */
     .window-frame {
       width: 480px;
       height: 520px;
@@ -287,7 +257,6 @@
       transition: all 0.2s ease;
     }
 
-    /* macOS Window Shell Styling */
     [data-os="macos"] .window-frame {
       border-radius: 12px;
       box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--window-border);
@@ -310,7 +279,6 @@
     [data-os="macos"] .window-title { margin-left: 8px; font-size: 0.78rem; font-weight: 600; color: var(--text-dim); }
     [data-os="macos"] .omarchy-header { display: none; }
 
-    /* Omarchy Linux (Hyprland) Window Shell Styling */
     [data-os="omarchy"] .window-frame {
       border-radius: 10px;
       box-shadow: 0 0 0 2px var(--hypr-border), 0 16px 40px rgba(0, 0, 0, 0.6);
@@ -364,7 +332,6 @@
 
     .viewport { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; }
 
-    /* ---------- Common Atoms & Components ---------- */
     .icon { width: 16px; height: 16px; flex-shrink: 0; }
 
     .pill {
@@ -425,7 +392,6 @@
     }
     select:focus, input:focus { border-color: var(--accent); outline: 2px solid var(--accent-soft); }
 
-    /* Segmented Control */
     .segmented {
       display: inline-flex;
       padding: 2px;
@@ -451,7 +417,6 @@
       box-shadow: var(--shadow-sm);
     }
 
-    /* Keycaps (OS adaptable) */
     .keys { display: inline-flex; gap: 3px; align-items: center; }
     .keys kbd {
       display: grid;
@@ -475,7 +440,6 @@
       border-radius: 4px;
     }
 
-    /* Switch toggle */
     .toggle {
       position: relative;
       display: inline-block;
@@ -498,7 +462,6 @@
     input:checked + .slider { background-color: var(--accent); }
     input:checked + .slider:before { transform: translateX(14px); }
 
-    /* Swatches */
     .swatches { display: inline-flex; gap: 6px; align-items: center; }
     .swatch-btn {
       width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent;
@@ -512,7 +475,6 @@
       content: ""; width: 6px; height: 6px; border-radius: 50%; background: #ffffff;
     }
 
-    /* Warning Banner */
     .warn-banner {
       display: flex;
       align-items: center;
@@ -528,12 +490,10 @@
     .warn-banner strong { display: block; color: var(--text); font-weight: 650; }
     .warn-banner small { color: var(--warn-text); }
 
-    /* Scrollable pane */
     .scrollable { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 16px; scrollbar-gutter: stable; }
     .scrollable::-webkit-scrollbar { width: 7px; }
     .scrollable::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
 
-    /* Mini Orb Live Simulator Preview */
     .orb-preview-box {
       display: flex; align-items: center; justify-content: center;
       width: 52px; height: 52px; border-radius: 12px;
@@ -555,7 +515,6 @@
       50% { transform: scale(1.06); box-shadow: 0 0 18px var(--preview-color, var(--accent)); }
     }
 
-    /* Hero Metric Cards */
     .hero-stat {
       padding: 12px 14px;
       border-radius: 10px;
@@ -582,9 +541,6 @@
     .stat-box .val { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-top: 2px; }
     .stat-box .count { font-size: 0.72rem; color: var(--text-dim); }
 
-    /* =========================================================================
-       B1: Inset Grouped Rail Layout
-       ========================================================================= */
     .b1-wrap { display: grid; grid-template-columns: 58px minmax(0, 1fr); height: 100%; width: 100%; }
     .b1-rail {
       background: var(--rail);
@@ -641,7 +597,6 @@
     .b1-row .label { font-size: 0.85rem; font-weight: 550; }
     .b1-row .sub { display: block; color: var(--text-dim); font-size: 0.76rem; font-weight: 400; margin-top: 1px; }
 
-    /* ---------- Floating Prototype Switcher Bar ---------- */
     .switcher-bar {
       position: fixed;
       bottom: 16px;
@@ -685,10 +640,8 @@
 </head>
 <body>
 
-  <!-- Simulated Desktop Application Window (480x520) -->
   <div class="window-frame">
     <div class="titlebar">
-      <!-- macOS Window Controls -->
       <div class="traffic-lights">
         <div class="traffic-light traffic-close"></div>
         <div class="traffic-light traffic-min"></div>
@@ -696,7 +649,6 @@
       </div>
       <span class="window-title">Slugtale Settings — 480×520</span>
 
-      <!-- Omarchy Linux (Hyprland) Window Header -->
       <div class="omarchy-header">
         <div class="omarchy-title-left">
           <span>Slugtale Settings</span>
@@ -712,7 +664,6 @@
     <div id="viewport" class="viewport"></div>
   </div>
 
-  <!-- Prototype Switcher (Floating Bottom Pill) -->
   <div class="switcher-bar">
     <button id="os-btn" type="button" class="active-pill" title="Toggle OS Desktop (o)"></button>
     <button id="theme-btn" type="button" title="Cycle Theme Palette (d)"></button>
@@ -721,7 +672,6 @@
   </div>
 
   <script>
-    // ---------- Embedded Icons ----------
     const ICONS = {
       status: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
       dictation: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>',
@@ -737,7 +687,6 @@
       return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
     }
 
-    // ---------- Navigation Tabs ----------
     const TABS = [
       { id: "status", label: "Status", icon: "status" },
       { id: "dictation", label: "Dictation", icon: "dictation" },
@@ -747,7 +696,6 @@
       { id: "general", label: "General", icon: "general" }
     ];
 
-    // Swatches (ADR-0004)
     const SWATCHES = [
       { id: "red", hex: "#ff5a52", label: "Red" },
       { id: "amber", hex: "#f5a524", label: "Amber" },
@@ -757,7 +705,6 @@
       { id: "graphite", hex: "#9aa4ad", label: "Graphite" }
     ];
 
-    // ---------- Scenarios / State Fixtures ----------
     const SCENARIOS = {
       fresh: {
         label: "First Run (Unconfigured)",
@@ -843,7 +790,6 @@
       }
     };
 
-    // Global in-memory state clone
     let appState = JSON.parse(JSON.stringify(SCENARIOS.ready));
     let activeTab = "dictation";
     let showDeleteConfirm = false;
@@ -904,9 +850,6 @@
       `).join("")}</div>`;
     }
 
-    // =========================================================================
-    // B1: Inset Grouped Rail View Renderer
-    // =========================================================================
     function renderB1(s, os) {
       const tab = activeTab;
       const items = getPlatformItems(s, os);
@@ -1118,19 +1061,15 @@
     function render() {
       const { os, state, theme } = getQueryParams();
 
-      // Update document attributes
       document.documentElement.dataset.os = os;
       document.documentElement.dataset.theme = theme;
 
-      // Update data scenario if switching state
       if (appState.label !== SCENARIOS[state].label) {
         appState = JSON.parse(JSON.stringify(SCENARIOS[state]));
       }
 
-      // Render Active View
       document.getElementById("viewport").innerHTML = renderB1(appState, os);
 
-      // Update Switcher Bar
       document.getElementById("os-btn").textContent = `OS: ${os === "omarchy" ? "Omarchy Linux (Hyprland)" : "macOS"}`;
       document.getElementById("theme-btn").textContent = `Theme: ${theme}`;
       document.getElementById("variant-label").textContent = `B1 Inset Grouped`;
@@ -1157,12 +1096,10 @@
       updateParams({ state: next });
     }
 
-    // Switcher controls
     document.getElementById("os-btn").addEventListener("click", toggleOS);
     document.getElementById("theme-btn").addEventListener("click", cycleTheme);
     document.getElementById("state-btn").addEventListener("click", cycleState);
 
-    // Global Keyboard shortcuts
     document.addEventListener("keydown", (e) => {
       if (e.target.matches("input, textarea, select")) return;
       if (e.key.toLowerCase() === "o") toggleOS();
@@ -1177,7 +1114,6 @@
       }
     });
 
-    // In-viewport interactions (Delegation)
     document.getElementById("viewport").addEventListener("click", (e) => {
       const tabTarget = e.target.closest("[data-tab]");
       if (tabTarget) {
@@ -1250,7 +1186,6 @@
       }
     });
 
-    // Inputs change
     document.getElementById("viewport").addEventListener("change", (e) => {
       const target = e.target;
       const prop = target.dataset.prop;

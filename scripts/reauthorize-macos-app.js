@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 
 const { existsSync: defaultExistsSync } = require("node:fs");
-// posix.join, not join: every path this script builds is a macOS path, and the
-// `platform` argument below lets a non-Mac host exercise the darwin branch. The
-// host-aware join would render "/Applications/Slugtale.app" with backslashes on
-// a Windows CI runner and fail a test that is not about Windows at all.
 const { posix: posixPath } = require("node:path");
 const { spawnSync: defaultSpawnSync } = require("node:child_process");
 

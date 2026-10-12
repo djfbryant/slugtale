@@ -1,12 +1,3 @@
-//! Measures transcription latency and output text for the decode strategies the
-//! Transcription Speed Profile chooses between (see docs/research/whisper-decode-benchmark.md).
-//!
-//! Usage:
-//!   cargo run --release --example decode_benchmark \
-//!     --features local-whisper-runtime[,local-whisper-runtime-metal] -- \
-//!     <model.bin> <clip.wav> [more clips ...]
-//!
-//! Clips must be 16 kHz mono float32 WAV (e.g. `afconvert -f WAVE -d LEF32@16000 -c 1`).
 
 use std::time::Instant;
 
@@ -74,8 +65,6 @@ fn main() {
             params.set_print_realtime(false);
             params.set_print_timestamps(false);
 
-            // Warm run first so model upload / cache effects don't skew the timing,
-            // then time the median-ish second run.
             state.full(params.clone(), &samples).expect("decode");
             let started = Instant::now();
             let mut state = context.create_state().expect("create state");
@@ -94,8 +83,6 @@ fn main() {
     }
 }
 
-/// Minimal RIFF/WAVE reader for the exact format the benchmark clips use:
-/// 16 kHz mono IEEE float32.
 fn read_f32_mono_wav(path: &str) -> Vec<f32> {
     let bytes = std::fs::read(path).expect("read wav");
     assert_eq!(&bytes[0..4], b"RIFF", "{path}: not a RIFF file");

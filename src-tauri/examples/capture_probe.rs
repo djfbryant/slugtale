@@ -1,12 +1,3 @@
-//! Diagnostic probe for the audio capture path (slugtale-8ul.8): records for a
-//! few seconds through the same `CpalAudioRecorder` the app uses, then checks
-//! the invariants garbled dictation would break — normalized duration matching
-//! wall-clock time (dropped chunks / wrong channel count skew it), sane RMS
-//! (gain), and no clipping — and dumps the normalized 16 kHz audio to a WAV so
-//! it can be decoded offline with the decode_benchmark example.
-//!
-//! Usage:
-//!   cargo run --example capture_probe -- [seconds] [out.wav]
 
 use slugtale_lib::{CpalAudioRecorder, DictationRecorder};
 

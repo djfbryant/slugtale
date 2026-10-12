@@ -1,4 +1,3 @@
-//! Select Fermion MLX on supported Apple silicon Macs; retain portable ONNX.
 use crate::{
     AsrError, AssetInstall, CapturedAudio, DownloadProgress, EngineAssetLifecycle, EngineAssets,
     EngineAvailability, EngineMetadata, EngineTranscriber, EngineTranscription, ParakeetProvider,
@@ -39,9 +38,6 @@ impl PhononProvider {
         ))
     }
 
-    /// The engine behind this selection. Both are
-    /// [`EngineTranscriber`] + [`EngineAssetLifecycle`] providers, so the two
-    /// halves below forward to whichever one this build chose.
     fn transcriber(&self) -> &dyn EngineTranscriber {
         match self {
             Self::Onnx(provider) => provider,
@@ -54,9 +50,6 @@ impl PhononProvider {
         }
     }
 
-    /// The asset lifecycle behind this selection. Read separately from
-    /// [`Self::transcriber`] so the dictation half of this provider never
-    /// reaches an install or a removal.
     fn asset_lifecycle(&self) -> &dyn EngineAssetLifecycle {
         match self {
             Self::Onnx(provider) => provider,
@@ -120,10 +113,6 @@ impl EngineTranscriber for PhononProvider {
     }
 }
 
-/// Phonon-2's own bytes, whichever runtime this build selected: MLX installs a
-/// private Python runtime and the model through the engine, and ONNX downloads
-/// pinned NVIDIA files. Both are the engine's business, and neither is the
-/// dictation path's.
 impl EngineAssetLifecycle for PhononProvider {
     fn assets(&self) -> EngineAssets {
         self.asset_lifecycle().assets()

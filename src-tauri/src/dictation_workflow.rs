@@ -32,8 +32,6 @@ impl std::fmt::Display for DictationWorkflowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Transcription(error) => write!(f, "{error}"),
-            // The rescue failure is the one that means the text was lost, so it
-            // is the one the message names.
             Self::InsertionRescue { rescue, .. } => write!(f, "{rescue}"),
         }
     }
@@ -41,30 +39,16 @@ impl std::fmt::Display for DictationWorkflowError {
 
 impl std::error::Error for DictationWorkflowError {}
 
-/// Where a Dictation Segment sits in its dictation, which is the whole of what
-/// Transcript Cleanup needs to know to join it onto what came before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DictationSegmentPosition {
-    /// The first text this dictation will put into the text target.
     First,
-    /// Text appended after something this dictation has already inserted.
     Continuation,
 }
 
-/// What one run of the Dictation Workflow did. A dictation now produces one of
-/// these per Dictation Segment rather than exactly one per dictation, so the
-/// caller needs more than the text back: it has to know whether anything was
-/// actually inserted (to place the next segment) and whether the Insertion
-/// Rescue was involved (because a rescue once per Segment Pause would clobber
-/// the clipboard and notify the user every few seconds).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DictationSegmentOutcome {
     pub transcription: FinalTranscription,
-    /// Whether this segment put text into the text target, directly or through
-    /// the Insertion Rescue. A segment that transcribed to nothing inserts
-    /// nothing, which leaves the next segment still the dictation's first.
     pub inserted: bool,
-    /// Whether Text Insertion failed and the Insertion Rescue took over.
     pub rescued: bool,
     /// Why Text Insertion failed, when it did and the rescue took over. Carries
     /// the error description only, never the transcription, and travels out so
@@ -109,10 +93,6 @@ impl<'a> DictationWorkflow<'a> {
         let transcription =
             clean_dictation_segment(transcription, position, self.transcript_cleanup);
 
-        // A segment that heard nothing must not be inserted. Before Segment
-        // Pauses this only mattered for a whole silent dictation; now a user who
-        // pauses, coughs, and pauses again would otherwise get a stray space
-        // typed into their document.
         if transcription.text.trim().is_empty() {
             return Ok(DictationSegmentOutcome {
                 transcription,
@@ -141,23 +121,6 @@ impl<'a> DictationWorkflow<'a> {
     }
 }
 
-/// Apply deterministic Transcript Cleanup to a Dictation Segment before
-/// insertion, without rewriting meaning or adding generated text.
-///
-/// The two positions differ in exactly two ways, and both exist because the
-/// transcription engine treats every segment as a fresh utterance:
-///
-/// - A continuation is prefixed with one space, because the engine's text starts
-///   flush against whatever is already in the document.
-/// - A continuation keeps whatever casing the engine produced. The first segment
-///   still gets its first letter capitalised, but doing that mid-dictation would
-///   force a capital onto speech that carried on from the previous sentence.
-///
-/// The cleanup mode selects how much runs (slugtale-kyc): Basic is whitespace
-/// normalization only, while Clean Dictation additionally removes safe filler
-/// words such as "um" before the position rules apply. Clean Dictation with
-/// Pause Breaks also uses the preserved segment timings to add conservative
-/// line breaks.
 pub fn clean_dictation_segment(
     transcription: FinalTranscription,
     position: DictationSegmentPosition,
@@ -256,9 +219,6 @@ mod tests {
 
     #[test]
     fn a_segment_that_heard_nothing_inserts_nothing() {
-        // Otherwise a Segment Pause over a cough would type a bare space into
-        // the user's document, and would count as inserted text for the next
-        // segment's spacing.
         let runtime = FakeAsrRuntime::new("   ");
         let insertion = FakeTextInsertion::default();
         let rescue = FakeInsertionRescue::default();
@@ -297,9 +257,6 @@ mod tests {
 
         assert_eq!(outcome.transcription.text, "Rescue this transcription");
         assert!(outcome.inserted);
-        // The caller suspends further Segment Pauses on this, so a dictation
-        // without Accessibility trust does not clobber the clipboard and notify
-        // once every five seconds.
         assert!(outcome.rescued);
         assert_eq!(
             rescue.rescued.borrow().as_slice(),
@@ -309,8 +266,6 @@ mod tests {
 
     #[test]
     fn continuation_cleanup_keeps_the_engine_casing_and_adds_one_space() {
-        // A continuation carries on from speech that may not have ended a
-        // sentence, so forcing a capital here would corrupt the reading.
         let cleaned = clean_dictation_segment(
             FinalTranscription::plain("  and then   we left  ".to_string()),
             DictationSegmentPosition::Continuation,
@@ -322,8 +277,6 @@ mod tests {
 
     #[test]
     fn clean_dictation_removes_fillers_before_the_position_rules_apply() {
-        // The dropped opening filler leaves lowercase text, which the
-        // first-segment capitalization rule then lifts as usual.
         let cleaned = clean_dictation_segment(
             FinalTranscription::plain("Um,   hello  from slugtale".to_string()),
             DictationSegmentPosition::First,
@@ -335,8 +288,6 @@ mod tests {
 
     #[test]
     fn clean_dictation_never_damages_meaningful_words() {
-        // "like" carries meaning; filler cleanup must prefer leaving it alone
-        // over ever guessing wrong about it.
         let cleaned = clean_dictation_segment(
             FinalTranscription::plain("I like coffee".to_string()),
             DictationSegmentPosition::First,
@@ -404,9 +355,6 @@ mod tests {
 
     #[test]
     fn cleanup_preserves_asr_segments_unchanged_alongside_the_flattened_text() {
-        // The flattened text is normalized for insertion while the raw segment
-        // text and timing ride along untouched, so the later pause-aware
-        // cleanup (slugtale-gnx) still sees the ASR boundaries.
         let transcription = FinalTranscription::from_segments(vec![
             crate::TranscriptSegment {
                 text: " Hello ".to_string(),

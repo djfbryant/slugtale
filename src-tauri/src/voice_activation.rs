@@ -1,8 +1,3 @@
-//! macOS Voice Activation adapter.
-//!
-//! This module owns the always-listening microphone and its worker. The pure
-//! phrase, speech-gate, and window rules stay in `slugtale_lib::wake_word`,
-//! where every platform can test them without audio hardware.
 
 use super::*;
 
@@ -20,9 +15,6 @@ pub(super) const fn supported() -> bool {
     cfg!(all(target_os = "macos", feature = "voice-activation"))
 }
 
-/// Validate, apply, and persist the Voice Activation choice as one operation.
-/// The Tauri command delegates here so worker state and the saved checkbox
-/// cannot drift apart.
 pub(super) fn save_settings(
     app: &tauri::AppHandle,
     enabled: bool,
@@ -33,8 +25,6 @@ pub(super) fn save_settings(
 
     crate::commands::app_files(app).update_settings_and_apply(
         |settings| slugtale_lib::apply_voice_activation_settings(settings, enabled),
-        // Validation rides the side-effect step: the worker must not start
-        // without an engine that can run the wake checks.
         |settings| {
             let whisper_can_run = app
                 .state::<slugtale_lib::TranscriptionEngineCatalogue>()
@@ -53,7 +43,6 @@ enum VoiceActivationCommand {
     Stop,
 }
 
-/// Bring the running listener in line with the stored preference.
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 pub(super) fn sync_worker(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let state = app.state::<VoiceActivationState>();
@@ -120,8 +109,6 @@ fn whisper_ready(app: &tauri::AppHandle) -> bool {
         .is_some()
 }
 
-/// Wait up to `timeout` for a command so turning Voice Activation off closes
-/// the microphone without sitting out a poll or retry sleep.
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ListenWait {
@@ -152,12 +139,6 @@ fn stop_requested(receiver: &std::sync::mpsc::Receiver<VoiceActivationCommand>) 
     )
 }
 
-/// The macOS half of the Voice Activation adapter: it owns the app handle and
-/// answers the listen loop's questions. Every decision lives in
-/// `slugtale_lib::run_listen_loop`; nothing here but app reads and effects. One
-/// object is all three roles the loop needs — transport, capture, wake — so it
-/// implements each of them and [`slugtale_lib::WakeListener`] composes them into
-/// the port the loop is handed.
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 struct AppWakeListener {
     app: tauri::AppHandle,
@@ -241,8 +222,6 @@ impl slugtale_lib::WakeCapture for AppWakeListener {
 impl slugtale_lib::WakeTrigger for AppWakeListener {
     fn wake_check(&mut self, samples: Vec<f32>) -> slugtale_lib::WakeCheck {
         let audio = slugtale_lib::CapturedAudio::mono_16khz(samples);
-        // Wake checks always use greedy decoding. The user's wider beam is
-        // useful for dictation text, but wasteful for a two-word phrase.
         let mut settings = crate::commands::app_files(&self.app).settings();
         settings.speed_profile = slugtale_lib::SpeedProfile::Fast;
         let Some(provider) = self
@@ -306,11 +285,6 @@ fn target_is_dictating(app: &tauri::AppHandle) -> bool {
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
 fn trigger_start(app: &tauri::AppHandle) {
-    // Escape arming rides the global-key worker's queue rather than happening
-    // synchronously here: registration must not run inside this worker thread,
-    // which holds no shortcut-plugin locks but also cannot block dictation.
-    // Failures are reported, not swallowed — a begin whose Escape cannot be
-    // armed must roll back like any other failed activation step.
     let mut set_escape = |should_register: bool| {
         let state = app.state::<HotkeyRegistrationState>();
         let registration = state

@@ -13,8 +13,6 @@
         <span id="search-icon"></span>
         <input id="settings-search" type="search" placeholder="Search settings" autocomplete="off" spellcheck="false" aria-label="Search settings" />
       </label>
-      <!-- Ready or not, and nothing else. Which section holds the problem is
-           what the nav counts below are for. -->
       <div id="overall-status" class="ready-line" role="status" data-ready="false"><span id="overall-status-icon"></span><span id="overall-status-text">Not ready to dictate</span></div>
       <nav class="nav" aria-label="Settings sections">
         <p class="nav-group">Dictate</p>
@@ -68,8 +66,6 @@
       </div>
 
       <div class="content-scroll">
-        <!-- The required steps this pane settles, with the reason the backend
-             gave. The sidebar counts them; this says what each one needs. -->
         <ul id="readiness-list" class="checklist search-hide" aria-live="polite" hidden></ul>
         <p id="settings-message" class="note search-hide" aria-live="polite"></p>
 
@@ -207,8 +203,6 @@
               </span>
             </div>
           </div>
-          <!-- A worked example, because "removes hesitations" means little
-               until you see what lands in the document. -->
           <div class="example search-hide" aria-live="polite">
             <span class="example-label">You say</span>
             <span id="cleanup-example-said" class="example-said"></span>
@@ -268,9 +262,6 @@
           <p id="dictation-bar-message" class="note" aria-live="polite"></p>
         </section>
 
-        <!-- Usage (ADR-0025). Everything here is a count: no transcript, no
-             audio, and no record of which app was dictated into. Numbers come
-             first, then the two settings that feed them. -->
         <section id="pane-usage" class="pane" aria-labelledby="pane-title" hidden>
           <h2 class="pane-heading"><span class="tile-icon pane-heading-icon" data-group="usage"></span>Usage</h2>
           <div id="usage-hero" class="usage-hero search-hide" data-baseline="false">
@@ -282,7 +273,6 @@
 
           <p id="usage-empty" class="usage-empty search-hide" hidden></p>
 
-          <!-- All time lives in the hero alone, so no number is shown twice. -->
           <div id="usage-spans" class="usage-spans search-hide">
             <div id="usage-span-today" class="usage-span" data-baseline="false">
               <p class="usage-span-label">Today</p>
@@ -332,9 +322,6 @@
             </div>
           </div>
 
-          <!-- Confirmation is in the pane rather than a browser dialog: the
-               webview implements no JS confirm panel, so window.confirm would
-               silently answer "no" and the user could never opt out. -->
           <div id="usage-confirm" class="usage-confirm search-hide" hidden>
             <p id="usage-confirm-text" class="usage-confirm-text"></p>
             <span class="usage-confirm-actions">

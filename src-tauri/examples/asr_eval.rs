@@ -1,70 +1,9 @@
-//! Measurement harness for slugtale-vjs.5: validates the selective local ASR
-//! path — the Whisper primary, an optional second Transcription Engine, and
-//! the Second Opinion router that chooses between their Final Transcriptions —
-//! against a maintainer-recorded corpus of labelled clips.
-//!
-//! ## This program prints aggregate statistics only
-//!
-//! Every number below is a rate, a percentile, or a count computed *from*
-//! transcripts, never a transcript itself. No clip's reference text, no
-//! engine's hypothesis text, and no confidence value ever reaches stdout, the
-//! `--json` output, or stderr. That is deliberate and it is what makes this
-//! program's output safe to paste into a GitHub issue or a bug report: the
-//! product's own rule that transcripts, alternatives, and confidence must
-//! never leave the device unlogged (transcription_engine.rs, second_opinion.rs)
-//! applies just as much to a measurement tool as it does to the app. Every
-//! function below that touches clip text takes it in, reduces it to a number,
-//! and lets it go out of scope in the same statement.
-//!
-//! See `docs/research/2026-07-25-selective-asr-validation-method.md` for how
-//! to record a corpus, how to run the network-denied test alongside this
-//! harness, and empty tables to fill in once real clips exist. As of this
-//! writing **no measurements have been taken** — this file is the harness,
-//! not a report.
-//!
-//! ## Shape
-//!
-//! Matches `examples/decode_benchmark.rs`: one binary, real files passed on
-//! the command line, gated in `Cargo.toml` by `required-features` so it is
-//! not built by a plain `cargo check`. Unlike that benchmark, this harness
-//! goes through the production `TranscriptionProvider` boundary and
-//! `SecondOpinionRouter` rather than calling `whisper_rs` directly, because
-//! the whole point is to validate the shipped path, escalation rules and all.
-//!
-//! ## Usage
-//!
-//! ```sh
-//! cd src-tauri
-//! cargo run --release --example asr_eval --features local-whisper-runtime -- \
-//!   --corpus <dir of *.wav + sibling *.txt> \
-//!   --whisper-model <ggml-base.en.bin> \
-//!   [--parakeet-assets <dir>] [--routed] [--terms <terms.txt>] [--json]
-//! ```
-//!
-//! Clips must be 16 kHz mono float32 WAV, matching decode_benchmark.rs (e.g.
-//! `afconvert -f WAVE -d LEF32@16000 -c 1`). Each `clip.wav` needs a sibling
-//! `clip.txt` holding its reference transcript verbatim (empty file = a
-//! silence/non-speech clip, for measuring hallucination rate). `terms.txt` is
-//! optional: one proper name or piece of jargon per line, for the name-recall
-//! stat.
-//!
 //! Run this binary **once per engine** — only `--whisper-model`, then
 //! separately only `--parakeet-assets`, then separately `--apple-speech` — to
 //! get a peak-memory reading attributable to one engine. Peak resident memory
 //! is a process-wide, monotonically increasing OS counter (see
 //! `peak_resident_memory_bytes` below), so a combined run's number reflects
 //! whichever engines had already loaded, not one engine in isolation. Pass
-//! `--routed` together with `--whisper-model` and exactly one of
-//! `--parakeet-assets`/`--apple-speech` (or both, plus
-//! `--second-opinion-engine` to say which) to measure the Second Opinion
-//! router itself, once memory isolation is no longer the point of the run.
-//!
-//! Add `--features local-parakeet-runtime[,local-parakeet-runtime-coreml]` to
-//! actually run Parakeet, and `--features apple-speech-runtime` on macOS to
-//! actually run Apple SpeechTranscriber; without a feature its provider is
-//! still constructible (transcription_engine.rs's design: the provider type
-//! is unconditional, only inference is feature-gated) and this harness
-//! records it as unavailable rather than failing to build.
 
 use slugtale_lib::{
     AppleSpeechProvider, AsrRuntime, CapturedAudio, EngineAvailability, EscalationReason,
@@ -189,14 +128,7 @@ fn parse_args() -> Args {
     }
 }
 
-/// One evaluation clip. `reference` and `samples` are held only long enough to
-/// be reduced to numbers in `evaluate_engine`/`evaluate_routed`; nothing in
-/// this program writes either of them anywhere.
 struct Clip {
-    /// The filename stem, e.g. `"012-names-clean"`. Used only in stderr
-    /// diagnostics about *loading* a clip (a corrupt WAV, a missing
-    /// transcript) — the categories described in the method doc, never the
-    /// clip's content.
     id: String,
     samples: Vec<f32>,
     reference: String,
@@ -236,11 +168,6 @@ fn load_corpus(dir: &Path) -> Vec<Clip> {
     clips
 }
 
-/// Minimal RIFF/WAVE reader for 16 kHz mono IEEE float32 clips — the exact
-/// format `decode_benchmark.rs` expects. Unlike that benchmark's reader, this
-/// one returns `Result` instead of panicking: a 100+ clip corpus should not
-/// die on one malformed recording, and every error string here describes only
-/// the file's format, never anything read from `data`.
 fn read_f32_mono_wav(path: &Path) -> Result<Vec<f32>, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("could not read wav: {error}"))?;
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
@@ -307,18 +234,7 @@ fn load_terms(path: Option<&Path>) -> Vec<String> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Metrics
-// ---------------------------------------------------------------------------
 
-/// Lowercases, drops punctuation, and collapses whitespace so that "Book the
-/// 2pm meeting, please." and "book the 2 pm meeting please" score as agreeing
-/// wherever the difference is presentation rather than content. Punctuation
-/// is dropped rather than replaced with a space, so a contraction like
-/// "don't" normalizes to "dont" instead of splitting into two words.
-/// Punctuation and capitalization get their own accuracy stats below
-/// precisely so normalizing here does not hide those errors — it just keeps
-/// them out of the word-error count, which is what "normalized WER" means.
 fn normalize_for_wer(text: &str) -> String {
     let mut normalized = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -340,12 +256,6 @@ struct WordErrorRate {
     rate: f64,
 }
 
-/// Normalized word error rate via Levenshtein alignment on whitespace-split,
-/// normalized words, with the classic unit costs for substitution, insertion,
-/// and deletion. `dp[i][j]` is the edit distance between the first `i`
-/// reference words and the first `j` hypothesis words; the backward walk
-/// after filling the table classifies which edit happened where, so the
-/// harness can report the three counts separately rather than only the rate.
 fn word_error_rate(reference: &str, hypothesis: &str) -> WordErrorRate {
     let reference_normalized = normalize_for_wer(reference);
     let hypothesis_normalized = normalize_for_wer(hypothesis);
@@ -390,10 +300,6 @@ fn word_error_rate(reference: &str, hypothesis: &str) -> WordErrorRate {
     }
 
     let edits = substitutions + insertions + deletions;
-    // A silent reference has no words to divide by. Scoring it 0.0 when the
-    // hypothesis also produced nothing, and 1.0 the moment it hallucinated
-    // anything, matches how silence-hallucination-rate treats the same
-    // clips, and avoids a divide-by-zero.
     let rate = if rn == 0 {
         if hn == 0 {
             0.0
@@ -413,12 +319,6 @@ fn word_error_rate(reference: &str, hypothesis: &str) -> WordErrorRate {
     }
 }
 
-/// Nearest-rank percentile: sorts a copy of the samples and returns the value
-/// at `ceil(p/100 * n)`. Nearest-rank rather than interpolation both matches
-/// the convention latency dashboards use and stays well-defined on the
-/// one- and two-sample subsets a small corpus category produces, where
-/// interpolation schemes disagree with each other about what "p95 of one
-/// sample" even means.
 fn percentile(samples: &[Duration], p: f64) -> Option<Duration> {
     if samples.is_empty() {
         return None;
@@ -437,17 +337,6 @@ enum SelectorOutcome {
     Tie,
 }
 
-/// Classifies one escalated clip by comparing the primary engine's own WER
-/// (computed by running it standalone) against the WER of whatever the
-/// router actually inserted. Only meaningful for escalated clips: a clip the
-/// router accepted outright has the primary's WER on both sides of this
-/// comparison by construction, so `evaluate_routed` only calls this when
-/// `routed.escalation.is_some()`.
-///
-/// Comparison uses a small epsilon rather than exact float equality because
-/// both WERs come from independently-run `word_error_rate` calls and can
-/// differ by less than floating-point noise while representing the same
-/// rational number.
 fn classify_selector_outcome(primary_alone_wer: f64, routed_wer: f64) -> SelectorOutcome {
     const EPSILON: f64 = 1e-9;
     if routed_wer < primary_alone_wer - EPSILON {
@@ -459,11 +348,6 @@ fn classify_selector_outcome(primary_alone_wer: f64, routed_wer: f64) -> Selecto
     }
 }
 
-/// `(terms recalled, terms present)` for one clip: how many of `terms` that
-/// actually occur in the reference (normalized) also occur in the
-/// hypothesis. A term "occurs" as a contiguous run of normalized words, so
-/// multi-word names ("slug tale") match as a phrase rather than by any word
-/// in the name appearing anywhere.
 fn term_recall(reference: &str, hypothesis: &str, terms: &[String]) -> (usize, usize) {
     let normalized_reference = normalize_for_wer(reference);
     let normalized_hypothesis = normalize_for_wer(hypothesis);
@@ -495,19 +379,10 @@ fn contains_phrase(haystack: &str, phrase: &str) -> bool {
         .any(|window| window == phrase_words.as_slice())
 }
 
-/// The punctuation marks in `text`, in order, with everything else discarded.
-/// Compared between reference and hypothesis via `sequence_accuracy` so a
-/// missing comma counts once, against a punctuation-only alignment, rather
-/// than perturbing the word-level WER alignment above.
 fn punctuation_sequence(text: &str) -> Vec<char> {
     text.chars().filter(|c| c.is_ascii_punctuation()).collect()
 }
 
-/// Whether each whitespace-separated token in `text` starts with an
-/// uppercase letter. Tokens with no alphabetic character (a lone "3" or a
-/// bare "-") are skipped: capitalization is not defined for them, and
-/// counting them would reward an engine for producing more digits rather
-/// than for casing words correctly.
 fn capitalization_sequence(text: &str) -> Vec<bool> {
     text.split_whitespace()
         .filter_map(|word| word.chars().find(|c| c.is_alphabetic()))
@@ -515,10 +390,6 @@ fn capitalization_sequence(text: &str) -> Vec<bool> {
         .collect()
 }
 
-/// `1.0 - (edit distance / reference length)`, clamped at zero: "did the
-/// punctuation/capitalization come out the same, in the same order?" Shared
-/// by punctuation and capitalization accuracy so both rest on one tested
-/// implementation; `T` needs only equality, not ordering.
 fn sequence_accuracy<T: PartialEq>(reference: &[T], hypothesis: &[T]) -> f64 {
     let (rn, hn) = (reference.len(), hypothesis.len());
     if rn == 0 {
@@ -569,9 +440,6 @@ fn cold_and_warm_latency_ms(latencies: &[Duration]) -> (Option<u128>, Option<u12
     )
 }
 
-// ---------------------------------------------------------------------------
-// Reports
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, serde::Serialize)]
 struct EngineReport {
@@ -625,17 +493,9 @@ struct HarnessReport {
     corpus_clip_count: usize,
     engines: Vec<EngineReport>,
     routed: Option<RoutedReport>,
-    /// Bytes. `None` on platforms this harness has no reader for (see
-    /// `peak_resident_memory_bytes`).
     peak_resident_memory_bytes: Option<u64>,
 }
 
-/// Runs one engine standalone over every clip and reduces each clip to a
-/// number immediately: `hypothesis` (from `result.text()`) never outlives
-/// this loop body. Returns the aggregate report plus a per-clip WER vector
-/// aligned to `clips` by index (`None` for silent-reference or errored
-/// clips), which `evaluate_routed` needs to score the primary engine's own
-/// accuracy against the router's selection on the same clips.
 fn evaluate_engine(
     label: &str,
     provider: &dyn TranscriptionProvider,
@@ -702,10 +562,6 @@ fn evaluate_engine(
                 evaluated += 1;
             }
             Err(error) => {
-                // `AsrError`'s `Display` never interpolates a transcript
-                // (transcription_engine.rs), so naming the clip alongside it
-                // is safe: this can only describe the engine, the build, or
-                // the asset state, never what the clip says.
                 eprintln!("{label}: {} failed ({error})", clip.id);
                 errored += 1;
                 per_clip_wer.push(None);
@@ -758,33 +614,12 @@ fn evaluate_engine(
     (report, per_clip_wer)
 }
 
-/// Runs the Second Opinion router over every clip. `primary_alone_wers` is
-/// `evaluate_engine`'s per-clip WER for the same primary provider run
-/// standalone, indexed the same way as `clips` — that is what lets this
-/// function score a win/loss/tie without ever comparing transcript text
-/// itself, only the numbers each pass already reduced it to.
-///
-/// ## Scored through the supported public routing surface
-///
-/// The router's internal `route` method and the `RoutedTranscription` it
-/// returns are both private to the app, and this harness deliberately does not
-/// reopen them: the app keeps transcript-shaped internals private, so a
-/// measurement tool must measure the shipped boundary instead of the guts
-/// behind it. Everything this report needs is reachable publicly:
-///
-/// - [`AsrRuntime::transcribe`] returns the one transcript the router chose —
-///   the same call the app's Dictation Runtime makes.
-/// - [`SecondOpinionRouter::observing`] reports the non-content decision for
-///   that call: which engine won, which escalation rule fired, and the total
-///   latency. [`RoutingDiagnostics`] carries codes and a duration, never a
-///   transcript, which is exactly why it is the public door.
 fn evaluate_routed(
     primary: Arc<dyn TranscriptionProvider>,
     second: Arc<dyn TranscriptionProvider>,
     clips: &[Clip],
     primary_alone_wers: &[Option<f64>],
 ) -> RoutedReport {
-    // The observer is a `Fn`, so the slot it fills needs interior mutability.
     let decided: Arc<Mutex<Option<RoutingDiagnostics>>> = Arc::new(Mutex::new(None));
     let recorder = Arc::clone(&decided);
     let router = SecondOpinionRouter::new(primary, second, SecondOpinionMode::Automatic).observing(
@@ -808,8 +643,6 @@ fn evaluate_routed(
     for (index, clip) in clips.iter().enumerate() {
         let audio = CapturedAudio::mono_16khz(clip.samples.clone());
 
-        // Clear the slot first so a failed or skipped route can never be scored
-        // against the previous clip's decision.
         *decided
             .lock()
             .expect("routing decision slot was never locked across threads") = None;
@@ -877,36 +710,9 @@ fn evaluate_routed(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Peak resident memory
-// ---------------------------------------------------------------------------
 
-/// Peak resident set size the OS has recorded for this process so far.
-///
-/// `getrusage`'s `ru_maxrss` unit is **not portable**: macOS (and other BSD-
-/// heritage libcs) report bytes; glibc on Linux reports kibibytes. Getting
-/// this wrong silently mis-reports memory by 1024x, so the unit is picked
-/// explicitly per `target_os` below rather than inferred from magnitude.
-///
-/// `ru_maxrss` is a high-water mark for the *whole process* and it only ever
-/// grows — there is no OS call to reset it mid-process. That is why this
-/// value is read once at the end of `main`, not once per engine: a
-/// per-engine reading from a combined run would include whatever earlier
-/// engines had already loaded. Run this binary once per engine (only
-/// `--whisper-model`, or only `--parakeet-assets`) for a number attributable
-/// to one engine alone.
 #[cfg(unix)]
 fn peak_resident_memory_bytes() -> Option<u64> {
-    // Hand-rolled rather than depending on the `libc` crate: this needs
-    // exactly one syscall wrapper, libc is already linked into any `std`
-    // binary on Unix, and matching `struct rusage`'s layout by hand keeps
-    // this example free of new Cargo.toml entries. The struct below matches
-    // the layout both glibc and macOS's libc use on a 64-bit target: two
-    // `timeval`s (16 bytes each, including padding) followed by 14 `long`
-    // fields starting with `ru_maxrss`. Only `ru_maxrss` is read, but every
-    // field is declared so the struct's total size matches what the kernel
-    // expects to write into — a too-small struct here would mean
-    // `getrusage` writes past the end of it.
     #[repr(C)]
     struct Timeval {
         tv_sec: i64,
@@ -944,7 +750,7 @@ fn peak_resident_memory_bytes() -> Option<u64> {
 
     let raw = u64::try_from(usage.ru_maxrss).ok()?;
     if cfg!(target_os = "macos") {
-        Some(raw) // already bytes
+        Some(raw)
     } else {
         Some(raw * 1024) // kibibytes on Linux (glibc and musl)
     }
@@ -952,15 +758,9 @@ fn peak_resident_memory_bytes() -> Option<u64> {
 
 #[cfg(not(unix))]
 fn peak_resident_memory_bytes() -> Option<u64> {
-    // Windows needs `GetProcessMemoryInfo`'s `PeakWorkingSetSize`, a
-    // different API family entirely. Out of scope until there is a Windows
-    // build of this harness worth measuring — see the method doc.
     None
 }
 
-// ---------------------------------------------------------------------------
-// Output
-// ---------------------------------------------------------------------------
 
 fn format_ms(ms: Option<u128>) -> String {
     match ms {
@@ -1053,22 +853,9 @@ fn main() {
     let mut whisper_wers: Vec<Option<f64>> = vec![None; clips.len()];
 
     if let Some(model_path) = &args.whisper_model {
-        // `LocalWhisperRuntime` has no public shutdown from outside its own
-        // module (it is only released through `WhisperRuntimeCache`, an
-        // app-internal type this harness has no reason to depend on), so
-        // unlike Parakeet below there is nothing to release here explicitly.
-        // The process exit at the end of `main` frees it either way.
         let runtime = Arc::new(LocalWhisperRuntime::new(LocalModelRef::at(
             model_path.clone(),
         )));
-        // Balanced, the app's default: the benchmark that produced the profile
-        // numbers was measured with the profile a fresh install runs.
-        //
-        // No `LocalModelManager`: the harness is handed a model path on the
-        // command line, and the manager only backs asset install/status/removal
-        // — never `transcribe`. Passing `None` therefore measures decode
-        // quality honestly and makes the provider report its assets as
-        // unmeasured instead of claiming a lookup this tool never made.
         let provider: Arc<dyn TranscriptionProvider> = Arc::new(WhisperTranscriptionProvider::new(
             runtime,
             SpeedProfile::default(),
@@ -1095,8 +882,6 @@ fn main() {
     let mut apple_speech_provider: Option<Arc<dyn TranscriptionProvider>> = None;
 
     if args.apple_speech {
-        // No asset path: Apple SpeechTranscriber's assets are system-managed,
-        // never installed or located by Slugtale (apple_speech.rs).
         let provider: Arc<dyn TranscriptionProvider> = Arc::new(AppleSpeechProvider::new());
         let (report, _wers) = evaluate_engine("apple-speech", provider.as_ref(), &clips, &terms);
         engine_reports.push(report);
@@ -1110,9 +895,6 @@ fn main() {
         let second = match args.second_opinion_engine {
             Some(SecondOpinionCandidate::Parakeet) => parakeet_provider.clone(),
             Some(SecondOpinionCandidate::AppleSpeech) => apple_speech_provider.clone(),
-            // Exactly one of the two was configured (parse_args requires
-            // --second-opinion-engine the moment both are), so whichever one
-            // is `Some` is the one the maintainer meant.
             None => parakeet_provider.clone().or_else(|| apple_speech_provider.clone()),
         }
         .expect("--routed requires a second-opinion candidate (checked in parse_args)");
@@ -1121,12 +903,6 @@ fn main() {
         None
     };
 
-    // Release the Parakeet session before the final memory reading. This does
-    // not change `ru_maxrss` (see `peak_resident_memory_bytes` — it can only
-    // grow), but it matches how the app itself shuts engines down at exit and
-    // avoids leaving the ONNX Runtime session half torn down. Apple
-    // SpeechTranscriber has no analogous release call to make: macOS owns its
-    // lifecycle entirely (apple_speech.rs).
     if let Some(provider) = parakeet_concrete {
         provider.shutdown();
     }
@@ -1148,7 +924,6 @@ mod tests {
         );
         assert_eq!(normalize_for_wer("  multiple   spaces  "), "multiple spaces");
         assert_eq!(normalize_for_wer(""), "");
-        // Punctuation is dropped, not replaced with a space.
         assert_eq!(normalize_for_wer("don't"), "dont");
     }
 
@@ -1233,8 +1008,6 @@ mod tests {
         assert_eq!(classify_selector_outcome(0.5, 0.2), SelectorOutcome::Win);
         assert_eq!(classify_selector_outcome(0.2, 0.5), SelectorOutcome::Loss);
         assert_eq!(classify_selector_outcome(0.3, 0.3), SelectorOutcome::Tie);
-        // Sub-epsilon float noise from two independently-computed WERs must
-        // not read as a real win or loss.
         assert_eq!(
             classify_selector_outcome(0.333_333_333, 0.333_333_334),
             SelectorOutcome::Tie
@@ -1273,7 +1046,6 @@ mod tests {
     #[test]
     fn term_recall_counts_only_terms_actually_said() {
         let terms = vec!["Slugtale".to_string(), "Kubernetes".to_string()];
-        // Only "Slugtale" occurs in the reference, and the hypothesis got it.
         let (recalled, present) = term_recall("meet the Slugtale team", "meet the slugtale team", &terms);
         assert_eq!(present, 1);
         assert_eq!(recalled, 1);

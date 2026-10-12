@@ -1,29 +1,10 @@
-//! Window identity: the one place that names every window Slugtale owns and says
-//! what closing and showing each of them means.
-//!
-//! A label is a wire string. It arrives from `tauri.conf.json` for the declared
-//! windows, from a builder for the ones created on demand, and back out of
-//! `window.label()` on every window event. Spelling one by hand at a call site
-//! is a silent no-op when it is wrong: the lookup misses and the bar never
-//! appears, with nothing failing. So the name lives here once and the policy that
-//! follows from the name lives with it.
 
 use tauri::{Manager, Runtime, WebviewWindow};
 
-/// Every window Slugtale owns.
-///
-/// Slugtale is a Resident App (ADR-0008), so this set is closed and small: the
-/// settings surface, the Dictation Bar, and the Typing Challenge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowLabel {
-    /// The settings surface, reopened from the tray.
     Settings,
-    /// The Dictation Bar (CONTEXT.md). Declared in tauri.conf.json and shown for
-    /// the length of a dictation.
     DictationBar,
-    /// The Typing Challenge. Created on demand rather than declared in
-    /// tauri.conf.json: most users never open it, and a hidden window carrying a
-    /// live webview for the life of the app is a cost with no benefit.
     TypingChallenge,
 }
 
@@ -128,11 +109,6 @@ mod tests {
 
     #[test]
     fn the_other_windows_are_destroyed_by_a_close_request() {
-        // The Typing Challenge is created on demand and most users never open it,
-        // so keeping a live webview around for the life of the app would be a
-        // cost with no benefit. Closing it also has to actually end the run in
-        // progress, not park a half-typed passage behind a hidden window
-        // (ADR-0025).
         assert!(!WindowLabel::DictationBar.hides_on_close());
         assert!(!WindowLabel::TypingChallenge.hides_on_close());
     }
@@ -146,9 +122,6 @@ mod tests {
 
     #[test]
     fn the_declared_window_labels_are_the_ones_the_code_asks_for() {
-        // tauri.conf.json names the windows that exist at startup; the code finds
-        // them by these labels. A rename on either side that misses the other is a
-        // window that silently never appears.
         let config = std::fs::read_to_string("tauri.conf.json").expect("tauri.conf.json exists");
         let config: serde_json::Value = serde_json::from_str(&config).unwrap();
         let declared: Vec<&str> = config["app"]["windows"]

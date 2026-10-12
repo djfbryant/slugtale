@@ -1,10 +1,3 @@
-//! The Local Diagnostic Log domain (ADR-0019, CONTEXT.md).
-//!
-//! Redaction-safe development troubleshooting output: by construction these
-//! records carry no captured audio samples or transcription text — only the
-//! failure surface, error kinds, and non-identifying sizes — so the log can
-//! never become hidden Dictation History. [`DiagnosticSink`] is the
-//! test/injection seam and [`LocalDiagnosticLog`] stays generic over it.
 
 use crate::{
     AsrError, AudioCaptureError, DictationEvent, FinalTranscription, ReadinessItem,
@@ -110,7 +103,6 @@ impl DiagnosticEvent {
     }
 }
 
-/// Format one [`DiagnosticEvent`] as a single redacted Local Diagnostic Log line.
 fn render_diagnostic_event(event: &DiagnosticEvent) -> String {
     match event {
         DiagnosticEvent::ReadinessIncomplete { missing } => {
@@ -135,9 +127,6 @@ fn render_diagnostic_event(event: &DiagnosticEvent) -> String {
             "insertion: rescued transcription to clipboard".to_string()
         }
         DiagnosticEvent::RoutingDecision { routing } => {
-            // Rendered from the reason codes alone. `escalation: none` is the
-            // normal, healthy dictation and is worth logging explicitly: it is
-            // the evidence that the second engine stayed asleep.
             let escalation = match routing.escalation {
                 Some(reason) => format!("{reason:?}"),
                 None => "none".to_string(),
@@ -157,8 +146,6 @@ fn render_diagnostic_event(event: &DiagnosticEvent) -> String {
     }
 }
 
-/// Destination for rendered Local Diagnostic Log lines. An `FnMut(&str)` works as
-/// a sink, matching the dictation event sink idiom.
 pub trait DiagnosticSink {
     fn write_line(&mut self, line: &str);
 }
@@ -172,14 +159,6 @@ where
     }
 }
 
-/// A [`DiagnosticSink`] whose concrete type is erased: a sink that takes
-/// rendered log lines, with the file, the in-memory buffer, or the test spy
-/// behind it the implementation's business alone.
-///
-/// This is what lets a port hand a Local Diagnostic Log out without naming
-/// where it writes. A port that named [`FileDiagnosticSink`] would force every
-/// implementation to write to the same place, which is exactly what a fake in a
-/// test must be free not to do.
 pub struct BoxedDiagnosticSink {
     sink: Box<dyn DiagnosticSink + Send + Sync>,
 }
@@ -201,8 +180,6 @@ impl DiagnosticSink for BoxedDiagnosticSink {
     }
 }
 
-/// The Local Diagnostic Log as a port hands it out: one log, one destination,
-/// and no name for what that destination is.
 pub type ErasedDiagnosticLog = SharedDiagnosticLog<BoxedDiagnosticSink>;
 
 /// The Local Diagnostic Log (ADR-0019): development troubleshooting output gated
@@ -221,9 +198,6 @@ where
         Self { enabled, sink }
     }
 
-    /// Write one already-rendered line, through the same gate an event goes
-    /// through. [`Self::record`] renders and lands here, so a line that arrives
-    /// from another handle of the same log is gated the same way.
     fn write_line(&mut self, line: &str) {
         if self.enabled {
             self.sink.write_line(line);
@@ -283,8 +257,6 @@ impl DiagnosticSink for FileDiagnosticSink {
     }
 }
 
-/// A cheaply cloneable handle to a [`LocalDiagnosticLog`], shared across the
-/// diagnostic decorator adapters below so they can all record to the same log.
 pub struct SharedDiagnosticLog<S> {
     inner: Arc<Mutex<LocalDiagnosticLog<S>>>,
 }
@@ -307,10 +279,6 @@ where
         }
     }
 
-    /// Turn recording on or off. The log is created once for the app's life and
-    /// cloned into every recorder, so the user's `diagnostic_logging`
-    /// preference has to be able to reach it after startup instead of only at
-    /// construction.
     pub fn set_enabled(&self, enabled: bool) {
         match self.inner.lock() {
             Ok(mut log) => log.enabled = enabled,
@@ -325,11 +293,6 @@ where
         }
     }
 
-    /// The same log reached through a sink whose concrete type is erased, for a
-    /// caller that must not name where the log writes. The new handle starts
-    /// from this one's enable flag and forwards every rendered line back through
-    /// it, so both handles append to the same sink under the same lock and stay
-    /// one log rather than two that happen to share a destination.
     pub fn erased(&self) -> ErasedDiagnosticLog
     where
         S: DiagnosticSink + Send + Sync + 'static,
@@ -340,7 +303,6 @@ where
         )
     }
 
-    /// Whether recording is on right now.
     fn is_enabled(&self) -> bool {
         match self.inner.lock() {
             Ok(log) => log.enabled,
@@ -348,9 +310,6 @@ where
         }
     }
 
-    /// Write one line that is already rendered, through the same gate every
-    /// event goes through. This is the door another handle of this log — an
-    /// [`ErasedDiagnosticLog`] over it — writes through.
     fn append_line(&self, line: &str) {
         match self.inner.lock() {
             Ok(mut log) => log.write_line(line),
@@ -359,10 +318,6 @@ where
     }
 }
 
-/// A shared log seen as a [`DiagnosticSink`]: it takes lines that are already
-/// rendered and writes them back through the log they came from. This is what
-/// lets one log be handed out under two different sink types without the two
-/// drifting apart.
 struct LogAsSink<S> {
     log: SharedDiagnosticLog<S>,
 }
@@ -429,15 +384,11 @@ mod tests {
             lines[0]
         );
         assert!(!lines[0].contains("launch codes"));
-        // A character count is a safe, non-identifying size.
         assert!(lines[0].contains(&secret.chars().count().to_string()));
     }
 
     #[test]
     fn routing_decision_log_explains_the_choice_without_the_transcript() {
-        // The Second Opinion router's whole promise is that a maintainer can
-        // ask "why did it pick that one?" and get an answer. This is the line
-        // that answers it, and it must answer with reason codes only.
         let mut lines: Vec<String> = Vec::new();
         let mut log = LocalDiagnosticLog::new(true, |line: &str| lines.push(line.to_string()));
 
@@ -547,8 +498,6 @@ mod tests {
         let mut lines: Vec<String> = Vec::new();
         let mut log = LocalDiagnosticLog::new(true, |line: &str| lines.push(line.to_string()));
 
-        // Insertion Rescue happens after a Final Transcription exists, but the log
-        // line must never carry the rescued text.
         log.record(DiagnosticEvent::insertion_rescued());
 
         assert_eq!(lines.len(), 1);
@@ -559,9 +508,6 @@ mod tests {
 
     #[test]
     fn transcription_completed_log_reduces_any_transcript_to_a_character_count() {
-        // The only constructor that ingests dictation content is
-        // transcription_completed; whatever the transcript's shape, the log keeps
-        // only its length, never the words (ADR-0019).
         let secrets = [
             "the eagle lands at midnight",
             "  leading and trailing space  ",
@@ -581,9 +527,6 @@ mod tests {
 
     #[test]
     fn transcription_completed_log_reduces_segmented_transcripts_to_counts_too() {
-        // Preserved Whisper segments carry transcript text inside the
-        // transcription (slugtale-cqy); the log must keep reducing it to
-        // counts and never touch segment content (ADR-0019).
         let secret = "the eagle lands at midnight";
         let transcription = FinalTranscription::from_segments(vec![crate::TranscriptSegment {
             text: secret.to_string(),
@@ -657,8 +600,6 @@ mod tests {
             lines.lock().unwrap()
         );
 
-        // The log the handle was taken from is the one place the preference
-        // lives, so a later change reaches a handle taken after it.
         log.set_enabled(true);
         log.erased()
             .record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
@@ -666,9 +607,6 @@ mod tests {
         assert_eq!(lines.lock().unwrap().len(), 1);
     }
 
-    /// A sink a test can read back: every rendered line, in order. Behind an
-    /// `Arc` because an erased handle reaches it from the log's own sink, which
-    /// has to be `Send + Sync` to be handed out as a trait object.
     fn collecting_lines() -> (
         Arc<Mutex<Vec<String>>>,
         impl FnMut(&str) + Send + Sync + 'static,

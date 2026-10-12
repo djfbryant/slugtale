@@ -12,9 +12,6 @@
       }
     }
 
-    // Every Usage write goes through here so the pane can only have one in
-    // flight, and so a refused change (an estimate typed over a measurement)
-    // leaves the controls showing what is actually stored.
     async function saveUsage(command, args, confirmedMessage) {
       const invoke = tauriInvoke();
       if (!invoke || savingUsage) return;
@@ -31,15 +28,10 @@
         isError = true;
       }
 
-      // Re-render once the controls are enabled again, carrying the message: a
-      // refusal has to survive the re-enable, or the user is left looking at a
-      // field that silently snapped back to the stored value.
       savingUsage = false;
       renderUsage(latestUsage, message, isError);
     }
 
-    // Turning storing off deletes the counts, and there is no undo, so it asks
-    // first. Turning it on needs no confirmation: it only starts a count.
     function setUsageStoring(enabled) {
       if (!enabled) {
         pendingUsageConfirm = "stop-storing";

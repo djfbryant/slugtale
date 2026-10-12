@@ -1,6 +1,4 @@
 
-    // Shown only outside the desktop app (no Tauri bridge), so the pane is never
-    // blank. Mirrors a fresh install: storing off, no baseline, nothing counted.
     const fallbackUsage = {
       store_usage: false,
       today: { dictations: 0, words: 0, time_saved: null },

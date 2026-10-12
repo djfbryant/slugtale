@@ -1,6 +1,3 @@
-//! Usage and Typing Challenge commands: the Usage pane's summary, the opt-in
-//! and typed estimate writers, the three-challenge baseline, the Typing
-//! Challenge window's lifecycle, and the Usage writer body the runtime calls.
 
 use std::sync::Arc;
 
@@ -11,20 +8,10 @@ use slugtale_lib::{TypingChallengeOpen, WindowLabel};
 use super::platform::locale_week_start;
 use super::{app_files, load_current_settings, update_current_settings};
 
-/// One span of the Usage pane — today, this week, or all time — with Time Saved
-/// already computed and already worded.
-///
-/// Time Saved is sent as text rather than a number the frontend rounds, because
-/// there is exactly one right way to say it (ADR-0025: prefix About, no
-/// decimals) and duplicating that rule in JavaScript is how the two drift apart.
-/// Speaking duration is deliberately not here: it is stored, but it is not a
-/// number the pane shows.
 #[derive(serde::Serialize)]
 pub(crate) struct UsageSpan {
     dictations: u32,
     words: u32,
-    /// `null` when there is no Typing Baseline, which is the hole the pane draws
-    /// with a take-the-baseline action rather than an invented default WPM.
     time_saved: Option<String>,
 }
 
@@ -37,20 +24,14 @@ fn usage_span(totals: &slugtale_lib::UsageTotals, words_per_minute: Option<u32>)
     }
 }
 
-/// Everything the Usage pane draws, in one answer.
 #[derive(serde::Serialize)]
 pub(crate) struct UsageSummary {
-    /// Whether Daily Usage Records are being written at all.
     store_usage: bool,
     today: UsageSpan,
     this_week: UsageSpan,
     all_time: UsageSpan,
-    /// The measured Typing Baseline, or `null` until all three Typing Challenges
-    /// are done.
     measured_wpm: Option<u32>,
-    /// The user's typed stand-in, whether or not it is the one in use.
     typed_estimate: Option<u32>,
-    /// How many of the three Typing Challenges are finished, for "2 of 3".
     completed_challenges: usize,
     challenge_count: usize,
 }
@@ -60,8 +41,6 @@ pub(crate) fn get_usage_summary(app: tauri::AppHandle) -> UsageSummary {
     let settings = load_current_settings(&app);
     let baseline = &settings.typing_baseline;
     let words_per_minute = baseline.effective_wpm();
-    // With storing off there is no Usage File, so every span is zero — but the
-    // Typing Baseline still reads, because the challenges work either way.
     let usage = if settings.store_usage {
         app_files(&app).usage()
     } else {
@@ -95,10 +74,6 @@ pub(crate) fn get_usage_summary(app: tauri::AppHandle) -> UsageSummary {
 /// Baseline is in the Settings File and is untouched.
 #[tauri::command]
 pub(crate) fn set_usage_storing(app: tauri::AppHandle, enabled: bool) -> Result<UsageSummary, String> {
-    // The store saves the choice and deletes the Usage File under one owner, so
-    // a counted segment racing this command either finishes first and is then
-    // deleted, or finds storing off and skips. Splitting the two steps here is
-    // what let the file come back after the user had deleted it.
     app_files(&app).set_usage_storing(enabled)?;
 
     Ok(get_usage_summary(app))
@@ -119,11 +94,8 @@ pub(crate) fn set_typing_estimate(
     Ok(get_usage_summary(app))
 }
 
-/// The state of the Typing Challenge window: which passage to show next and how
-/// far through the three the user is.
 #[derive(serde::Serialize)]
 pub(crate) struct TypingChallengeState {
-    /// The passage to type, or `null` when all three are done.
     passage: Option<String>,
     passage_index: Option<usize>,
     completed: usize,
@@ -186,8 +158,6 @@ pub(crate) fn submit_typing_challenge(
     Ok(typing_challenge_state(&settings.typing_baseline))
 }
 
-/// Clear all three challenge results so the user can sit them again. Historical
-/// Time Saved moves with the new baseline, because it was never stored.
 #[tauri::command]
 pub(crate) fn redo_typing_challenges(
     app: tauri::AppHandle,
@@ -201,8 +171,6 @@ pub(crate) fn redo_typing_challenges(
     Ok(typing_challenge_state(&settings.typing_baseline))
 }
 
-/// The Typing Challenge window has appeared, so the dictation Hotkey is inert
-/// until it goes (ADR-0025).
 pub(crate) fn mark_typing_challenge_open(manager: &impl tauri::Manager<tauri::Wry>) {
     manager.state::<TypingChallengeOpen>().set(true);
 }
@@ -214,16 +182,8 @@ pub(crate) fn mark_typing_challenge_closed(manager: &impl tauri::Manager<tauri::
     manager.state::<TypingChallengeOpen>().set(false);
 }
 
-/// Open the Typing Challenge window, creating it on first use.
-///
-/// It is its own window and larger than Settings on purpose: thirty seconds of
-/// typing against a passage needs room to read, and the settings content column
-/// beside its sidebar would put the passage and the typing box in a column too
-/// narrow to follow.
 #[tauri::command]
 pub(crate) fn open_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
-    // Raised before the window exists, so the hotkey is already inert by the
-    // time the webview can steal focus and the user can start typing.
     mark_typing_challenge_open(&app);
 
     if let Some(window) = WindowLabel::TypingChallenge.window(&app) {
@@ -260,18 +220,12 @@ pub(crate) fn close_typing_challenge(app: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
-/// Tell an open Usage pane that its numbers moved. Redoing the challenges shifts
-/// every Time Saved on screen, so the pane cannot be left showing the old ones.
 fn notify_usage_changed(app: &tauri::AppHandle) {
     if let Some(window) = WindowLabel::Settings.window(app) {
         let _ = window.emit("usage-changed", ());
     }
 }
 
-/// Start the Dictation Runtime's Usage writer body (ADR-0025). The file half
-/// lives in the store, which owns the opt-in check and the skip-on-failure
-/// policy; all that is left here is telling the one surface that shows Usage
-/// that it moved. Nothing reaches the Pill, the tray, or a notification.
 pub(crate) fn usage_writer(app: tauri::AppHandle) -> Arc<slugtale_lib::UsageSink> {
     Arc::new(move |date, segment| {
         if app_files(&app).record_counted_segment(date, segment) {

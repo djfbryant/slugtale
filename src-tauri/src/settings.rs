@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// The behavior assigned to a hotkey when controlling dictation (ADR-0004).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ActivationMode {
@@ -8,17 +7,11 @@ pub enum ActivationMode {
     Toggle,
 }
 
-/// The Transcription Speed Profile (CONTEXT.md): a global user preference that
-/// trades transcription accuracy against speed for every future dictation. Each
-/// profile maps to an underlying Beam Search value in the local model runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SpeedProfile {
-    /// Fastest transcription, greedy decoding with no beam search.
     Fast,
-    /// Balanced accuracy and speed. The default for new users.
     Balanced,
-    /// Most accurate transcription, widest beam search and slowest.
     Accurate,
 }
 
@@ -28,27 +21,17 @@ impl Default for SpeedProfile {
     }
 }
 
-/// The Segment Pause length, in seconds, that a Settings File written before
-/// the setting existed keeps (CONTEXT.md).
 pub const DEFAULT_SEGMENT_PAUSE_SECS: i64 = 5;
-/// Below this, a pause inserts half-spoken thoughts; above it, the wait between
-/// insertions stops feeling live. Saves outside the range are rejected.
 pub const MIN_SEGMENT_PAUSE_SECS: i64 = 2;
 pub const MAX_SEGMENT_PAUSE_SECS: i64 = 10;
 
-/// The serde default for [`Settings::segment_pause_secs`]: a numeric field
-/// without this would fall back to zero seconds, which would flush mid-sentence.
 fn default_segment_pause_secs() -> i64 {
     DEFAULT_SEGMENT_PAUSE_SECS
 }
 
-/// Where the Dictation Bar sits on the active display. All three options ride
-/// the bottom edge; the orb is small enough that a corner no longer covers the
-/// line being dictated into (slugtale-z7a).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BarPosition {
-    /// Today's placement, and the default.
     BottomCenter,
     BottomLeft,
     BottomRight,
@@ -60,9 +43,6 @@ impl Default for BarPosition {
     }
 }
 
-/// Which display hosts the Dictation Bar. The main display is the safe default
-/// for existing settings files. A named display is matched when a dictation
-/// starts; if it has been disconnected, the bar falls back to the main display.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BarDisplay {
@@ -76,14 +56,9 @@ impl Default for BarDisplay {
     }
 }
 
-/// The colour the Dictation Bar paints its orb in. A fixed palette rather than a
-/// user-supplied hex: the accent sits on a dark translucent pill where arbitrary
-/// colours can be illegible, and an enum never reaches CSS as interpolated text.
-/// Each entry maps to a hex in the bar frontend, not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AccentColor {
-    /// Today's recording-dot red, and the default.
     Red,
     Amber,
     Green,
@@ -98,8 +73,6 @@ impl Default for AccentColor {
     }
 }
 
-/// The local non-secret Settings File (ADR-0018): user preferences such as
-/// hotkey, activation mode, model choice, launch-at-login, and diagnostic logging.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub hotkey: Option<String>,
@@ -107,56 +80,26 @@ pub struct Settings {
     pub launch_at_login: bool,
     pub diagnostic_logging: bool,
     pub model: Option<String>,
-    /// The Transcription Speed Profile applied to all future transcriptions.
-    /// Older Settings Files predate this field, so it defaults to Balanced.
     #[serde(default)]
     pub speed_profile: SpeedProfile,
-    /// How many seconds of quiet end one Dictation Segment and start the next.
-    /// Stored signed so a hand-edited negative value still loads; the value is
-    /// clamped to the accepted range by [`segment_pause_duration`] at use, and
-    /// older Settings Files keep the five seconds they always had.
     #[serde(default = "default_segment_pause_secs")]
     pub segment_pause_secs: i64,
-    /// Where the Dictation Bar appears. Older Settings Files predate this field.
     #[serde(default)]
     pub bar_position: BarPosition,
-    /// The colour the Dictation Bar orb paints in. Older Settings Files predate
-    /// this field.
     #[serde(default)]
     pub accent_color: AccentColor,
-    /// Which display hosts the Dictation Bar. Older Settings Files predate this
-    /// field and therefore use the main display.
     #[serde(default)]
     pub bar_display: BarDisplay,
-    /// Which Transcription Engine runs first on every dictation. Older Settings
-    /// Files predate this field and load as Whisper, which is what they used.
     #[serde(default)]
     pub primary_engine: crate::TranscriptionEngine,
-    /// Whether Slugtale may ask a second local engine for another opinion when
-    /// the first result looks uncertain (slugtale-vjs.3). Off by default, and
-    /// Off reproduces the single-engine behaviour exactly.
     #[serde(default)]
     pub second_opinion: crate::SecondOpinionMode,
-    /// Whether Slugtale may write Daily Usage Records at all (ADR-0025). Off by
-    /// default and off for every Settings File written before Usage existed:
-    /// nothing reaches the Usage File until the user asks for it, and dictations
-    /// before that are gone rather than backfilled.
     #[serde(default)]
     pub store_usage: bool,
-    /// The Typing Baseline that Time Saved is measured against (ADR-0025). It
-    /// lives here rather than in the Usage File so that opting out of storing
-    /// counts does not throw away a measurement the user sat through.
     #[serde(default)]
     pub typing_baseline: crate::TypingBaseline,
-    /// How much local Transcript Cleanup runs before insertion (slugtale-kyc).
-    /// Older Settings Files predate this field and therefore keep Basic, which
-    /// is what they always got.
     #[serde(default)]
     pub transcript_cleanup: crate::TranscriptCleanupMode,
-    /// Whether the experimental always-listening wake phrase may start a
-    /// dictation without the hotkey (slugtale-e95). Off by default and off for
-    /// every Settings File written before Voice Activation existed: the
-    /// microphone is only ever held open by an explicit user choice.
     #[serde(default)]
     pub voice_activation_enabled: bool,
     /// Whether a dictation records from the built-in microphone when the
@@ -196,17 +139,10 @@ impl Default for Settings {
     }
 }
 
-/// Update whether Slugtale stores Daily Usage Records (ADR-0025).
-///
-/// This only records the choice. Deleting the Usage File when the user opts out
-/// is the caller's job, because the file's location is a platform concern and
-/// the Settings File must not know where it lives.
 pub fn apply_usage_settings(settings: &mut Settings, store_usage: bool) {
     settings.store_usage = store_usage;
 }
 
-/// Update whether dictation prefers the built-in microphone over a Bluetooth
-/// default. The next dictation picks it up; nothing is open to reconfigure.
 pub fn apply_microphone_settings(settings: &mut Settings, prefer_built_in_microphone: bool) {
     settings.prefer_built_in_microphone = prefer_built_in_microphone;
 }
@@ -215,10 +151,6 @@ pub fn apply_microphone_settings(settings: &mut Settings, prefer_built_in_microp
 /// `current`, perform the external side effect against the changed value,
 /// persist — and roll the side effect back onto `current` when persisting
 /// fails, so the saved file and the outside world can never disagree.
-///
-/// Every settings save with an external side effect (hotkey registration,
-/// launch at login, the Voice Activation worker) goes through here; hand
-/// copies of this dance had already drifted.
 pub fn apply_and_persist(
     current: &Settings,
     apply: impl FnOnce(&mut Settings),
@@ -235,8 +167,6 @@ pub fn apply_and_persist(
     Ok(settings)
 }
 
-/// Update which Transcription Engine leads and whether a second local engine
-/// may be asked for another opinion (slugtale-vjs.3, slugtale-vjs.4).
 ///
 /// This does not check that the chosen engine can actually run. Availability
 /// depends on installed assets and on the machine, both of which can change
@@ -251,9 +181,6 @@ pub fn apply_engine_settings(
     settings.second_opinion = second_opinion;
 }
 
-/// Update the user-configurable hotkey preferences that live in the Settings
-/// File. Empty input clears the hotkey so Dictation Readiness reflects that the
-/// user has not configured one.
 pub fn apply_hotkey_settings(
     settings: &mut Settings,
     hotkey: Option<String>,
@@ -270,9 +197,6 @@ pub fn apply_hotkey_settings(
     settings.activation_mode = activation_mode;
 }
 
-/// Update the Transcription Speed Profile stored in the Settings File. The user
-/// sets this once in the Transcription section of settings and it persists across
-/// restarts, applying to all future transcriptions (CONTEXT.md).
 pub fn apply_transcription_settings(settings: &mut Settings, speed_profile: SpeedProfile) {
     settings.speed_profile = speed_profile;
 }
@@ -303,14 +227,6 @@ pub fn segment_pause_duration(settings: &Settings) -> std::time::Duration {
     std::time::Duration::from_secs(secs as u64)
 }
 
-/// The Segment Pause save as an ordered pair of steps, for tests: validate a
-/// copy first so a rejected value touches neither the file nor the follow-up,
-/// then persist the copy, and only after the write succeeds run `adopt_pause`
-/// with the saved length. Production does not use this shape any more — the
-/// shipped save is the Settings store's one transaction and never touches the
-/// Dictation Runtime, because each dictation derives its pause from the
-/// Settings snapshot it pins at Start — but the ordering rule still has to
-/// hold wherever a pause save is composed, so the tests keep it pinned here.
 #[cfg(test)]
 pub fn save_segment_pause(
     current: &Settings,
@@ -325,9 +241,6 @@ pub fn save_segment_pause(
     Ok(proposed)
 }
 
-/// Update the Transcript Cleanup mode stored in the Settings File (slugtale-kyc).
-/// Applies to every future Dictation Segment; nothing about it needs the model
-/// reloaded or the platform asked.
 pub fn apply_transcript_cleanup_settings(
     settings: &mut Settings,
     transcript_cleanup: crate::TranscriptCleanupMode,
@@ -335,9 +248,6 @@ pub fn apply_transcript_cleanup_settings(
     settings.transcript_cleanup = transcript_cleanup;
 }
 
-/// Update the Dictation Bar's appearance: where it sits on screen and which
-/// accent it paints. Both apply to the bar currently on screen as well as to
-/// future dictations, so the user can judge the choice while making it.
 pub fn apply_dictation_bar_settings(
     settings: &mut Settings,
     bar_position: BarPosition,
@@ -349,31 +259,16 @@ pub fn apply_dictation_bar_settings(
     settings.bar_display = bar_display;
 }
 
-/// Update the launch-at-login preference stored in the Settings File. The stored
-/// bool records the user's intent; registering the app as an OS login item is a
-/// platform concern handled at the Tauri layer (ADR-0021).
 pub fn apply_launch_at_login_settings(settings: &mut Settings, enabled: bool) {
     settings.launch_at_login = enabled;
 }
 
-/// Update whether the always-listening wake phrase may start a dictation
-/// (slugtale-e95). This only records the choice; starting or stopping the
-/// listener that holds the microphone open is the Tauri tier's job, because
-/// its lifetime depends on platform audio support.
 pub fn apply_voice_activation_settings(settings: &mut Settings, enabled: bool) {
     settings.voice_activation_enabled = enabled;
 }
 
-/// Why Voice Activation cannot be switched on: it listens for the wake phrase
-/// by transcribing short windows of audio with the local Whisper model, so a
-/// machine with no runnable Whisper provider has a listener that can never
-/// hear its trigger. The rule lives here, next to the save that stores the
-/// choice, so the Settings writer and the listener start cannot disagree about
-/// when the opt-in is legitimate.
 pub const VOICE_ACTIVATION_NEEDS_WHISPER: &str = "Voice activation needs the local Whisper model.";
 
-/// Whether the Voice Activation choice in `settings` is one this machine can
-/// honour. Turning it off is always legitimate.
 pub fn validate_voice_activation(settings: &Settings, whisper_can_run: bool) -> Result<(), String> {
     if settings.voice_activation_enabled && !whisper_can_run {
         return Err(VOICE_ACTIVATION_NEEDS_WHISPER.to_string());
@@ -381,8 +276,6 @@ pub fn validate_voice_activation(settings: &Settings, whisper_can_run: bool) -> 
     Ok(())
 }
 
-/// Write the Settings File as human-readable JSON so it can be inspected
-/// during development (ADR-0018).
 pub fn save_settings(path: &std::path::Path, settings: &Settings) -> std::io::Result<()> {
     crate::json_file::save(path, settings)
 }
@@ -415,7 +308,6 @@ mod tests {
         );
 
         assert_eq!(result.unwrap_err(), "disk full");
-        // Applied against the changed value, then rolled back onto current.
         assert_eq!(
             *effects.borrow(),
             ["effect:true".to_string(), "effect:false".to_string()]
@@ -454,7 +346,6 @@ mod tests {
         );
         assert_eq!(validate_voice_activation(&settings, true), Ok(()));
 
-        // Turning it off is always legitimate, whisper or not.
         settings.voice_activation_enabled = false;
         assert_eq!(validate_voice_activation(&settings, false), Ok(()));
     }
@@ -474,8 +365,6 @@ mod tests {
 
     #[test]
     fn a_settings_file_written_before_usage_existed_stores_nothing_and_has_no_baseline() {
-        // The opt-in only means something if an upgrade is silent: an existing
-        // user who never opens the Usage pane keeps writing no Usage File.
         let path = std::env::temp_dir().join(format!(
             "slugtale-settings-legacy-usage-{}.json",
             std::process::id()
@@ -506,8 +395,6 @@ mod tests {
 
     #[test]
     fn opting_out_of_usage_leaves_the_typing_baseline_alone() {
-        // The Typing Baseline lives in the Settings File precisely so that the
-        // toggle cannot take it: the challenges were the user's time to spend.
         let mut settings = Settings::default();
         crate::apply_typed_estimate(&mut settings.typing_baseline, Some(48)).unwrap();
         apply_usage_settings(&mut settings, true);
@@ -627,8 +514,6 @@ mod tests {
         let loaded = load_settings(&path);
 
         std::fs::remove_file(&path).ok();
-        // A file that failed to parse would load as defaults, so the kept
-        // speed profile is what proves the rest of the file survived.
         assert_eq!(loaded.speed_profile, SpeedProfile::Accurate);
         assert_eq!(loaded.segment_pause_secs, -1);
         assert_eq!(
@@ -701,8 +586,6 @@ mod tests {
         )
         .unwrap();
 
-        // While the write is in flight the follow-up still sees the saved
-        // 3 seconds; it only runs once the write has succeeded.
         assert_eq!(saved.segment_pause_secs, 8);
         assert_eq!(
             seen_while_writing.get(),
@@ -733,7 +616,6 @@ mod tests {
         save_settings(&path, &current).unwrap();
         let saved_file = std::fs::read(&path).unwrap();
 
-        // Block the atomic writer before it can replace the saved Settings File.
         std::fs::create_dir(&blocked_temp_path).unwrap();
         let adopted_pause = std::cell::Cell::new(std::time::Duration::from_secs(3));
         let seen_while_writing = std::cell::Cell::new(None);
@@ -781,7 +663,6 @@ mod tests {
             store_usage: true,
             transcript_cleanup: crate::TranscriptCleanupMode::CleanDictationWithPauseBreaks,
             voice_activation_enabled: true,
-            // The non-default value, so the round trip proves it is saved.
             prefer_built_in_microphone: false,
             typing_baseline: crate::TypingBaseline {
                 challenges: vec![crate::TypingChallengeResult {
@@ -902,8 +783,6 @@ mod tests {
             crate::TranscriptCleanupMode::CleanDictationWithPauseBreaks
         );
 
-        // The whole point of the setting: turning it off restores exactly the
-        // behaviour users had before filler cleanup existed.
         apply_transcript_cleanup_settings(&mut settings, crate::TranscriptCleanupMode::Basic);
         assert_eq!(
             settings.transcript_cleanup,
@@ -957,8 +836,6 @@ mod tests {
     }
     #[test]
     fn voice_activation_defaults_to_off() {
-        // The whole point of the opt-in: a fresh install never holds the
-        // microphone open without an explicit user choice.
         assert!(!Settings::default().voice_activation_enabled);
     }
 
@@ -1028,8 +905,6 @@ mod tests {
     }
     #[test]
     fn settings_file_without_speed_profile_loads_as_balanced() {
-        // Settings Files written before the Transcription Speed Profile existed
-        // omit the field; loading must fall back to the default rather than fail.
         let path = std::env::temp_dir().join(format!(
             "slugtale-settings-legacy-{}.json",
             std::process::id()
@@ -1048,8 +923,6 @@ mod tests {
 
     #[test]
     fn settings_file_without_a_microphone_choice_prefers_the_built_in_microphone() {
-        // Every Settings File written before the choice existed gets the fast
-        // path: a Bluetooth headset is the slow, lower-quality microphone.
         let path = std::env::temp_dir().join(format!(
             "slugtale-settings-legacy-microphone-{}.json",
             std::process::id()
@@ -1072,8 +945,6 @@ mod tests {
     }
     #[test]
     fn dictation_bar_appearance_defaults_match_todays_bar() {
-        // Today's bar sits bottom-centre and paints a #ff5a52 recording dot, so
-        // existing users see no change until they choose otherwise.
         assert_eq!(BarPosition::default(), BarPosition::BottomCenter);
         assert_eq!(AccentColor::default(), AccentColor::Red);
         assert_eq!(Settings::default().bar_position, BarPosition::BottomCenter);
@@ -1137,9 +1008,6 @@ mod tests {
     }
     #[test]
     fn settings_file_without_dictation_bar_appearance_loads_as_defaults() {
-        // Settings Files written before the Dictation Bar gained an accent,
-        // position, and display omit those fields; loading must fall back rather
-        // than fail.
         let path = std::env::temp_dir().join(format!(
             "slugtale-settings-legacy-bar-{}.json",
             std::process::id()
@@ -1160,8 +1028,6 @@ mod tests {
     }
     #[test]
     fn a_settings_file_written_before_engine_choice_keeps_todays_behaviour() {
-        // The whole promise of adding engines: an existing user who never opens
-        // Settings sees no change at all — one engine, the one they had.
         let path = std::env::temp_dir().join(format!(
             "slugtale-settings-legacy-engine-{}.json",
             std::process::id()

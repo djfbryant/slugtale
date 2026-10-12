@@ -1,7 +1,5 @@
 use crate::DictationEvent;
 
-/// An audible cue played at the edges of a dictation (ADR-0014): a start sound
-/// when recording begins and a stop sound when it ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DictationSound {
     Start,
@@ -20,11 +18,6 @@ pub struct RecordingFeedbackEffect {
     pub bar_visible: bool,
 }
 
-/// The recording surface state (ADR-0014). Translates dictation lifecycle
-/// [`DictationEvent`]s into the audible and visible feedback the user sees:
-/// playing start/stop sounds and showing or hiding the Dictation Bar. It is the
-/// single source of truth for how Stop and Cancel differ — both hide the bar,
-/// but Stop keeps the dictation while Cancel discards it.
 pub struct RecordingFeedback {
     bar_visible: bool,
 }
@@ -45,10 +38,6 @@ impl RecordingFeedback {
     }
 
     pub fn on_event(&mut self, event: DictationEvent) -> RecordingFeedbackEffect {
-        // Stop and Cancel only matter while a dictation is on screen. Ignoring
-        // them once the bar is hidden keeps a stray terminal event (e.g. a
-        // hold-mode key release arriving after Escape) from replaying a sound or
-        // re-ending the session.
         if matches!(event, DictationEvent::Stop | DictationEvent::Cancel) && !self.bar_visible {
             return RecordingFeedbackEffect {
                 sound: None,
@@ -82,38 +71,27 @@ impl RecordingFeedback {
     }
 }
 
-/// Play the audible cue for a dictation edge (ADR-0014) through the OS sound
-/// service. Like the Local Model Manager's reveal, the spawned helper returns
-/// immediately so the recording lifecycle is never blocked waiting on audio.
 pub fn play_dictation_sound(sound: DictationSound) -> std::io::Result<()> {
     play_sound(sound)
 }
 
 #[cfg(target_os = "macos")]
 fn play_sound(sound: DictationSound) -> std::io::Result<()> {
-    // The afplay call lives in the platform adapter (ADR-0021) so this module
-    // stays free of OS bindings, matching the Windows and Linux arms below.
     crate::macos::play_dictation_sound(sound)
 }
 
 #[cfg(target_os = "windows")]
 fn play_sound(sound: DictationSound) -> std::io::Result<()> {
-    // The Win32 call lives in the platform adapter (ADR-0021) so this module
-    // stays free of OS bindings.
     crate::windows::play_dictation_sound(sound)
 }
 
 #[cfg(target_os = "linux")]
 fn play_sound(sound: DictationSound) -> std::io::Result<()> {
-    // The XDG sound-theme call lives in the platform adapter (ADR-0021) so this
-    // module stays free of OS specifics, matching the Windows arm above.
     crate::linux::play_dictation_sound(sound)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn play_sound(_sound: DictationSound) -> std::io::Result<()> {
-    // Other platforms get audible feedback once their Platform Adapter lands
-    // (ADR-0021); the recording lifecycle stays platform-agnostic until then.
     Ok(())
 }
 
@@ -159,8 +137,6 @@ mod tests {
 
     #[test]
     fn a_terminal_event_after_the_bar_is_hidden_is_ignored() {
-        // Cancel (e.g. Escape) followed by a stray Stop from a hold-mode key
-        // release must not replay the stop sound or re-complete the session.
         let mut feedback = RecordingFeedback::new();
         feedback.on_event(DictationEvent::Start);
         feedback.on_event(DictationEvent::Cancel);

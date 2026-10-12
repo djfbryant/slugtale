@@ -119,9 +119,6 @@ function runDev({
   };
   const runtimeFeatures = resolveRuntimeFeatures();
 
-  // Printed because a Transcription Engine that was not compiled in shows up in
-  // Settings as an unexplained "Unavailable" row, and this line is the only place
-  // the answer is visible before the build starts.
   log(`Building with Cargo features: ${runtimeFeatures}`);
 
   if (platform !== "darwin") {

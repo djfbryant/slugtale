@@ -3,16 +3,8 @@ import test from "node:test";
 
 import { runPage } from "./harness.mjs";
 
-// Fixture pages that need a real file next to them on disk, because the property
-// under test is that the harness follows a local `src`. Kept out of `src/`, which
-// ships in the app and is held to runtime pages only.
 const FIXTURES = new URL("./fixtures/", import.meta.url);
 
-// Five test files used to carry their own copy of the load-a-page hack, and each
-// copy extracted the *first* `<script>` block. A page that grew a second block
-// would have been half-tested with every assertion still green. These tests pin
-// the properties that make the shared harness safe to build on, and each one
-// fails if the property it names is removed.
 
 function page(...scriptBlocks) {
   return scriptBlocks.map((body) => `<script>\n${body}\n</script>`).join("\n");
@@ -36,10 +28,6 @@ test("every script block on a page is loaded, not just the first", () => {
 });
 
 test("a local script by src is followed, so a page's own file is what runs", () => {
-  // The shipped pages carry their JavaScript outside the HTML because the script
-  // CSP allows no inline script. The harness has to follow a local `src` the way
-  // a browser would, or every screen test would be testing the markup and nothing
-  // else.
   const { api } = runPage("external.html", {
     baseDir: FIXTURES,
     exports: ["fromExternalFile"]
@@ -67,7 +55,6 @@ test("a script src the harness cannot resolve fails loudly instead of half-testi
 });
 
 test("a bootstrap call is stripped wherever it sits, not only at the tail", () => {
-  // If the strip were removed, `started_()` would run and the page would say so.
   const { api, elements } = runPage("early-bootstrap.html", {
     markup: `${shell()}${page(`
       function started_() { document.getElementById("passage").textContent = "started"; return 1; }
@@ -78,8 +65,6 @@ test("a bootstrap call is stripped wherever it sits, not only at the tail", () =
     exports: ["started_"]
   });
 
-  // The page's own start call never ran, and the function is still there for a
-  // test to drive by hand.
   assert.equal(elements.get("passage").textContent, "");
   assert.equal(api.started_(), 1);
   assert.equal(elements.get("passage").textContent, "started");
@@ -93,8 +78,6 @@ test("a handle the page does not expose is an error, not a silent undefined", ()
 });
 
 test("a handle missing from a hand-written export block is caught too", () => {
-  // The guard has to hold on the path where a test writes the block itself, or
-  // the two files that do that are the two with no protection.
   assert.throws(
     () =>
       runPage("private-state.html", {
@@ -107,8 +90,6 @@ test("a handle missing from a hand-written export block is caught too", () => {
 });
 
 test("an id the page does not ship is null, so a renamed element fails a test", () => {
-  // The old harness invented a node for any id asked for, so a test could read a
-  // node the page no longer had.
   const { document } = runPage("no-such-id.html", {
     markup: `${shell()}${page("function reachable() { return 1; }")}`,
     exports: ["reachable"]
@@ -119,9 +100,6 @@ test("an id the page does not ship is null, so a renamed element fails a test", 
 });
 
 test("markup assigned to innerHTML becomes queryable children", () => {
-  // The Typing Challenge paints its passage as one span per word and then marks
-  // each by data-index, so a harness that treated innerHTML as an opaque string
-  // could not run that page without a hand-written selector parser.
   const { elements } = runPage("fragment.html", {
     markup: `${shell()}${page(`
       document.getElementById("passage").innerHTML =
@@ -133,7 +111,6 @@ test("markup assigned to innerHTML becomes queryable children", () => {
   assert.equal(passage.querySelector('[data-index="0"]').textContent, "one");
   assert.equal(passage.querySelector(".word").classList.contains("word"), true);
   assert.equal(passage.querySelectorAll(".word").length, 2);
-  // Reading the node is how a test checks what a person would read.
   assert.equal(passage.textContent.trim(), "one two");
 });
 
@@ -155,8 +132,6 @@ test("a void element does not swallow the rest of the fragment", () => {
 });
 
 test("className and the class set are one value, as in a browser", () => {
-  // `src/index.html` styles a node by className and then queries it back by
-  // class, so two stores would make that path find nothing here.
   const { elements } = runPage("classes.html", {
     markup: `${shell()}${page(`
       const bar = document.createElement("div");
@@ -237,15 +212,12 @@ test("a fixed clock is what the page reads, on every read", () => {
 
   assert.equal(elements.get("passage").textContent, "1000000");
   now.value += 30_000;
-  // The page read the clock again, thirty seconds on, without spending them.
   return flushNextTimeout().then(() => {
     assert.equal(elements.get("passage").textContent, "1030000");
   });
 });
 
 test("a page with a fixed clock can still build a Date", () => {
-  // `Date` is replaced wholesale when a test pins the clock, so a page that gains
-  // `new Date()` would break with a misleading error.
   const { api } = runPage("date-constructor.html", {
     markup: `${shell()}${page("function fromArgument() { return new Date(0).getUTCFullYear(); }\nfunction fromNoArgument() { return new Date().getTime(); }")}`,
     exports: ["fromArgument", "fromNoArgument"],
@@ -257,8 +229,6 @@ test("a page with a fixed clock can still build a Date", () => {
 });
 
 test("hidden, disabled and checked in the page's own markup reach the property", () => {
-  // `src/index.html` ships `<button hidden>` and `<input disabled>`, and a pane
-  // reads `pane.hidden` rather than the attribute.
   const { elements } = runPage("booleans.html", {
     markup: `${shell()}<input id="toggle" checked /><button id="reveal" hidden></button>${page("function reachable() { return 1; }")}`,
     exports: ["reachable"]
@@ -285,7 +255,6 @@ test("getAttribute answers for class, id and data, as a browser does", () => {
 });
 
 test("an inline style set by property is the one removeProperty clears", () => {
-  // `src/index.html` sets `bar.style.width` and then removes it on the same node.
   const { elements } = runPage("styles.html", {
     markup: `${shell()}<div id="bar" class="progress-bar"></div>${page(`
       const bar = document.getElementById("bar");
@@ -319,14 +288,11 @@ test("a cleared interval stops running, and the survivors keep their handles", (
   api.stopSecond();
   assert.equal(intervals.length, 1);
 
-  // The first interval is the one that survives, and the second must not run.
   tickIntervals();
   assert.equal(elements.get("passage").textContent, "a");
 });
 
 test("the page's own html and body are the document's", () => {
-  // `dictation-bar.html` puts its bar position on its own body, and 18
-  // assertions read it from there.
   const { document } = runPage("shell.html", {
     markup: `<!doctype html><html lang="en"><head><title>bar</title></head><body data-position="bottom-center"></body></html>${page("function reachable() { return 1; }")}`,
     exports: ["reachable"]
@@ -364,8 +330,6 @@ test("a pinned Date is still the realm's own Date", () => {
 });
 
 test("a page's window-level listener can be reached, as a focus event is", () => {
-  // `src/index.html` refreshes readiness and usage when the window regains focus,
-  // and a harness that dropped the listener could not test that path at all.
   const { elements, windowEvent } = runPage("window-focus.html", {
     markup: `${shell()}${page(`
       window.addEventListener("focus", function onFocus() {

@@ -1,7 +1,3 @@
-    // View renderers paint the `settings` they are handed. They never assign
-    // `currentSettings` and never re-apply a default inline: the caller passes a
-    // merged value (see `setSettings` in state.js), so every value here is already
-    // on a real setting and each control reads it directly.
     function renderSettings(settings, message = "", isError = false) {
       const messageEl = document.getElementById("settings-message");
       messageEl.classList.toggle("error", isError);
@@ -119,8 +115,6 @@
       microphoneToggle.disabled = savingMicrophone;
     }
 
-    // Voice Activation is not wired yet (slugtale-e95): the row is always disabled
-    // and cleared, whatever the settings file holds.
     function renderVoiceActivation() {
       const voiceToggle = document.getElementById("voice-activation-toggle");
       const voiceMessage = document.getElementById("voice-activation-message");

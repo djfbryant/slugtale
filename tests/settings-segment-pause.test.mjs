@@ -24,8 +24,6 @@ function settingsFixture(overrides = {}) {
   };
 }
 
-// The page loads its settings through `get_settings`. Every other command stays
-// pending, so nothing but the test's own save answers.
 function loadSettingsPage({ settings = settingsFixture(), answer = () => new Promise(() => {}) } = {}) {
   const invocations = [];
   const page = runPage("index.html", {
@@ -39,7 +37,6 @@ function loadSettingsPage({ settings = settingsFixture(), answer = () => new Pro
   return { ...page.api, elements: page.elements, invocations };
 }
 
-// Let the settings load and any queued promise callbacks run.
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function pressed(elements, id) {

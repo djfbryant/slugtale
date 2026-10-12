@@ -1,19 +1,3 @@
-//! The loaded Whisper model and the serialization that keeps its lifetime
-//! honest.
-//!
-//! [`LocalWhisperRuntime`] owns the model reference and the mutex that decides
-//! when the loaded context exists: it initializes the context once, reuses it
-//! across transcriptions, and takes the context lock before dropping it so a
-//! transcription or a Metal initialization cannot race process exit. When this
-//! build has no `local-whisper-runtime` feature the same type answers with the
-//! reason it cannot decode, so the engine catalogue can still report a Whisper
-//! engine it cannot run.
-//!
-//! The whisper.cpp calls themselves — the context, the parameters, the segment
-//! iterator — live in [`super::whisper_ffi`]. Nothing here names a binding, and
-//! nothing here knows which caller is asking, or with what Transcription Speed
-//! Profile: that is the caller's parameter, never runtime state, because the
-//! runtime is shared.
 
 #[cfg(feature = "local-whisper-runtime")]
 use super::machine_probe::recommended_whisper_decode_settings;
@@ -24,16 +8,8 @@ use crate::{CapturedAudio, FinalTranscription, SpeedProfile};
 #[cfg(feature = "local-whisper-runtime")]
 use std::sync::Mutex;
 
-/// The loaded Whisper model and nothing else. The Transcription Speed Profile
-/// deliberately lives outside this type: the runtime is shared by every caller
-/// whose Settings name the same model path, and a decode strategy stored here
-/// would be whichever caller spoke last.
 pub struct LocalWhisperRuntime {
     model: LocalModelRef,
-    // The loaded model is expensive to read and parse, so it is initialized once
-    // and reused across transcriptions rather than rebuilt on every call. The
-    // mutex also owns the model lifetime: shutdown takes it before dropping the
-    // context, so Metal initialization or transcription cannot race process exit.
     #[cfg(feature = "local-whisper-runtime")]
     context: Mutex<Option<WhisperContext>>,
     #[cfg(feature = "local-whisper-runtime")]
@@ -104,9 +80,6 @@ impl LocalWhisperRuntime {
         operation(context.as_ref().expect("context was just initialized"))
     }
 
-    /// Drop the loaded context, once, whichever half of the build this is.
-    /// The runtime cache owns this call: it is the only thing that decides when
-    /// the shared model is released.
     pub(super) fn shutdown(&self) {
         use std::sync::atomic::Ordering;
 
@@ -121,9 +94,6 @@ impl LocalWhisperRuntime {
 
 #[cfg(feature = "local-whisper-runtime")]
 impl LocalWhisperRuntime {
-    /// Transcribe `audio` with the caller's Transcription Speed Profile. The
-    /// profile is a parameter rather than runtime state so two callers sharing
-    /// one loaded model can decode differently at the same moment.
     pub fn transcribe(
         &self,
         audio: CapturedAudio,

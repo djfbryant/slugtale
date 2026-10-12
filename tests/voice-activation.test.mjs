@@ -4,9 +4,6 @@ import test from "node:test";
 
 import { shippedSource } from "./harness.mjs";
 
-// The toggle lives in the page's markup; the code that keeps it off is in the
-// script it ships. Both are read, because the guarantee is about the page the user
-// gets rather than about either file alone.
 const settings = shippedSource("index.html");
 const settingsHtml = settings.all;
 const workerSource = readFileSync(
@@ -36,8 +33,6 @@ test("voice activation reports a blocked or silent microphone", () => {
 });
 
 test("the listen loop lives in lib and the adapter answers its ports", () => {
-  // The decision loop is platform-independent and unit-tested there; the
-  // macOS tier only implements WakeListener against the app handle.
   assert.match(listenLoopSource, /fn run_listen_loop/);
   assert.match(listenLoopSource, /trait WakeListener/);
   assert.match(workerSource, /impl slugtale_lib::WakeListener for AppWakeListener/);
