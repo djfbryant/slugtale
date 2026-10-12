@@ -410,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn every_readiness_id_still_travels_to_the_settings_window_under_its_old_name() {
+    fn readiness_item_as_str_is_the_serde_wire_name_the_settings_window_reads() {
         let ids = [
             (ReadinessItemId::Microphone, "microphone"),
             (ReadinessItemId::TextInsertion, "text_insertion"),
@@ -428,6 +428,27 @@ mod tests {
                 serde_json::from_value::<ReadinessItemId>(json).ok(),
                 Some(id),
                 "{wire} does not come back as the same id"
+            );
+        }
+    }
+
+    #[test]
+    fn readiness_pane_as_str_is_the_serde_wire_name_the_settings_window_reads() {
+        let panes = [
+            (ReadinessPane::Shortcut, "shortcut"),
+            (ReadinessPane::Transcription, "transcription"),
+            (ReadinessPane::Privacy, "privacy"),
+            (ReadinessPane::General, "general"),
+        ];
+
+        for (pane, wire) in panes {
+            assert_eq!(pane.as_str(), wire);
+            let json = serde_json::to_value(pane).expect("a readiness pane serialises");
+            assert_eq!(json, serde_json::Value::String(wire.to_string()));
+            assert_eq!(
+                serde_json::from_value::<ReadinessPane>(json).ok(),
+                Some(pane),
+                "{wire} does not come back as the same pane"
             );
         }
     }

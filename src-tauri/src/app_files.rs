@@ -14,6 +14,8 @@ const USAGE_FILE: &str = "usage.json";
 const DIAGNOSTIC_LOG_FILE: &str = "diagnostics.log";
 const MODELS_DIR: &str = "models";
 
+type UsageOwner<'a> = std::sync::MutexGuard<'a, ()>;
+
 #[cfg(test)]
 type Probe = Arc<dyn Fn() + Send + Sync>;
 
@@ -206,8 +208,8 @@ impl AppFiles {
     /// a skip, not an error: the dictation it counted has already been inserted,
     /// and a Daily Usage Record is never worth a failed one.
     pub fn record_counted_segment(&self, date: LocalDate, segment: CountedSegment) -> bool {
-        let _owner = self.usage_owner();
-        if !self.settings().store_usage || self.usage_path().is_none() {
+        let owner = self.usage_owner();
+        if !self.store_usage_while_owning(&owner) || self.usage_path().is_none() {
             return false;
         }
         let mut usage = self.usage();
@@ -226,7 +228,7 @@ impl AppFiles {
     /// and is then removed rather than left behind. Once this returns, no racing
     /// write can put the Usage File back.
     pub fn set_usage_storing(&self, enabled: bool) -> Result<Settings, String> {
-        let _owner = self.usage_owner();
+        let owner = self.usage_owner();
         #[cfg(test)]
         Self::fire(&self.opt_out_probe);
 
@@ -235,13 +237,17 @@ impl AppFiles {
             Ok(())
         })?;
         if !enabled {
-            self.delete_usage_file_while_owning()?;
+            self.delete_usage_file_while_owning(&owner)?;
         }
         Ok(settings)
     }
 
-    fn usage_owner(&self) -> std::sync::MutexGuard<'_, ()> {
+    fn usage_owner(&self) -> UsageOwner<'_> {
         lock(&self.usage_owner)
+    }
+
+    fn store_usage_while_owning(&self, _owner: &UsageOwner<'_>) -> bool {
+        self.settings().store_usage
     }
 
     pub fn diagnostic_log(&self, enabled: bool) -> SharedDiagnosticLog<FileDiagnosticSink> {
@@ -263,11 +269,11 @@ impl AppFiles {
     }
 
     pub fn delete_usage_file(&self) -> Result<(), String> {
-        let _owner = self.usage_owner();
-        self.delete_usage_file_while_owning()
+        let owner = self.usage_owner();
+        self.delete_usage_file_while_owning(&owner)
     }
 
-    fn delete_usage_file_while_owning(&self) -> Result<(), String> {
+    fn delete_usage_file_while_owning(&self, _owner: &UsageOwner<'_>) -> Result<(), String> {
         let Some(path) = self.usage_path() else {
             return Ok(());
         };
@@ -737,6 +743,45 @@ mod tests {
 
         let cold = AppFiles::from_dirs(Some(config_dir.clone()), Some(data_dir.clone()));
         assert!(cold.settings().prefer_built_in_microphone);
+
+        std::fs::remove_dir_all(config_dir).ok();
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn a_settings_snapshot_does_not_follow_later_changes() {
+        let (files, config_dir, data_dir) = test_store("settings-snapshot");
+        let snapshot = files.settings();
+
+        files
+            .update_settings(|settings| {
+                settings.hotkey = Some("cmd+shift+d".to_string());
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(snapshot.hotkey, None, "a snapshot is a copy taken at one moment");
+        assert_eq!(files.settings().hotkey.as_deref(), Some("cmd+shift+d"));
+
+        std::fs::remove_dir_all(config_dir).ok();
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn saving_a_stale_snapshot_replaces_a_newer_change_because_it_skips_the_settings_transaction() {
+        let (files, config_dir, data_dir) = test_store("stale-snapshot-save");
+        let stale = files.settings();
+        files
+            .update_settings(|settings| {
+                settings.hotkey = Some("cmd+shift+d".to_string());
+                Ok(())
+            })
+            .unwrap();
+
+        files.save_settings(&stale).unwrap();
+
+        assert_eq!(files.settings().hotkey, None);
+        assert_eq!(load_settings(&config_dir.join("settings.json")).hotkey, None);
 
         std::fs::remove_dir_all(config_dir).ok();
         std::fs::remove_dir_all(data_dir).ok();
