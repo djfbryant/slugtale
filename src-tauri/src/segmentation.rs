@@ -10,14 +10,20 @@ use crate::audio_capture::is_voice_level;
 /// from producing a stream of empty insertions.
 pub struct SegmentPauseDetector {
     pause: std::time::Duration,
-    last_voice: Option<std::time::Instant>,
+    state: DetectorState,
+}
+
+#[derive(Clone, Copy)]
+enum DetectorState {
+    AwaitingSpeech,
+    HeardSpeech { last_voice: std::time::Instant },
 }
 
 impl SegmentPauseDetector {
     pub fn with_pause(pause: std::time::Duration) -> Self {
         Self {
             pause,
-            last_voice: None,
+            state: DetectorState::AwaitingSpeech,
         }
     }
 
@@ -31,7 +37,7 @@ impl SegmentPauseDetector {
     }
 
     pub fn rearm(&mut self) {
-        self.last_voice = None;
+        self.state = DetectorState::AwaitingSpeech;
     }
 
     /// Feed one voice level sampled at `at`, and report whether a Segment Pause
@@ -42,18 +48,18 @@ impl SegmentPauseDetector {
     /// speech again, so a long silence produces exactly one flush.
     pub fn on_level(&mut self, level: f32, at: std::time::Instant) -> bool {
         if is_voice_level(level) {
-            self.last_voice = Some(at);
+            self.state = DetectorState::HeardSpeech { last_voice: at };
             return false;
         }
 
-        let Some(last_voice) = self.last_voice else {
+        let DetectorState::HeardSpeech { last_voice } = self.state else {
             return false;
         };
         if at.saturating_duration_since(last_voice) < self.pause {
             return false;
         }
 
-        self.last_voice = None;
+        self.rearm();
         true
     }
 }
@@ -143,6 +149,25 @@ mod tests {
 
         assert!(!detector.on_level(threshold, start + Duration::from_millis(100)));
         assert!(detector.on_level(threshold, start + Duration::from_millis(700)));
+    }
+
+    #[test]
+    fn a_detector_that_just_fired_waits_for_speech_exactly_like_a_fresh_one() {
+        let start = std::time::Instant::now();
+        let mut flushed = SegmentPauseDetector::with_pause(TEST_PAUSE);
+        flushed.on_level(speaking(), start);
+        assert!(flushed.on_level(quiet(), start + TEST_PAUSE));
+
+        let mut fresh = SegmentPauseDetector::with_pause(TEST_PAUSE);
+
+        for tick in 1..40 {
+            let at = start + TEST_PAUSE + Duration::from_millis(tick * 100);
+            assert_eq!(
+                flushed.on_level(quiet(), at),
+                fresh.on_level(quiet(), at),
+                "tick {tick} answered differently after a flush"
+            );
+        }
     }
 
     #[test]

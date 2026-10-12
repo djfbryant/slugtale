@@ -22,6 +22,10 @@ impl<R> AudioCaptureSession<R>
 where
     R: DictationRecorder,
 {
+    fn digital_silence_guard_applies(&self) -> bool {
+        !self.flushed_a_segment
+    }
+
     pub fn new(recorder: R) -> Self {
         Self {
             recorder,
@@ -77,7 +81,7 @@ where
             DictationEvent::Stop if self.active => {
                 self.active = false;
                 let audio = self.recorder.stop()?;
-                if !self.flushed_a_segment {
+                if self.digital_silence_guard_applies() {
                     require_captured_microphone_signal(&audio)?;
                 }
                 Ok(Some(AudioCaptureOutcome::Completed(audio)))

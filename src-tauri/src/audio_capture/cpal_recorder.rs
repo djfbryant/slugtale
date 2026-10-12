@@ -391,6 +391,12 @@ impl VoiceActivationRecorder for CpalAudioRecorder {
     }
 
     fn take_segment(&mut self) -> Result<CapturedAudio, AudioCaptureError> {
+        self.drain_while_stream_keeps_running()
+    }
+}
+
+impl CpalAudioRecorder {
+    fn drain_while_stream_keeps_running(&self) -> Result<CapturedAudio, AudioCaptureError> {
         let samples = self
             .buffer
             .as_ref()
@@ -416,6 +422,35 @@ mod tests {
             recorder.level_callback.is_some(),
             "the trait dispatch the session uses must install the callback"
         );
+    }
+
+    #[test]
+    fn taking_a_segment_leaves_the_input_stream_running() {
+        let mut recorder = CpalAudioRecorder {
+            sample_rate_hz: 16_000,
+            channels: 1,
+            stream_active: true,
+            buffer: Some(std::sync::Arc::new(RealtimeCaptureBuffer::with_capacity(
+                64,
+                recorder_watermark(),
+            ))),
+            ..CpalAudioRecorder::default()
+        };
+        for sample in [0.25, -0.25] {
+            recorder.buffer.as_ref().unwrap().push_sample(sample);
+        }
+
+        let segment = VoiceActivationRecorder::take_segment(&mut recorder).unwrap();
+
+        assert_eq!(segment.samples, vec![0.25, -0.25]);
+        assert!(
+            recorder.stream_active,
+            "a segment is drained while the stream keeps running, unlike stop"
+        );
+    }
+
+    fn recorder_watermark() -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0))
     }
 
     #[test]
