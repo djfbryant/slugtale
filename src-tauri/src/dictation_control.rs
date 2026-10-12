@@ -104,6 +104,10 @@ impl DictationControl {
 /// the sequence must never hold it across an effect that arms a key or starts a
 /// recording — a blocked recording would otherwise stall every other input.
 pub trait BeginHost {
+    fn typing_challenge_is_open(&self) -> bool;
+
+    fn readiness_snapshot(&mut self) -> DictationActivation;
+
     /// Run `step` with the shared control, releasing it before returning.
     /// `None` when the host could not reach its control at all.
     fn with_control<R>(&mut self, step: &mut dyn FnMut(&mut DictationControl) -> R) -> Option<R>;
@@ -117,10 +121,12 @@ pub trait BeginHost {
     ) -> Result<(), String>;
 }
 
-pub fn begin_activation<H: BeginHost>(
-    host: &mut H,
-    activation: DictationActivation,
-) -> Result<(), String> {
+pub fn begin_activation<H: BeginHost>(host: &mut H) -> Result<(), String> {
+    if host.typing_challenge_is_open() {
+        return Ok(());
+    }
+
+    let activation = host.readiness_snapshot();
     let event =
         match host.with_control(&mut |control| control.begin(activation.dictation_available())) {
             Some(Ok(event)) => event,
@@ -264,25 +270,56 @@ mod tests {
         );
     }
 
+    #[derive(Debug, PartialEq)]
+    enum Effect {
+        Escape { armed: bool, dictating: bool },
+        Start { dictating: bool },
+    }
+
     #[derive(Default)]
     struct ScriptedHost {
         control: DictationControl,
-        escape_armed: Vec<bool>,
+        control_held: bool,
+        effects: Vec<Effect>,
         started: Vec<DictationEvent>,
+        snapshots_built: usize,
+        typing_challenge_open: bool,
+        unready: bool,
         arm_fails: bool,
         start_fails: bool,
     }
 
     impl BeginHost for ScriptedHost {
+        fn typing_challenge_is_open(&self) -> bool {
+            self.typing_challenge_open
+        }
+
+        fn readiness_snapshot(&mut self) -> DictationActivation {
+            self.snapshots_built += 1;
+            let mut activation = ready_activation();
+            activation.report.dictation_available = !self.unready;
+            activation
+        }
+
         fn with_control<R>(
             &mut self,
             step: &mut dyn FnMut(&mut DictationControl) -> R,
         ) -> Option<R> {
-            Some(step(&mut self.control))
+            self.control_held = true;
+            let result = step(&mut self.control);
+            self.control_held = false;
+            Some(result)
         }
 
         fn set_escape(&mut self, armed: bool) -> Result<(), String> {
-            self.escape_armed.push(armed);
+            assert!(
+                !self.control_held,
+                "arming Escape must not hold the shared control"
+            );
+            self.effects.push(Effect::Escape {
+                armed,
+                dictating: self.control.is_dictating(),
+            });
             if self.arm_fails {
                 return Err("the OS refused the registration".to_string());
             }
@@ -294,6 +331,13 @@ mod tests {
             event: DictationEvent,
             _activation: DictationActivation,
         ) -> Result<(), String> {
+            assert!(
+                !self.control_held,
+                "starting the recording must not hold the shared control"
+            );
+            self.effects.push(Effect::Start {
+                dictating: self.control.is_dictating(),
+            });
             self.started.push(event);
             if self.start_fails {
                 return Err("the microphone refused".to_string());
@@ -320,39 +364,55 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_begin_arms_escape_before_the_recording_starts() {
+    fn a_successful_begin_moves_the_lifecycle_then_arms_escape_then_starts_the_recording() {
         let mut host = host();
 
-        begin_activation(&mut host, ready_activation()).unwrap();
+        begin_activation(&mut host).unwrap();
 
-        assert_eq!(host.started, [DictationEvent::Start]);
         assert_eq!(
-            host.escape_armed,
-            [true],
-            "Escape must be armed before the recording starts"
+            host.effects,
+            [
+                Effect::Escape {
+                    armed: true,
+                    dictating: true
+                },
+                Effect::Start { dictating: true },
+            ]
         );
+        assert_eq!(host.started, [DictationEvent::Start]);
         assert!(host.control.is_dictating());
+    }
+
+    #[test]
+    fn an_open_typing_challenge_stops_the_begin_before_any_readiness_snapshot() {
+        let mut host = host();
+        host.typing_challenge_open = true;
+
+        begin_activation(&mut host).unwrap();
+
+        assert_eq!(host.snapshots_built, 0);
+        assert!(host.effects.is_empty());
+        assert!(!host.control.is_dictating());
     }
 
     #[test]
     fn an_unready_begin_starts_nothing_and_arms_nothing() {
         let mut host = host();
-        let mut activation = ready_activation();
-        activation.report.dictation_available = false;
+        host.unready = true;
 
-        begin_activation(&mut host, activation).unwrap();
+        begin_activation(&mut host).unwrap();
 
         assert!(host.started.is_empty());
-        assert!(host.escape_armed.is_empty());
+        assert!(host.effects.is_empty());
         assert!(!host.control.is_dictating());
     }
 
     #[test]
     fn a_second_begin_while_dictating_starts_nothing() {
         let mut host = host();
-        begin_activation(&mut host, ready_activation()).unwrap();
+        begin_activation(&mut host).unwrap();
 
-        begin_activation(&mut host, ready_activation()).unwrap();
+        begin_activation(&mut host).unwrap();
 
         assert_eq!(host.started, [DictationEvent::Start]);
         assert!(host.control.is_dictating());
@@ -363,14 +423,24 @@ mod tests {
         let mut host = host();
         host.start_fails = true;
 
-        begin_activation(&mut host, ready_activation()).unwrap_err();
+        begin_activation(&mut host).unwrap_err();
 
-        assert_eq!(host.started, [DictationEvent::Start]);
         assert_eq!(
-            host.escape_armed,
-            [true, false],
-            "the armed Escape must be disarmed as the rollback's last step"
+            host.effects,
+            [
+                Effect::Escape {
+                    armed: true,
+                    dictating: true
+                },
+                Effect::Start { dictating: true },
+                Effect::Escape {
+                    armed: false,
+                    dictating: false
+                },
+            ],
+            "the begin is abandoned before the armed Escape is disarmed as the rollback's last step"
         );
+        assert_eq!(host.started, [DictationEvent::Start]);
         assert!(
             !host.control.is_dictating(),
             "a discarded dictation must not stay marked active"
@@ -387,7 +457,7 @@ mod tests {
         let mut host = host();
         host.arm_fails = true;
 
-        let error = begin_activation(&mut host, ready_activation()).unwrap_err();
+        let error = begin_activation(&mut host).unwrap_err();
 
         assert!(
             error.contains("global Escape could not be registered"),
