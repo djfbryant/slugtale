@@ -16,7 +16,7 @@ The harness this method describes measures aggregate statistics only. It
 never prints a transcript, a reference, or a confidence value — see the doc
 comment at the top of `asr_eval.rs` for why that is load-bearing rather than
 incidental. That is also why this document is safe to keep open in the same
-window as a beads issue: nothing you paste out of the harness's own output
+window as a GitHub issue: nothing you paste out of the harness's own output
 can leak what the maintainer said while recording the corpus.
 
 ## 1. Recording the corpus

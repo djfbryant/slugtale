@@ -22,7 +22,7 @@
     // whole sample every 33ms.
     const LEVEL_INTERVAL_MS = 33;
 
-    // The waveform's own shape, all settled in the prototype (bd slugtale-6w6).
+    // The waveform's own shape, all settled in the prototype (original task slugtale-6w6).
     // The user space the envelope is drawn in; stretched to whatever width the
     // tail ends up, hence preserveAspectRatio="none".
     const VIEW_WIDTH = 160;

@@ -248,6 +248,11 @@ feature. The second-opinion setting needs two available local engines.
 
 ## Development
 
+Track work in [GitHub Issues](https://github.com/djfbryant/slugtale/issues).
+The [issue migration map](docs/issue-migration.md) links earlier task IDs to their GitHub issues.
+For desktop checks, use the shared [verification skill](.agents/skills/verify-slugtale/SKILL.md).
+The skill's native UI proof is still blocked; see its validation record.
+
 The main commands are:
 
 ```sh

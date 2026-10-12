@@ -9,7 +9,7 @@
 //! transcripts, never a transcript itself. No clip's reference text, no
 //! engine's hypothesis text, and no confidence value ever reaches stdout, the
 //! `--json` output, or stderr. That is deliberate and it is what makes this
-//! program's output safe to paste into a beads issue or a bug report: the
+//! program's output safe to paste into a GitHub issue or a bug report: the
 //! product's own rule that transcripts, alternatives, and confidence must
 //! never leave the device unlogged (transcription_engine.rs, second_opinion.rs)
 //! applies just as much to a measurement tool as it does to the app. Every

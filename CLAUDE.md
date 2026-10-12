@@ -2,60 +2,25 @@
 
 This file provides instructions and context for AI coding agents working on this project.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
-## Beads Issue Tracker
+## Issue tracking
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+Use [GitHub Issues](https://github.com/djfbryant/slugtale/issues) for all project task tracking. Read the relevant issue before starting. Create issues for remaining work, update progress in the issue, and close it only when its acceptance checks pass.
 
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+```sh
+gh issue list --repo djfbryant/slugtale
+gh issue view "$SLUGTALE_ISSUE_NUMBER" --repo djfbryant/slugtale
+gh issue create --repo djfbryant/slugtale --title "Task title" --body-file /tmp/slugtale-issue.md
+gh issue close "$SLUGTALE_ISSUE_NUMBER" --repo djfbryant/slugtale --reason completed
 ```
 
-### Rules
+Set `SLUGTALE_ISSUE_NUMBER` to the actual issue number returned by GitHub. Preserve dependencies and parent/child links in issue bodies. Use `priority:P0` through `priority:P4` and the existing type/status labels when needed. Keep durable technical facts in project documentation linked from the issue.
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+Do not commit or push unless the user asks. When handing off, report changed files, checks, issue status, and any unfinished work.
 
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+## Desktop verification
 
-## Agent Context Profiles
+Before verifying a user-facing Slugtale change, read [.agents/skills/verify-slugtale/SKILL.md](.agents/skills/verify-slugtale/SKILL.md) and the relevant feature guides. The skill is shared across agents in this repository. It remains a draft until its blocked native UI proof passes. Report that limit accurately.
 
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
-
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
-   ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
-   git push
-   git status
-   ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
-<!-- END BEADS INTEGRATION -->
 
 
 ## Build & Test
@@ -68,8 +33,8 @@ npm install                 # install Tauri CLI
 npm test                    # frontend tests, then Rust unit tests without app launch
 npm run test:rust           # Rust-only tests via scripts/run-cargo.js
 npm run test:whisper-build  # compile the Whisper runtime (CI runs this on Windows)
-npm run dev                 # cargo tauri dev (starts the tray app with hot reload)
-npm run build               # cargo tauri build (not needed for developer-run builds)
+npm run dev                 # build, sign, and open the development app on macOS
+npm run build               # build a release bundle
 ```
 
 Prerequisites on macOS: Xcode Command Line Tools (`xcode-select --install`).
@@ -86,9 +51,9 @@ src-tauri/
     main.rs             Tauri entry point — wires Builder, managed state, window events,
                         and the one `generate_handler!` list
     commands/           The Tauri command adapters, grouped by domain
-  tauri.conf.json       App config: settings window (hidden by default), bundle off
+  tauri.conf.json       App config: settings window hidden by default; bundling enabled
   capabilities/         Tauri v2 permission manifests
-  icons/icon.png        Placeholder tray/app icon (32x32 RGBA)
+  icons/icon.png        Generated tray/app icon
 ```
 
 Key design rule: `lib.rs` contains only plain Rust — no `#[tauri::command]` macros. Command wrappers live in `src/commands/`, one module per domain (settings, dictation, engines, usage, updates, platform). `lib.rs` re-exports each of its modules with `pub use`, so the domain modules can be split, renamed and moved without breaking a `slugtale_lib::*` call site. This keeps the library fully unit-testable without a running Tauri runtime: only the adapters in `commands/` and the small shell modules the binary owns (`hotkey_registration.rs`, `voice_activation.rs`, `dictation_bar_window.rs`) touch the Tauri runtime.

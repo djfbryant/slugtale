@@ -1,7 +1,7 @@
 # Settings Layout Prototype — Notes
 
 Throwaway. Delete this file and `prototypes/settings/settings-prototype.html` once a layout decision is captured.
-Tracked by bd `slugtale-dsi`.
+Original task: `slugtale-dsi`.
 
 Run: `npm run prototype:settings` or open `prototypes/settings/settings-prototype.html` in your browser.
 Interactive controls:
