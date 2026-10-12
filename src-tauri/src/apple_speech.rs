@@ -632,18 +632,27 @@ mod tests {
     }
 
     #[test]
-    fn the_status_codes_keep_the_numbers_the_swift_bridge_returns() {
-        assert_eq!(
-            [
-                STATUS_OK,
-                STATUS_UNSUPPORTED_OS,
-                STATUS_UNSUPPORTED_LOCALE,
-                STATUS_ASSETS_MISSING,
-                STATUS_FAILED,
-                STATUS_UNSUPPORTED_HARDWARE,
-            ],
-            [0, 1, 2, 3, 4, 5]
-        );
+    fn the_status_codes_match_the_numbers_the_swift_bridge_returns() {
+        let swift = include_str!("../swift/SlugtaleAppleSpeech.swift");
+        for (name, rust_value) in [
+            ("STATUS_OK", STATUS_OK),
+            ("STATUS_UNSUPPORTED_OS", STATUS_UNSUPPORTED_OS),
+            ("STATUS_UNSUPPORTED_LOCALE", STATUS_UNSUPPORTED_LOCALE),
+            ("STATUS_ASSETS_MISSING", STATUS_ASSETS_MISSING),
+            ("STATUS_FAILED", STATUS_FAILED),
+            ("STATUS_UNSUPPORTED_HARDWARE", STATUS_UNSUPPORTED_HARDWARE),
+        ] {
+            let declaration = format!("private let {name}: Int32 = ");
+            let swift_value = swift
+                .lines()
+                .find_map(|line| line.strip_prefix(&declaration))
+                .and_then(|value| value.trim().parse::<i32>().ok());
+            assert_eq!(
+                swift_value,
+                Some(rust_value),
+                "{name} differs between apple_speech.rs and SlugtaleAppleSpeech.swift"
+            );
+        }
     }
 
     #[test]
