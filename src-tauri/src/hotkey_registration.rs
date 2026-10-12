@@ -27,6 +27,7 @@ pub(super) enum GlobalKeyCommand {
 
 pub(super) fn setup_configured_hotkey(
     app: &mut tauri::App,
+    _runtime_started: crate::DictationRuntimeStarted,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let settings = crate::commands::app_files(app.handle()).settings();
 
@@ -90,18 +91,22 @@ fn escape_command(should_register: bool) -> slugtale_lib::EscapeCommand {
     }
 }
 
-/// uncancellable window. It also keeps registration outside the plugin callback,
-/// which holds the plugin's key map while invoking us.
+fn publish_key_commands(
+    app: &tauri::AppHandle,
+    commands: std::sync::mpsc::Sender<GlobalKeyCommand>,
+) -> Result<(), String> {
+    let state = app.state::<HotkeyRegistrationState>();
+    let mut registration = state
+        .0
+        .lock()
+        .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+    registration.key_commands = Some(commands);
+    Ok(())
+}
+
 fn start_global_key_worker(app: &tauri::AppHandle) -> Result<(), String> {
     let (commands, events) = std::sync::mpsc::channel::<GlobalKeyCommand>();
-    {
-        let state = app.state::<HotkeyRegistrationState>();
-        let mut registration = state
-            .0
-            .lock()
-            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
-        registration.key_commands = Some(commands);
-    }
+    publish_key_commands(app, commands)?;
 
     let app = app.clone();
     std::thread::Builder::new()

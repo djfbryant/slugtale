@@ -1,4 +1,3 @@
-
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +46,14 @@ pub trait DictationParts: Send + Sync {
         target_pid: Option<i32>,
     ) -> Result<crate::PreparedInsertion, String>;
 }
+struct LockFreeVoiceWatermark(Arc<std::sync::atomic::AtomicU64>);
+
+impl LockFreeVoiceWatermark {
+    fn read(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 pub struct DictationHost<R = crate::CpalAudioRecorder> {
     effects: Arc<dyn DictationEffects>,
     parts: Arc<dyn DictationParts>,
@@ -54,7 +61,7 @@ pub struct DictationHost<R = crate::CpalAudioRecorder> {
     focus_target_source: Arc<dyn Fn() -> Option<i32> + Send + Sync>,
     capture: Mutex<crate::AudioCaptureSession<R>>,
     session: Mutex<Option<DictationSession>>,
-    voice_watermark: Arc<std::sync::atomic::AtomicU64>,
+    voice_watermark: LockFreeVoiceWatermark,
     runtime_state: Mutex<Option<Arc<crate::DictationRuntime>>>,
     usage: Arc<crate::UsageQueue>,
 }
@@ -96,7 +103,7 @@ where
         usage: Arc<crate::UsageQueue>,
         focus_target_source: Arc<dyn Fn() -> Option<i32> + Send + Sync>,
     ) -> Self {
-        let voice_watermark = recorder.voice_watermark_cell();
+        let voice_watermark = LockFreeVoiceWatermark(recorder.voice_watermark_cell());
         Self {
             effects,
             parts,
@@ -120,10 +127,14 @@ where
     }
 
     pub fn voice_watermark(&self) -> u64 {
-        self.voice_watermark.load(Ordering::Acquire)
+        self.voice_watermark.read()
     }
 
     pub fn prepare_capture(&self, settings: &crate::Settings) {
+        self.discover_input_device_under_capture_lock(settings);
+    }
+
+    fn discover_input_device_under_capture_lock(&self, settings: &crate::Settings) {
         if let Ok(mut guard) = self.capture.lock() {
             guard.set_prefer_built_in_microphone(settings.prefer_built_in_microphone);
             let _ = guard.prepare();
@@ -160,16 +171,8 @@ where
                     Some(activation) => activation.settings,
                     None => self.effects.settings(),
                 };
-                let session = self.runtime().begin(crate::segment_pause_duration(&settings));
-                self.pin_session(DictationSession {
-                    session,
-                    settings: settings.clone(),
-                    target_pid,
-                });
-                if let Ok(mut guard) = self.capture.lock() {
-                    guard.set_prefer_built_in_microphone(settings.prefer_built_in_microphone);
-                }
-                self.handle_audio_capture_event(event)?;
+                self.begin_and_pin_dictation(&settings, target_pid);
+                self.open_capture_for_pinned_dictation(event, &settings)?;
                 self.apply_recording_feedback(event, Some(&settings))?;
             }
             crate::DictationEvent::Stop => {
@@ -185,6 +188,28 @@ where
         }
 
         Ok(())
+    }
+
+    fn begin_and_pin_dictation(&self, settings: &crate::Settings, target_pid: Option<i32>) {
+        let session = self
+            .runtime()
+            .begin(crate::segment_pause_duration(settings));
+        self.pin_session(DictationSession {
+            session,
+            settings: settings.clone(),
+            target_pid,
+        });
+    }
+
+    fn open_capture_for_pinned_dictation(
+        &self,
+        event: crate::DictationEvent,
+        settings: &crate::Settings,
+    ) -> Result<(), String> {
+        if let Ok(mut guard) = self.capture.lock() {
+            guard.set_prefer_built_in_microphone(settings.prefer_built_in_microphone);
+        }
+        self.handle_audio_capture_event(event)
     }
 
     fn advance_recording_feedback(
@@ -248,7 +273,9 @@ where
             .and_then(|guard| guard.clone())
             .filter(|pinned| pinned.session == session)
             .ok_or_else(|| {
-                format!("dictation segment belongs to session {session}, which is no longer running")
+                format!(
+                    "dictation segment belongs to session {session}, which is no longer running"
+                )
             })
     }
 
@@ -261,14 +288,13 @@ where
         event: crate::DictationEvent,
         bar_settings: Option<&crate::Settings>,
     ) -> Result<(), String> {
-        let level_callback = matches!(event, crate::DictationEvent::Start)
-            .then(|| self.dictation_audio_level_callback());
+        let level_callback_built_before_capture_lock = self.level_callback_for(event);
         let outcome = {
             let mut guard = self
                 .capture
                 .lock()
                 .map_err(|_| "audio capture mutex poisoned".to_string())?;
-            if let Some(level_callback) = level_callback {
+            if let Some(level_callback) = level_callback_built_before_capture_lock {
                 guard.set_level_callback(Some(level_callback));
             }
             guard.on_event(event)
@@ -325,6 +351,13 @@ where
         Ok(())
     }
 
+    fn level_callback_for(
+        &self,
+        event: crate::DictationEvent,
+    ) -> Option<crate::AudioLevelCallback> {
+        matches!(event, crate::DictationEvent::Start).then(|| self.dictation_audio_level_callback())
+    }
+
     fn dictation_audio_level_callback(&self) -> crate::AudioLevelCallback {
         let effects = self.effects.clone();
         let runtime = self.runtime();
@@ -341,6 +374,17 @@ where
         self.effects.emit_dictation_audio_level(0.0);
     }
 
+    fn insertion_rechecked_against_session(
+        &self,
+        pinned: &DictationSession,
+        session: u64,
+    ) -> Result<crate::PreparedInsertion, String> {
+        let runtime = self.runtime();
+        let mut prepared = self.parts.prepared_insertion(pinned.target_pid)?;
+        prepared.guard_with_session(session, runtime.session_effects());
+        Ok(prepared)
+    }
+
     pub fn run_dictation_segment(
         &self,
         session: u64,
@@ -351,9 +395,7 @@ where
         let settings = &pinned.settings;
         let stack = self.parts.dictation_stack(settings)?;
 
-        let runtime = self.runtime();
-        let mut prepared = self.parts.prepared_insertion(pinned.target_pid)?;
-        prepared.guard_with_session(session, runtime.session_effects());
+        let prepared = self.insertion_rechecked_against_session(&pinned, session)?;
 
         let completed = crate::DictationWorkflow::new(
             &stack,
@@ -363,17 +405,7 @@ where
         )
         .complete(audio, position);
 
-        let completed = match completed {
-            Ok(outcome) if prepared.insertion_was_refused() => {
-                Ok(crate::DictationSegmentOutcome {
-                    inserted: false,
-                    rescued: false,
-                    insertion_failure: None,
-                    ..outcome
-                })
-            }
-            other => other,
-        };
+        let completed = report_refused_insertion_as_not_inserted(completed, &prepared);
 
         match completed {
             Ok(outcome) => {
@@ -395,17 +427,13 @@ where
         }
     }
 
-    pub fn take_dictation_segment(
-        &self,
-        session: u64,
-        cut: u64,
-    ) -> Option<crate::CapturedAudio> {
+    pub fn take_dictation_segment(&self, session: u64, cut: u64) -> Option<crate::CapturedAudio> {
         let flushed = self
             .capture
             .lock()
             .map_err(|_| "audio capture mutex poisoned".to_string())
             .and_then(|mut guard| {
-                if !self.owns_capture(session) {
+                if !self.owns_capture(&guard, session) {
                     return Ok(None);
                 }
                 guard.cut_segment(cut).map_err(|error| error.to_string())
@@ -420,12 +448,27 @@ where
         }
     }
 
-    fn owns_capture(&self, session: u64) -> bool {
+    fn owns_capture(&self, _held_capture: &crate::AudioCaptureSession<R>, session: u64) -> bool {
         self.session
             .lock()
             .ok()
             .and_then(|guard| guard.as_ref().map(|pinned| pinned.session))
             == Some(session)
+    }
+}
+
+fn report_refused_insertion_as_not_inserted(
+    completed: Result<crate::DictationSegmentOutcome, crate::DictationWorkflowError>,
+    prepared: &crate::PreparedInsertion,
+) -> Result<crate::DictationSegmentOutcome, crate::DictationWorkflowError> {
+    match completed {
+        Ok(outcome) if prepared.insertion_was_refused() => Ok(crate::DictationSegmentOutcome {
+            inserted: false,
+            rescued: false,
+            insertion_failure: None,
+            ..outcome
+        }),
+        other => other,
     }
 }
 
@@ -687,10 +730,7 @@ mod tests {
             ))
         }
 
-        fn prepared_insertion(
-            &self,
-            target_pid: Option<i32>,
-        ) -> Result<PreparedInsertion, String> {
+        fn prepared_insertion(&self, target_pid: Option<i32>) -> Result<PreparedInsertion, String> {
             self.record(Call::PreparedInsertion(target_pid));
             Ok(PreparedInsertion::new(
                 SettledTextInsertion::new(
@@ -751,9 +791,7 @@ mod tests {
                 let (lock, condvar) = &*gate.release;
                 let mut released = lock.lock().unwrap();
                 while !*released {
-                    released = condvar
-                        .wait(released)
-                        .expect("decode gate mutex is usable");
+                    released = condvar.wait(released).expect("decode gate mutex is usable");
                 }
             }
             Ok(EngineTranscription {
@@ -847,6 +885,7 @@ mod tests {
         started_preferring_built_in: Arc<Mutex<Option<bool>>>,
         prefer_built_in: bool,
         join_the_level_thread_on_stop: bool,
+        when_microphone_opens: Arc<dyn Fn() + Send + Sync>,
     }
 
     impl FakeRecorder {
@@ -860,6 +899,7 @@ mod tests {
                 started_preferring_built_in: Arc::default(),
                 prefer_built_in: false,
                 join_the_level_thread_on_stop: false,
+                when_microphone_opens: Arc::new(|| {}),
             }
         }
 
@@ -900,6 +940,7 @@ mod tests {
         }
 
         fn start(&mut self) -> Result<(), AudioCaptureError> {
+            (self.when_microphone_opens)();
             *self.started_preferring_built_in.lock().unwrap() = Some(self.prefer_built_in);
             if self.fail_start {
                 return Err(AudioCaptureError::new("fake start failure"));
@@ -1025,10 +1066,9 @@ mod tests {
             ));
             let runtime_host: Arc<dyn DictationRuntimeHost> = host.clone();
             let watermark_host = Arc::clone(&host);
-            let runtime = DictationRuntime::start(runtime_host, move || {
-                watermark_host.voice_watermark()
-            })
-            .expect("test runtime starts");
+            let runtime =
+                DictationRuntime::start(runtime_host, move || watermark_host.voice_watermark())
+                    .expect("test runtime starts");
             host.set_runtime(Arc::new(runtime)).unwrap();
 
             host.handle_dictation_event(DictationEvent::Start).unwrap();
@@ -1383,7 +1423,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn a_segment_pause_reaches_the_text_target_while_the_dictation_runs_on() {
         let surface = Arc::new(FakeSurface::default());
@@ -1427,7 +1466,6 @@ mod tests {
         assert_eq!(surface.inserted(), ["Last words"]);
         assert!(!calls.contains(&Call::NotifyCaptureFailure));
     }
-
 
     #[test]
     fn stop_joins_the_level_thread_without_freezing_on_its_watermark_probe() {
@@ -1545,12 +1583,10 @@ mod tests {
             "the microphone was never asked to cut anything"
         );
 
-        assert!(
-            dictating
-                .host
-                .take_dictation_segment(running_session(&dictating.host), 8_000)
-                .is_some()
-        );
+        assert!(dictating
+            .host
+            .take_dictation_segment(running_session(&dictating.host), 8_000)
+            .is_some());
         assert_eq!(dictating.drain_cuts(), [8_000]);
     }
 
@@ -1635,5 +1671,85 @@ mod tests {
             hides, 1,
             "only Cancel clears the bar; the old job's settle must not hide the new one"
         );
+    }
+
+    #[test]
+    fn start_begins_and_pins_the_dictation_before_the_microphone_opens() {
+        let surface = Arc::new(FakeSurface::default());
+        let host_seen_by_microphone: Arc<
+            std::sync::OnceLock<std::sync::Weak<DictationHost<FakeRecorder>>>,
+        > = Arc::default();
+        let pinned_when_microphone_opened = Arc::new(Mutex::new(None));
+        let recorder = FakeRecorder {
+            when_microphone_opens: {
+                let host = Arc::clone(&host_seen_by_microphone);
+                let seen = Arc::clone(&pinned_when_microphone_opened);
+                Arc::new(move || {
+                    let host = host.get().and_then(std::sync::Weak::upgrade).unwrap();
+                    *seen.lock().unwrap() = Some(host.session.lock().unwrap().is_some());
+                })
+            },
+            ..FakeRecorder::healthy()
+        };
+        let host = Arc::new(host_with(&surface, recorder));
+        host_seen_by_microphone.set(Arc::downgrade(&host)).unwrap();
+
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+
+        assert_eq!(
+            *pinned_when_microphone_opened.lock().unwrap(),
+            Some(true),
+            "the microphone opened before the dictation was begun and pinned"
+        );
+    }
+
+    #[test]
+    fn a_new_dictation_starts_unable_to_flush_on_the_last_ones_voice() {
+        let surface = Arc::new(FakeSurface::default());
+        let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
+        dictating.microphone.voice(FakeMicrophone::speaking());
+        dictating.cancel();
+        dictating.start_another_dictation();
+
+        std::thread::sleep(TEST_PAUSE + PAUSE_SLOP);
+        dictating.microphone.voice(0.0);
+
+        assert!(
+            dictating.counted.recv_timeout(PAUSE_SLOP).is_err(),
+            "a Pause Flush fired on voice heard before this dictation began"
+        );
+        assert!(dictating.drain_cuts().is_empty());
+    }
+
+    #[test]
+    fn a_refused_insertion_is_reported_as_not_inserted_rather_than_as_a_success() {
+        let surface = Arc::new(FakeSurface::default()).transcribing_as(&["words"]);
+        let host = host_with(&surface, FakeRecorder::healthy());
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+        let session = running_session(&host);
+        host.handle_dictation_event(DictationEvent::Cancel).unwrap();
+
+        let outcome = host
+            .run_dictation_segment(
+                session,
+                CapturedAudio::mono_16khz(vec![0.0, 0.25]),
+                DictationSegmentPosition::First,
+            )
+            .expect("a refused insertion is not an error");
+
+        assert!(!outcome.inserted);
+        assert!(!outcome.rescued);
+        assert!(outcome.insertion_failure.is_none());
+        assert!(surface.inserted().is_empty());
+    }
+
+    #[test]
+    fn the_host_hides_the_bar_whenever_the_runtime_says_the_last_job_settled() {
+        let surface = Arc::new(FakeSurface::default());
+        let host = host_with(&surface, FakeRecorder::healthy());
+
+        DictationRuntimeHost::last_job_settled(&host, 7);
+
+        assert_eq!(surface.calls(), vec![Call::HideBar]);
     }
 }

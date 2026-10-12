@@ -185,15 +185,18 @@ pub(crate) fn mark_typing_challenge_closed(manager: &impl tauri::Manager<tauri::
 #[tauri::command]
 pub(crate) fn open_typing_challenge(app: tauri::AppHandle) -> Result<(), String> {
     mark_typing_challenge_open(&app);
+    show_typing_challenge_window(&app)
+}
 
-    if let Some(window) = WindowLabel::TypingChallenge.window(&app) {
+fn show_typing_challenge_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = WindowLabel::TypingChallenge.window(app) {
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
     }
 
     let built = tauri::WebviewWindowBuilder::new(
-        &app,
+        app,
         WindowLabel::TypingChallenge.as_str(),
         tauri::WebviewUrl::App("typing-challenge.html".into()),
     )
@@ -205,7 +208,7 @@ pub(crate) fn open_typing_challenge(app: tauri::AppHandle) -> Result<(), String>
     match built {
         Ok(_) => Ok(()),
         Err(error) => {
-            mark_typing_challenge_closed(&app);
+            mark_typing_challenge_closed(app);
             Err(error.to_string())
         }
     }

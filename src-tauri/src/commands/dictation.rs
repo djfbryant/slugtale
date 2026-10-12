@@ -74,26 +74,34 @@ pub(crate) fn begin_dictation(
     input: slugtale_lib::DictationInput,
     arm_escape: &mut dyn FnMut(bool) -> Result<(), String>,
 ) -> Result<(), String> {
-    if dictation_input_is_inert(app) {
-        return Ok(());
-    }
-
-    let activation = build_activation_snapshot_for(app, input);
-    if !activation.dictation_available() {
-        report_not_ready(app, &activation.report);
-    }
-
-    slugtale_lib::begin_activation(&mut TauriBeginHost { app, arm_escape }, activation)
+    slugtale_lib::begin_activation(&mut TauriBeginHost {
+        app,
+        input,
+        arm_escape,
+    })
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 struct TauriBeginHost<'a> {
     app: &'a tauri::AppHandle,
+    input: slugtale_lib::DictationInput,
     arm_escape: &'a mut dyn FnMut(bool) -> Result<(), String>,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl slugtale_lib::BeginHost for TauriBeginHost<'_> {
+    fn typing_challenge_is_open(&self) -> bool {
+        dictation_input_is_inert(self.app)
+    }
+
+    fn readiness_snapshot(&mut self) -> slugtale_lib::DictationActivation {
+        let activation = build_activation_snapshot_for(self.app, self.input);
+        if !activation.dictation_available() {
+            report_not_ready(self.app, &activation.report);
+        }
+        activation
+    }
+
     fn with_control<R>(
         &mut self,
         step: &mut dyn FnMut(&mut slugtale_lib::DictationControl) -> R,

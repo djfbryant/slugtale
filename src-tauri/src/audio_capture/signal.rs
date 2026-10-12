@@ -177,6 +177,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_voice_level_matches_the_dictation_bar_threshold() {
+        let bar = include_str!("../../../src/dictation-bar.js");
+        let declaration = "const VOICE_LEVEL = ";
+        let bar_value: f32 = bar
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(declaration))
+            .and_then(|rest| rest.trim_end_matches(';').parse().ok())
+            .expect("src/dictation-bar.js declares VOICE_LEVEL");
+
+        assert_eq!(
+            VOICE_LEVEL, bar_value,
+            "VOICE_LEVEL in signal.rs must equal VOICE_LEVEL in src/dictation-bar.js"
+        );
+    }
+
+    #[test]
     fn input_audio_is_normalized_to_mono_16khz_samples() {
         let audio = captured_audio_from_interleaved_input(
             48_000,

@@ -12,6 +12,8 @@ pub enum TranscriptionEngine {
     AppleSpeech,
 }
 
+const STARTUP_NOT_FINISHED_REASON: &str = "transcription engines are not ready yet";
+
 impl TranscriptionEngine {
     pub const ALL: [Self; 4] = [
         Self::Whisper,
@@ -43,9 +45,7 @@ impl TranscriptionEngine {
     pub fn missing_provider_reason(self) -> &'static str {
         match self {
             Self::Whisper => "could not resolve a local model directory for Whisper",
-            Self::Parakeet | Self::Phonon | Self::AppleSpeech => {
-                "transcription engines are not ready yet"
-            }
+            Self::Parakeet | Self::Phonon | Self::AppleSpeech => STARTUP_NOT_FINISHED_REASON,
         }
     }
 }
@@ -608,6 +608,35 @@ mod tests {
             TranscriptionEngine::AppleSpeech.missing_provider_reason(),
             "transcription engines are not ready yet"
         );
+    }
+
+    #[test]
+    fn an_unregistered_provider_is_reported_as_startup_not_finished() {
+        for engine in [
+            TranscriptionEngine::Parakeet,
+            TranscriptionEngine::Phonon,
+            TranscriptionEngine::AppleSpeech,
+        ] {
+            assert_eq!(
+                engine.missing_provider_reason(),
+                STARTUP_NOT_FINISHED_REASON
+            );
+        }
+        assert_ne!(
+            TranscriptionEngine::Whisper.missing_provider_reason(),
+            STARTUP_NOT_FINISHED_REASON
+        );
+    }
+
+    #[test]
+    fn the_default_warm_up_loads_nothing_so_an_engine_that_loads_must_override_it() {
+        let provider = StatedProvider::new(
+            TranscriptionEngine::Parakeet,
+            EngineAvailability::Available,
+            EngineAssets::unmeasured(),
+        );
+
+        assert_eq!(EngineTranscriber::warm_up(&provider), Ok(()));
     }
 
     #[test]

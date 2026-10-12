@@ -523,6 +523,24 @@ mod tests {
     }
 
     #[test]
+    fn an_out_of_range_pause_is_stored_as_written_and_clamped_only_when_used() {
+        let path = temp_settings_path("pause-clamped-only-at-use");
+        let mut settings = Settings::default();
+        settings.segment_pause_secs = -1;
+
+        save_settings(&path, &settings).unwrap();
+        let loaded = load_settings(&path);
+
+        std::fs::remove_file(&path).ok();
+        assert_eq!(loaded.segment_pause_secs, -1);
+        assert_eq!(
+            segment_pause_duration(&loaded),
+            std::time::Duration::from_secs(MIN_SEGMENT_PAUSE_SECS as u64)
+        );
+        assert_eq!(loaded.segment_pause_secs, -1, "using the pause does not rewrite it");
+    }
+
+    #[test]
     fn saving_a_segment_pause_persists_it_and_reports_the_new_length() {
         let path = temp_settings_path("segment-pause-save");
         let adopted = std::cell::RefCell::new(Vec::new());
