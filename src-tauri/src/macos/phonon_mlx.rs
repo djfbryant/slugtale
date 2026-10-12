@@ -88,16 +88,24 @@ impl MlxProvider {
         self.unload();
     }
 
-    fn begin_change(&self) {
+    fn begin_change(&self, _install_gate: &MutexGuard<'_, ()>) {
         let mut slot = lock(&self.worker);
         slot.take();
         self.changing.store(true, Ordering::Release);
     }
 
-    fn finish_change(&self) {
+    fn finish_change(&self, _install_gate: &MutexGuard<'_, ()>) {
         let availability = probe(&self.root);
-        let _slot = lock(&self.worker);
+        let slot = lock(&self.worker);
         self.changing.store(false, Ordering::Release);
+        self.publish_availability(&slot, availability);
+    }
+
+    fn publish_availability(
+        &self,
+        _worker_slot: &MutexGuard<'_, Option<Worker>>,
+        availability: EngineAvailability,
+    ) {
         *lock(&self.availability) = availability;
     }
 
@@ -119,7 +127,7 @@ impl MlxProvider {
         }
         if slot.is_none() {
             let availability = probe(&self.root);
-            *lock(&self.availability) = availability.clone();
+            self.publish_availability(&slot, availability.clone());
             if let EngineAvailability::Unavailable(reason) = availability {
                 return Err(AsrError::EngineUnavailable {
                     engine: TranscriptionEngine::Phonon,
@@ -140,11 +148,11 @@ impl MlxProvider {
         downloader: &dyn ModelDownloader,
         on_progress: &mut dyn FnMut(DownloadProgress),
     ) -> Result<AssetInstall, String> {
-        let _gate = lock(&self.install_gate);
+        let gate = lock(&self.install_gate);
         cancelled(&self.stop)?;
-        self.begin_change();
+        self.begin_change(&gate);
         let result = install(&self.root, downloader, &self.stop, on_progress);
-        self.finish_change();
+        self.finish_change(&gate);
         result?;
         Ok(AssetInstall { warm_up: true })
     }
@@ -251,14 +259,14 @@ impl EngineAssetLifecycle for MlxProvider {
         self.install_with(&HttpModelDownloader, on_progress)
     }
     fn remove_assets(&self) -> Result<(), String> {
-        let _gate = lock(&self.install_gate);
-        self.begin_change();
+        let gate = lock(&self.install_gate);
+        self.begin_change(&gate);
         let result = if self.root.exists() {
             std::fs::remove_dir_all(&self.root)
         } else {
             Ok(())
         };
-        self.finish_change();
+        self.finish_change(&gate);
         result.map_err(|_| "Could not remove Phonon-2 MLX. Close Slugtale and try again.".into())
     }
 }

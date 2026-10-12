@@ -21,9 +21,7 @@ impl WhisperRuntimeCache {
     pub fn runtime_for(&self, model: &LocalModelRef) -> Arc<LocalWhisperRuntime> {
         let mut state = self.0.lock().expect("whisper runtime cache mutex poisoned");
         let runtime = Self::runtime_for_locked(&mut state, model);
-        if state.shutting_down {
-            runtime.shutdown();
-        }
+        Self::stop_permanently_if_cache_is_shut_down(&state, &runtime);
         runtime
     }
 
@@ -54,6 +52,15 @@ impl WhisperRuntimeCache {
         };
         state.shutting_down = true;
         if let Some(runtime) = state.runtime.as_ref() {
+            runtime.shutdown();
+        }
+    }
+
+    fn stop_permanently_if_cache_is_shut_down(
+        state: &WhisperRuntimeCacheState,
+        runtime: &LocalWhisperRuntime,
+    ) {
+        if state.shutting_down {
             runtime.shutdown();
         }
     }
@@ -138,6 +145,29 @@ mod tests {
         let runtime = cache.runtime_for(&LocalModelRef::at(model_path));
 
         assert!(runtime.warm_up().is_err());
+        std::fs::remove_dir_all(&model_dir).ok();
+    }
+
+    #[cfg(feature = "local-whisper-runtime")]
+    #[test]
+    fn every_runtime_handed_out_after_cache_shutdown_is_permanently_stopped() {
+        let cache = WhisperRuntimeCache::default();
+        let model_dir = unique_test_dir("whisper-runtimes-after-shutdown");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let first_path = model_dir.join(DEFAULT_MODEL_FILENAME);
+        let second_path = model_dir.join("custom-model.bin");
+        std::fs::write(&first_path, b"not-a-real-model").unwrap();
+        std::fs::write(&second_path, b"not-a-real-model").unwrap();
+
+        cache.shutdown();
+
+        for path in [first_path, second_path] {
+            let runtime = cache.runtime_for(&LocalModelRef::at(path));
+            assert_eq!(
+                runtime.warm_up().unwrap_err(),
+                AsrError::Runtime("local Whisper runtime is shutting down".to_string())
+            );
+        }
         std::fs::remove_dir_all(&model_dir).ok();
     }
 

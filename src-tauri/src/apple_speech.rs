@@ -51,6 +51,13 @@ bridge_convention! {
     const ALTERNATIVE_SEPARATOR: char = '\u{1E}';
 
     const CONFIDENCE_UNREPORTED: f64 = -1.0;
+
+    const STATUS_OK: i32 = 0;
+    const STATUS_UNSUPPORTED_OS: i32 = 1;
+    const STATUS_UNSUPPORTED_LOCALE: i32 = 2;
+    const STATUS_ASSETS_MISSING: i32 = 3;
+    const STATUS_FAILED: i32 = 4;
+    const STATUS_UNSUPPORTED_HARDWARE: i32 = 5;
 }
 
 #[cfg(any(test, not(all(target_os = "macos", feature = "apple-speech-runtime"))))]
@@ -238,7 +245,8 @@ mod bridge {
 
     use super::{
         reported_confidence, split_alternatives, APPLE_SPEECH_ENGINE, APPLE_SPEECH_REQUIRED_OS,
-        CONFIDENCE_UNREPORTED,
+        CONFIDENCE_UNREPORTED, STATUS_ASSETS_MISSING, STATUS_FAILED, STATUS_OK,
+        STATUS_UNSUPPORTED_HARDWARE, STATUS_UNSUPPORTED_LOCALE, STATUS_UNSUPPORTED_OS,
     };
     use crate::{
         AsrError, CapturedAudio, EngineAvailability, EngineConfidence, EngineTranscription,
@@ -246,13 +254,6 @@ mod bridge {
     };
     use std::ffi::{c_char, CStr, CString};
     use std::ptr;
-
-    const STATUS_OK: i32 = 0;
-    const STATUS_UNSUPPORTED_OS: i32 = 1;
-    const STATUS_UNSUPPORTED_LOCALE: i32 = 2;
-    const STATUS_ASSETS_MISSING: i32 = 3;
-    const STATUS_FAILED: i32 = 4;
-    const STATUS_UNSUPPORTED_HARDWARE: i32 = 5;
 
     extern "C" {
         fn slugtale_apple_speech_probe(
@@ -296,6 +297,24 @@ mod bridge {
             .into_owned();
         unsafe { slugtale_apple_speech_free(pointer) };
         Some(owned)
+    }
+
+    struct DrainedOutParameters {
+        text: Option<String>,
+        alternatives: Option<String>,
+        detail: Option<String>,
+    }
+
+    fn drain_out_parameters(
+        text: *mut c_char,
+        alternatives: *mut c_char,
+        detail: *mut c_char,
+    ) -> DrainedOutParameters {
+        DrainedOutParameters {
+            text: take_string(text),
+            alternatives: take_string(alternatives),
+            detail: take_string(detail),
+        }
     }
 
     fn locale_argument(locale: &str) -> Result<CString, EngineUnavailable> {
@@ -406,9 +425,11 @@ mod bridge {
         };
         let latency = started.elapsed();
 
-        let text = take_string(text);
-        let alternatives = take_string(alternatives);
-        let detail = take_string(detail);
+        let DrainedOutParameters {
+            text,
+            alternatives,
+            detail,
+        } = drain_out_parameters(text, alternatives, detail);
 
         match status {
             STATUS_OK => {}
@@ -595,6 +616,34 @@ mod tests {
         assert_eq!(reported_confidence(0.0), Some(0.0));
         assert_eq!(reported_confidence(1.0), Some(1.0));
         assert_eq!(reported_confidence(0.864), Some(0.864));
+    }
+
+    #[test]
+    fn the_unreported_sentinel_can_never_be_mistaken_for_a_score() {
+        assert!(!(0.0..=1.0).contains(&CONFIDENCE_UNREPORTED));
+        assert!(CONFIDENCE_UNREPORTED.is_finite());
+    }
+
+    #[test]
+    fn the_alternative_separator_is_a_control_character_a_transcript_never_holds() {
+        assert!(ALTERNATIVE_SEPARATOR.is_control());
+        assert!(!ALTERNATIVE_SEPARATOR.is_whitespace());
+        assert_eq!(ALTERNATIVE_SEPARATOR, '\u{1E}');
+    }
+
+    #[test]
+    fn the_status_codes_keep_the_numbers_the_swift_bridge_returns() {
+        assert_eq!(
+            [
+                STATUS_OK,
+                STATUS_UNSUPPORTED_OS,
+                STATUS_UNSUPPORTED_LOCALE,
+                STATUS_ASSETS_MISSING,
+                STATUS_FAILED,
+                STATUS_UNSUPPORTED_HARDWARE,
+            ],
+            [0, 1, 2, 3, 4, 5]
+        );
     }
 
     #[test]

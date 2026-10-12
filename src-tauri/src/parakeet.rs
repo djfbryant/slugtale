@@ -117,7 +117,7 @@ pub struct ParakeetProvider {
     asset_dir: PathBuf,
     availability: Mutex<EngineAvailability>,
     #[cfg(feature = "local-parakeet-runtime")]
-    session: Mutex<Option<parakeet_rs::ParakeetTDT>>,
+    session_slot: Mutex<Option<parakeet_rs::ParakeetTDT>>,
     #[cfg(feature = "local-parakeet-runtime")]
     shutting_down: std::sync::atomic::AtomicBool,
 }
@@ -134,7 +134,7 @@ impl ParakeetProvider {
             asset_dir,
             availability: Mutex::new(availability),
             #[cfg(feature = "local-parakeet-runtime")]
-            session: Mutex::new(None),
+            session_slot: Mutex::new(None),
             #[cfg(feature = "local-parakeet-runtime")]
             shutting_down: std::sync::atomic::AtomicBool::new(false),
         }
@@ -165,6 +165,14 @@ fn probe_availability(model: &TdtModel, asset_dir: &Path) -> EngineAvailability 
             model.files.assets.len()
         ),
     })
+}
+
+#[cfg(any(test, feature = "local-parakeet-runtime"))]
+fn decode_failed(model: &TdtModel) -> AsrError {
+    AsrError::Runtime(format!(
+        "{} could not decode this recording. Try dictating again.",
+        model.name()
+    ))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -219,7 +227,7 @@ impl EngineTranscriber for ParakeetProvider {
     }
 
     fn warm_up(&self) -> Result<(), AsrError> {
-        ParakeetProvider::warm_up(self)
+        self.load_session_now()
     }
 }
 
@@ -264,7 +272,7 @@ impl EngineAssetLifecycle for ParakeetProvider {
 
 #[cfg(not(feature = "local-parakeet-runtime"))]
 impl ParakeetProvider {
-    pub fn warm_up(&self) -> Result<(), AsrError> {
+    fn load_session_now(&self) -> Result<(), AsrError> {
         Err(self.runtime_not_built())
     }
 
@@ -289,7 +297,7 @@ impl ParakeetProvider {
 
 #[cfg(feature = "local-parakeet-runtime")]
 impl ParakeetProvider {
-    pub fn warm_up(&self) -> Result<(), AsrError> {
+    fn load_session_now(&self) -> Result<(), AsrError> {
         self.with_session(|_| Ok(()))
     }
 
@@ -302,11 +310,15 @@ impl ParakeetProvider {
         use std::sync::atomic::Ordering;
 
         self.shutting_down.store(true, Ordering::Release);
-        lock(&self.session).take();
+        self.drop_session_under_its_lock();
     }
 
     pub fn unload(&self) {
-        lock(&self.session).take();
+        self.drop_session_under_its_lock();
+    }
+
+    fn drop_session_under_its_lock(&self) {
+        lock(&self.session_slot).take();
     }
 
     /// Run an operation against the cached session, loading it on first use.
@@ -326,7 +338,7 @@ impl ParakeetProvider {
             ));
         }
 
-        let mut session = lock(&self.session);
+        let mut session = lock(&self.session_slot);
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(AsrError::Runtime(
                 "the Parakeet runtime is shutting down".to_string(),
@@ -403,13 +415,7 @@ impl ParakeetProvider {
                     1,
                     Some(parakeet_rs::TimestampMode::Words),
                 )
-                .map_err(|error| {
-                    let _ = error;
-                    AsrError::Runtime(format!(
-                        "{} could not decode this recording. Try dictating again.",
-                        self.model.name()
-                    ))
-                })
+                .map_err(|_| decode_failed(self.model))
         })?;
 
         Ok(EngineTranscription {
@@ -783,6 +789,17 @@ mod tests {
                 other => panic!("expected an unavailable engine, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn a_decode_failure_says_nothing_about_what_was_decoded() {
+        assert_eq!(
+            decode_failed(&PARAKEET_TDT_V2),
+            AsrError::Runtime(
+                "Parakeet TDT v2 could not decode this recording. Try dictating again."
+                    .to_string()
+            )
+        );
     }
 
     #[test]

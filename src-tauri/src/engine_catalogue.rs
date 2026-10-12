@@ -17,7 +17,7 @@ pub struct TranscriptionEngineCatalogue {
     phonon: Mutex<Option<Arc<PhononProvider>>>,
     apple: Arc<AppleSpeechProvider>,
     warm_generation: Arc<std::sync::atomic::AtomicU64>,
-    released_for: Mutex<Option<TranscriptionEngine>>,
+    resident_engine: Mutex<Option<TranscriptionEngine>>,
     coordinator: SecondOpinionCoordinator,
 }
 
@@ -31,7 +31,7 @@ impl TranscriptionEngineCatalogue {
             phonon: Mutex::new(None),
             apple: Arc::new(AppleSpeechProvider::new()),
             warm_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            released_for: Mutex::new(None),
+            resident_engine: Mutex::new(None),
             coordinator: SecondOpinionCoordinator::default(),
         };
         if let Some(model_dir) = model_dir {
@@ -99,7 +99,7 @@ impl TranscriptionEngineCatalogue {
         engine_that_can_run(settings.primary_engine, &self.availability(settings))
     }
 
-    pub fn prepare_primary_warm_up(&self, settings: &Settings) -> Option<EngineWarmUp> {
+    fn prepare_primary_warm_up(&self, settings: &Settings) -> Option<EngineWarmUp> {
         let engine = self.effective_primary_engine(settings)?;
         let provider = self.provider(settings, engine)?;
         let expected_generation = self
@@ -126,15 +126,15 @@ impl TranscriptionEngineCatalogue {
     /// engine: repeated calls for the same `keep` do nothing, so a polled
     /// caller cannot unload a model another engine legitimately reloaded.
     pub fn release_models_except(&self, keep: TranscriptionEngine) {
-        let mut released_for = self
-            .released_for
+        let mut resident_engine = self
+            .resident_engine
             .lock()
             .expect("engine catalogue release mutex poisoned");
-        if *released_for == Some(keep) {
+        if *resident_engine == Some(keep) {
             return;
         }
-        *released_for = Some(keep);
-        drop(released_for);
+        *resident_engine = Some(keep);
+        drop(resident_engine);
 
         if keep != TranscriptionEngine::Whisper {
             self.whisper.release();
@@ -722,6 +722,23 @@ mod tests {
             &after_first_release,
             &after_second_release
         ));
+    }
+
+    #[test]
+    fn one_callers_release_is_remembered_for_every_caller() {
+        let catalogue = TranscriptionEngineCatalogue::new(Some(PathBuf::from("models")));
+
+        catalogue.release_models_except(TranscriptionEngine::Parakeet);
+        assert_eq!(
+            *catalogue.resident_engine.lock().unwrap(),
+            Some(TranscriptionEngine::Parakeet)
+        );
+
+        catalogue.release_models_except(TranscriptionEngine::Whisper);
+        assert_eq!(
+            *catalogue.resident_engine.lock().unwrap(),
+            Some(TranscriptionEngine::Whisper)
+        );
     }
 
     #[test]
