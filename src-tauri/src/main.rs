@@ -33,6 +33,39 @@ use commands::usage::{
     redo_typing_challenges, set_typing_estimate, set_usage_storing, submit_typing_challenge,
 };
 
+struct DictationRuntimeStarted;
+
+fn manage_dictation_host(
+    app: &mut tauri::App,
+) -> Result<Arc<DictationHost>, Box<dyn std::error::Error>> {
+    let usage =
+        slugtale_lib::UsageQueue::start(commands::usage::usage_writer(app.handle().clone()))
+            .map_err(std::io::Error::other)?;
+    let surface = Arc::new(commands::dictation::TauriSurface {
+        app: app.handle().clone(),
+    });
+    let effects: Arc<dyn DictationEffects> = surface.clone();
+    let parts: Arc<dyn DictationParts> = surface.clone();
+    let host: Arc<DictationHost> = Arc::new(DictationHost::new(effects, parts, usage));
+    app.manage(Arc::clone(&host));
+    Ok(host)
+}
+
+fn start_dictation_runtime(
+    host: &Arc<DictationHost>,
+) -> Result<DictationRuntimeStarted, Box<dyn std::error::Error>> {
+    let watermark_host = Arc::clone(host);
+    let runtime_host = Arc::clone(host);
+    let runtime = slugtale_lib::DictationRuntime::start(
+        runtime_host,
+        move || watermark_host.voice_watermark(),
+    )
+    .map_err(std::io::Error::other)?;
+    host.set_runtime(Arc::new(runtime))
+        .map_err(std::io::Error::other)?;
+    Ok(DictationRuntimeStarted)
+}
+
 fn main() {
     let reauthorize_permissions =
         slugtale_lib::permission_reauthorization_requested(std::env::args());
@@ -50,27 +83,10 @@ fn main() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             app.manage(AppFiles::from_app(app.handle()));
-            let usage =
-                slugtale_lib::UsageQueue::start(commands::usage::usage_writer(app.handle().clone()))
-                    .map_err(std::io::Error::other)?;
-            let surface = Arc::new(commands::dictation::TauriSurface {
-                app: app.handle().clone(),
-            });
-            let effects: Arc<dyn DictationEffects> = surface.clone();
-            let parts: Arc<dyn DictationParts> = surface.clone();
-            let host: Arc<DictationHost> = Arc::new(DictationHost::new(effects, parts, usage));
-            app.manage(Arc::clone(&host));
+            let host = manage_dictation_host(app)?;
             slugtale_lib::setup_tray(app)?;
-            let watermark_host = Arc::clone(&host);
-            let runtime_host = Arc::clone(&host);
-            let runtime = slugtale_lib::DictationRuntime::start(
-                runtime_host,
-                move || watermark_host.voice_watermark(),
-            )
-            .map_err(std::io::Error::other)?;
-            host.set_runtime(Arc::new(runtime))
-                .map_err(std::io::Error::other)?;
-            setup_configured_hotkey(app)?;
+            let runtime_started = start_dictation_runtime(&host)?;
+            setup_configured_hotkey(app, runtime_started)?;
             let settings = commands::load_current_settings(app.handle());
             let _ =
                 commands::settings::set_launch_at_login_state(app.handle(), settings.launch_at_login);

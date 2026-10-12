@@ -1,3 +1,7 @@
+    if (typeof invoke !== "function") {
+      throw new Error("tauri-bridge.js must load before dictation-bar.js");
+    }
+
     const ACCENTS = {
       red: ["#ff5a52", "rgba(255, 90, 82, 0.3)", "rgba(255, 90, 82, 0.16)"],
       amber: ["#f5a524", "rgba(245, 165, 36, 0.3)", "rgba(245, 165, 36, 0.16)"],

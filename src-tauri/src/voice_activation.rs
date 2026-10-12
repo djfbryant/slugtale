@@ -25,15 +25,20 @@ pub(super) fn save_settings(
 
     crate::commands::app_files(app).update_settings_and_apply(
         |settings| slugtale_lib::apply_voice_activation_settings(settings, enabled),
-        |settings| {
-            let whisper_can_run = app
-                .state::<slugtale_lib::TranscriptionEngineCatalogue>()
-                .whisper_provider(settings)
-                .is_some();
-            slugtale_lib::validate_voice_activation(settings, whisper_can_run)
-                .and_then(|()| sync_worker(app, settings.voice_activation_enabled))
-        },
+        |settings| change_worker_before_save(app, settings),
     )
+}
+
+fn change_worker_before_save(
+    app: &tauri::AppHandle,
+    settings: &slugtale_lib::Settings,
+) -> Result<(), String> {
+    let whisper_can_run = app
+        .state::<slugtale_lib::TranscriptionEngineCatalogue>()
+        .whisper_provider(settings)
+        .is_some();
+    slugtale_lib::validate_voice_activation(settings, whisper_can_run)
+        .and_then(|()| sync_worker(app, settings.voice_activation_enabled))
 }
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
@@ -284,14 +289,22 @@ fn target_is_dictating(app: &tauri::AppHandle) -> bool {
 }
 
 #[cfg(all(target_os = "macos", feature = "voice-activation"))]
+fn queue_escape_registration_on_global_key_worker(
+    app: &tauri::AppHandle,
+    should_register: bool,
+) -> Result<(), String> {
+    let state = app.state::<HotkeyRegistrationState>();
+    let registration = state
+        .0
+        .lock()
+        .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
+    crate::hotkey_registration::request_escape_registration(&registration, should_register)
+}
+
+#[cfg(all(target_os = "macos", feature = "voice-activation"))]
 fn trigger_start(app: &tauri::AppHandle) {
     let mut set_escape = |should_register: bool| {
-        let state = app.state::<HotkeyRegistrationState>();
-        let registration = state
-            .0
-            .lock()
-            .map_err(|_| "hotkey registration mutex poisoned".to_string())?;
-        crate::hotkey_registration::request_escape_registration(&registration, should_register)
+        queue_escape_registration_on_global_key_worker(app, should_register)
     };
 
     if let Err(error) = crate::commands::dictation::begin_dictation(
