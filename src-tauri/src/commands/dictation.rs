@@ -176,9 +176,10 @@ impl DictationParts for TauriSurface {
         settings: &slugtale_lib::Settings,
     ) -> Result<slugtale_lib::DictationStack<BoxedDiagnosticSink>, String> {
         let diagnostic_log = self.diagnostic_log(settings);
+        let timing_log = app_files(&self.app).transcription_timing_log();
         self.app
             .state::<slugtale_lib::TranscriptionEngineCatalogue>()
-            .dictation_stack(settings, diagnostic_log)
+            .dictation_stack(settings, diagnostic_log, timing_log)
             .map_err(|error| error.to_string())
     }
 

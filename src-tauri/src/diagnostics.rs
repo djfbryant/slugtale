@@ -136,11 +136,14 @@ fn render_diagnostic_event(event: &DiagnosticEvent) -> String {
                 None => "none",
             };
             format!(
-                "asr: routed via {} (escalation: {escalation}, second opinion: {second}, \
-                 selection: {:?}, {} ms)",
+                "asr: routed via {} (model: {}, escalation: {escalation}, second opinion: {second}, \
+                 selection: {:?}, {} ms, audio: {} ms, {} chars)",
                 routing.selected_engine.id(),
+                routing.model_id,
                 routing.selection,
                 routing.total_latency_ms,
+                routing.audio_ms,
+                routing.characters,
             )
         }
     }
@@ -395,15 +398,23 @@ mod tests {
         log.record(DiagnosticEvent::routing_decision(
             crate::RoutingDiagnostics {
                 selected_engine: crate::TranscriptionEngine::Parakeet,
+                model_id: "nvidia/parakeet-tdt-0.6b-v2".to_string(),
                 escalation: Some(crate::EscalationReason::EmptyTranscript),
                 selection: crate::SelectionReason::SecondOpinionSelected,
                 second_opinion_engine: Some(crate::TranscriptionEngine::Parakeet),
                 total_latency_ms: 812,
+                audio_ms: 3000,
+                characters: 27,
             },
         ));
 
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("parakeet"), "got: {}", lines[0]);
+        assert!(
+            lines[0].contains("nvidia/parakeet-tdt-0.6b-v2"),
+            "got: {}",
+            lines[0]
+        );
         assert!(lines[0].contains("EmptyTranscript"), "got: {}", lines[0]);
         assert!(
             lines[0].contains("SecondOpinionSelected"),
@@ -411,6 +422,8 @@ mod tests {
             lines[0]
         );
         assert!(lines[0].contains("812 ms"), "got: {}", lines[0]);
+        assert!(lines[0].contains("3000"), "got: {}", lines[0]);
+        assert!(lines[0].contains("27"), "got: {}", lines[0]);
     }
 
     #[test]
@@ -421,10 +434,13 @@ mod tests {
         log.record(DiagnosticEvent::routing_decision(
             crate::RoutingDiagnostics {
                 selected_engine: crate::TranscriptionEngine::Whisper,
+                model_id: "base.en".to_string(),
                 escalation: None,
                 selection: crate::SelectionReason::PrimaryAccepted,
                 second_opinion_engine: None,
                 total_latency_ms: 244,
+                audio_ms: 1000,
+                characters: 5,
             },
         ));
 

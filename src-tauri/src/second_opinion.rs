@@ -48,6 +48,8 @@ pub enum SelectionReason {
 #[derive(Debug, Clone, PartialEq)]
 struct RoutedTranscription {
     selected: EngineTranscription,
+    model_id: String,
+    audio_duration: Duration,
     escalation: Option<EscalationReason>,
     selection: SelectionReason,
     second_opinion_engine: Option<TranscriptionEngine>,
@@ -58,10 +60,13 @@ impl RoutedTranscription {
     fn diagnostics(&self) -> RoutingDiagnostics {
         RoutingDiagnostics {
             selected_engine: self.selected.engine,
+            model_id: self.model_id.clone(),
             escalation: self.escalation,
             selection: self.selection,
             second_opinion_engine: self.second_opinion_engine,
             total_latency_ms: self.total_latency.as_millis() as u64,
+            audio_ms: self.audio_duration.as_millis() as u64,
+            characters: self.selected.text().chars().count(),
         }
     }
 }
@@ -69,13 +74,16 @@ impl RoutedTranscription {
 /// What the Local Diagnostic Log may record about a routed dictation. Contains
 /// no transcript, no alternatives, no confidence value, and no audio — only
 /// engine identity, reason codes, and a duration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutingDiagnostics {
     pub selected_engine: TranscriptionEngine,
+    pub model_id: String,
     pub escalation: Option<EscalationReason>,
     pub selection: SelectionReason,
     pub second_opinion_engine: Option<TranscriptionEngine>,
     pub total_latency_ms: u64,
+    pub audio_ms: u64,
+    pub characters: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -258,7 +266,9 @@ impl SecondOpinionRouter {
 
         let Some(escalation) = self.escalation_for(&primary, audio_duration) else {
             return Ok(RoutedTranscription {
+                model_id: self.model_id_for(primary.engine),
                 selected: primary,
+                audio_duration,
                 escalation: None,
                 selection: SelectionReason::PrimaryAccepted,
                 second_opinion_engine: None,
@@ -268,7 +278,9 @@ impl SecondOpinionRouter {
 
         let Some(second_provider) = self.available_second_opinion() else {
             return Ok(RoutedTranscription {
+                model_id: self.model_id_for(primary.engine),
                 selected: primary,
+                audio_duration,
                 escalation: Some(escalation),
                 selection: SelectionReason::PrimaryKeptSecondOpinionUnavailable,
                 second_opinion_engine: None,
@@ -277,8 +289,11 @@ impl SecondOpinionRouter {
         };
 
         let second_engine = second_provider.engine();
+        let primary_model_id = self.model_id_for(primary.engine);
         let unavailable = |latency| RoutedTranscription {
+            model_id: primary_model_id.clone(),
             selected: primary.clone(),
+            audio_duration,
             escalation: Some(escalation),
             selection: SelectionReason::PrimaryKeptSecondOpinionUnavailable,
             second_opinion_engine: Some(second_engine),
@@ -298,14 +313,29 @@ impl SecondOpinionRouter {
             SelectionReason::SecondOpinionSelected => second,
             _ => primary,
         };
+        let model_id = self.model_id_for(selected.engine);
 
         Ok(RoutedTranscription {
             selected,
+            model_id,
+            audio_duration,
             escalation: Some(escalation),
             selection,
             second_opinion_engine: Some(second_engine),
             total_latency: started.elapsed(),
         })
+    }
+
+    fn model_id_for(&self, engine: TranscriptionEngine) -> String {
+        if self.primary.engine() == engine {
+            return self.primary.metadata().model_id.to_string();
+        }
+        if let Some(second) = self.second.as_ref() {
+            if second.engine() == engine {
+                return second.metadata().model_id.to_string();
+            }
+        }
+        self.primary.metadata().model_id.to_string()
     }
 
     fn escalation_for(

@@ -10,6 +10,9 @@ pub use app_update::*;
 mod diagnostics;
 pub use diagnostics::*;
 
+mod transcription_timing;
+pub use transcription_timing::*;
+
 mod app_files;
 pub use app_files::*;
 
