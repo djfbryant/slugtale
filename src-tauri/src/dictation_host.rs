@@ -31,6 +31,8 @@ pub trait DictationEffects: Send + Sync {
     fn emit_dictation_audio_level(&self, level: f32);
     fn notify_capture_failure(&self, error: &str);
     fn play_dictation_sound(&self, sound: crate::DictationSound);
+    /// Write one Stage Timing to the always-on Transcription Timing log.
+    fn record_stage_timing(&self, timing: &crate::StageTiming);
 }
 
 pub trait DictationParts: Send + Sync {
@@ -64,6 +66,7 @@ pub struct DictationHost<R = crate::CpalAudioRecorder> {
     voice_watermark: LockFreeVoiceWatermark,
     runtime_state: Mutex<Option<Arc<crate::DictationRuntime>>>,
     usage: Arc<crate::UsageQueue>,
+    stop_pressed: Mutex<Option<(u64, std::time::Instant)>>,
 }
 
 impl<R> DictationHost<R>
@@ -114,6 +117,7 @@ where
             voice_watermark,
             runtime_state: Mutex::new(None),
             usage,
+            stop_pressed: Mutex::new(None),
         }
     }
 
@@ -166,16 +170,28 @@ where
 
         match event {
             crate::DictationEvent::Start => {
+                let mut timer = crate::StageTimer::start("dictation-start");
                 let target_pid = self.frontmost_app();
                 let settings = match activation.take() {
                     Some(activation) => activation.settings,
                     None => self.effects.settings(),
                 };
+                timer.mark("read_settings");
                 self.begin_and_pin_dictation(&settings, target_pid);
-                self.open_capture_for_pinned_dictation(event, &settings)?;
+                timer.mark("begin_session");
+                let opened = self.open_capture_for_pinned_dictation(event, &settings);
+                timer.mark("open_microphone");
+                if let Err(error) = opened {
+                    timer.note("result", "microphone failed");
+                    self.effects.record_stage_timing(&timer.finish());
+                    return Err(error);
+                }
                 self.apply_recording_feedback(event, Some(&settings))?;
+                timer.mark("show_bar");
+                self.effects.record_stage_timing(&timer.finish());
             }
             crate::DictationEvent::Stop => {
+                self.note_stop_pressed();
                 self.advance_recording_feedback(event)?;
                 let settings = self.effects.settings();
                 self.handle_audio_capture_event_with_settings(event, Some(&settings))?;
@@ -258,6 +274,34 @@ where
 
     fn frontmost_app(&self) -> Option<i32> {
         (self.focus_target_source)()
+    }
+
+    fn note_stop_pressed(&self) {
+        let session = self
+            .session
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|pinned| pinned.session));
+        if let (Some(session), Ok(mut stop_pressed)) = (session, self.stop_pressed.lock()) {
+            *stop_pressed = Some((session, std::time::Instant::now()));
+        }
+    }
+
+    /// When the user pressed Stop for this session before this segment began,
+    /// so the segment is the one they are waiting on.
+    fn stop_pressed_before(
+        &self,
+        session: u64,
+        began: std::time::Instant,
+    ) -> Option<std::time::Instant> {
+        let mut stop_pressed = self.stop_pressed.lock().ok()?;
+        match *stop_pressed {
+            Some((pressed_session, pressed)) if pressed_session == session && pressed <= began => {
+                stop_pressed.take();
+                Some(pressed)
+            }
+            _ => None,
+        }
     }
 
     fn pin_session(&self, pinned: DictationSession) {
@@ -391,11 +435,48 @@ where
         audio: crate::CapturedAudio,
         position: crate::DictationSegmentPosition,
     ) -> Result<crate::DictationSegmentOutcome, String> {
+        let began = std::time::Instant::now();
+        let mut timer = match self.stop_pressed_before(session, began) {
+            Some(pressed) => {
+                let mut timer = crate::StageTimer::started_at("dictation-segment", pressed);
+                timer.mark("stop_to_worker");
+                timer
+            }
+            None => crate::StageTimer::started_at("dictation-segment", began),
+        };
+        timer.note(
+            "audio_ms",
+            crate::captured_audio_duration(&audio)
+                .as_millis()
+                .to_string(),
+        );
+        let completed = self.run_timed_dictation_segment(session, audio, position, &mut timer);
+        timer.note(
+            "result",
+            match &completed {
+                Ok(outcome) if outcome.inserted => "inserted",
+                Ok(_) => "nothing inserted",
+                Err(_) => "failed",
+            },
+        );
+        self.effects.record_stage_timing(&timer.finish());
+        completed
+    }
+
+    fn run_timed_dictation_segment(
+        &self,
+        session: u64,
+        audio: crate::CapturedAudio,
+        position: crate::DictationSegmentPosition,
+        timer: &mut crate::StageTimer,
+    ) -> Result<crate::DictationSegmentOutcome, String> {
         let pinned = self.pinned_session(session)?;
         let settings = &pinned.settings;
         let stack = self.parts.dictation_stack(settings)?;
+        timer.mark("build_engines");
 
         let prepared = self.insertion_rechecked_against_session(&pinned, session)?;
+        timer.mark("prepare_insertion");
 
         let completed = crate::DictationWorkflow::new(
             &stack,
@@ -403,7 +484,7 @@ where
             prepared.rescue.as_ref(),
             settings.transcript_cleanup,
         )
-        .complete(audio, position);
+        .complete_timed(audio, position, timer);
 
         let completed = report_refused_insertion_as_not_inserted(completed, &prepared);
 
@@ -547,6 +628,7 @@ mod tests {
         decoding: Option<Arc<DecodeGate>>,
         settings: Arc<std::sync::Mutex<crate::Settings>>,
         log_lines: Arc<std::sync::Mutex<Vec<String>>>,
+        stage_timings: Arc<std::sync::Mutex<Vec<crate::StageTiming>>>,
     }
 
     impl Default for FakeSurface {
@@ -563,6 +645,7 @@ mod tests {
                     ..crate::Settings::default()
                 })),
                 log_lines: Arc::default(),
+                stage_timings: Arc::default(),
             }
         }
     }
@@ -700,6 +783,10 @@ mod tests {
                 crate::DictationSound::Stop => "stop",
             };
             self.record(Call::PlaySound(name));
+        }
+
+        fn record_stage_timing(&self, timing: &crate::StageTiming) {
+            self.stage_timings.lock().unwrap().push(timing.clone());
         }
     }
 
@@ -1261,6 +1348,88 @@ mod tests {
             vec![Call::PreparedInsertion(Some(TEST_TARGET_PID))]
         );
         assert_eq!(surface.inserted(), vec!["Typed straight in"]);
+    }
+
+    fn stage_names(timing: &crate::StageTiming) -> Vec<&'static str> {
+        timing.stages.iter().map(|(name, _)| *name).collect()
+    }
+
+    #[test]
+    fn starting_a_dictation_times_each_step_up_to_the_open_microphone() {
+        let surface = Arc::new(FakeSurface::default());
+        let host = host_with(&surface, FakeRecorder::healthy());
+
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+
+        let timings = surface.stage_timings.lock().unwrap();
+        assert_eq!(timings.len(), 1);
+        assert_eq!(timings[0].event, "dictation-start");
+        assert_eq!(
+            stage_names(&timings[0]),
+            [
+                "read_settings",
+                "begin_session",
+                "open_microphone",
+                "show_bar"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_segment_after_stop_is_timed_from_the_stop_press_without_its_text() {
+        let secret = "do not log these dictated words";
+        let surface = Arc::new(FakeSurface::default()).transcribing_as(&[secret]);
+        let host = host_with(&surface, FakeRecorder::healthy());
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+        let session = running_session(&host);
+        host.note_stop_pressed();
+
+        host.run_dictation_segment(
+            session,
+            CapturedAudio::mono_16khz(vec![0.0; 16_000]),
+            DictationSegmentPosition::First,
+        )
+        .expect("insertion succeeded");
+
+        let timings = surface.stage_timings.lock().unwrap();
+        let segment = timings.last().unwrap();
+        assert_eq!(segment.event, "dictation-segment");
+        assert_eq!(
+            stage_names(segment),
+            [
+                "stop_to_worker",
+                "build_engines",
+                "prepare_insertion",
+                "transcribe",
+                "cleanup",
+                "insert"
+            ]
+        );
+        assert_eq!(segment.note("audio_ms"), Some("1000"));
+        assert_eq!(segment.note("result"), Some("inserted"));
+        let line = crate::render_stage_timing(segment);
+        assert!(!line.contains(secret), "leaked transcript text: {line}");
+    }
+
+    #[test]
+    fn a_pause_segment_while_still_recording_has_no_stop_wait() {
+        let surface = Arc::new(FakeSurface::default()).transcribing_as(&["first part"]);
+        let host = host_with(&surface, FakeRecorder::healthy());
+        host.handle_dictation_event(DictationEvent::Start).unwrap();
+        let session = running_session(&host);
+
+        host.run_dictation_segment(
+            session,
+            CapturedAudio::mono_16khz(vec![0.0, 0.25]),
+            DictationSegmentPosition::First,
+        )
+        .expect("insertion succeeded");
+
+        let timings = surface.stage_timings.lock().unwrap();
+        assert_eq!(
+            stage_names(timings.last().unwrap()).first(),
+            Some(&"build_engines")
+        );
     }
 
     #[test]

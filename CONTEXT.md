@@ -132,6 +132,10 @@ _Avoid_: Telemetry, analytics, crash reporting
 One local record per Dictation Segment that says which Transcription Engine and model ran, how much audio it heard, and how long it took, with only a character count for the text. It is always on and holds no audio or transcription text, so it can show why a dictation felt slow without becoming Dictation History.
 _Avoid_: Telemetry, performance analytics, dictation history
 
+**Stage Timing**:
+One local record that splits a slow task into its named steps and the time each took: app startup, an engine warm-up, the start of a dictation, or one Dictation Segment from the Stop press to the inserted text. It sits beside the Transcription Timing records in the same always-on file and carries only fixed step names and technical values, never audio or transcription text.
+_Avoid_: Trace, profile, telemetry
+
 **Dictation Language**:
 The spoken language Slugtale expects during dictation. The first version is English-only by default.
 _Avoid_: Locale, model language

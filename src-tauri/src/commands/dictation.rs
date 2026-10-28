@@ -159,6 +159,10 @@ impl DictationEffects for TauriSurface {
     fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound) {
         let _ = slugtale_lib::play_dictation_sound(sound);
     }
+
+    fn record_stage_timing(&self, timing: &slugtale_lib::StageTiming) {
+        super::record_stage_timing(&self.app, timing);
+    }
 }
 
 impl DictationParts for TauriSurface {

@@ -54,6 +54,9 @@ struct RoutedTranscription {
     selection: SelectionReason,
     second_opinion_engine: Option<TranscriptionEngine>,
     total_latency: Duration,
+    primary_engine: TranscriptionEngine,
+    primary_latency: Duration,
+    second_opinion_latency: Option<Duration>,
 }
 
 impl RoutedTranscription {
@@ -67,6 +70,11 @@ impl RoutedTranscription {
             total_latency_ms: self.total_latency.as_millis() as u64,
             audio_ms: self.audio_duration.as_millis() as u64,
             characters: self.selected.text().chars().count(),
+            primary_engine: self.primary_engine,
+            primary_latency_ms: self.primary_latency.as_millis() as u64,
+            second_opinion_latency_ms: self
+                .second_opinion_latency
+                .map(|latency| latency.as_millis() as u64),
         }
     }
 }
@@ -84,6 +92,12 @@ pub struct RoutingDiagnostics {
     pub total_latency_ms: u64,
     pub audio_ms: u64,
     pub characters: usize,
+    /// The engine that answered first, and how long it took, model load
+    /// included. With no escalation it is also the selected engine.
+    pub primary_engine: TranscriptionEngine,
+    pub primary_latency_ms: u64,
+    /// How long the Second Opinion took, when one ran.
+    pub second_opinion_latency_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -262,6 +276,8 @@ impl SecondOpinionRouter {
     fn routed(&self, audio: &CapturedAudio) -> Result<RoutedTranscription, AsrError> {
         let started = Instant::now();
         let primary = self.primary.transcribe(audio)?;
+        let primary_engine = primary.engine;
+        let primary_latency = started.elapsed();
         let audio_duration = captured_audio_duration(audio);
 
         let Some(escalation) = self.escalation_for(&primary, audio_duration) else {
@@ -273,6 +289,9 @@ impl SecondOpinionRouter {
                 selection: SelectionReason::PrimaryAccepted,
                 second_opinion_engine: None,
                 total_latency: started.elapsed(),
+                primary_engine,
+                primary_latency,
+                second_opinion_latency: None,
             });
         };
 
@@ -285,12 +304,15 @@ impl SecondOpinionRouter {
                 selection: SelectionReason::PrimaryKeptSecondOpinionUnavailable,
                 second_opinion_engine: None,
                 total_latency: started.elapsed(),
+                primary_engine,
+                primary_latency,
+                second_opinion_latency: None,
             });
         };
 
         let second_engine = second_provider.engine();
         let primary_model_id = self.model_id_for(primary.engine);
-        let unavailable = |latency| RoutedTranscription {
+        let unavailable = |latency, second_opinion_latency| RoutedTranscription {
             model_id: primary_model_id.clone(),
             selected: primary.clone(),
             audio_duration,
@@ -298,13 +320,18 @@ impl SecondOpinionRouter {
             selection: SelectionReason::PrimaryKeptSecondOpinionUnavailable,
             second_opinion_engine: Some(second_engine),
             total_latency: latency,
+            primary_engine,
+            primary_latency,
+            second_opinion_latency: Some(second_opinion_latency),
         };
 
+        let second_started = Instant::now();
         let Some(second) =
             self.second_opinion_within_budget(second_provider, audio, &self.coordinator.gate)
         else {
-            return Ok(unavailable(started.elapsed()));
+            return Ok(unavailable(started.elapsed(), second_started.elapsed()));
         };
+        let second_opinion_latency = second_started.elapsed();
 
         let selection = self
             .policy
@@ -323,6 +350,9 @@ impl SecondOpinionRouter {
             selection,
             second_opinion_engine: Some(second_engine),
             total_latency: started.elapsed(),
+            primary_engine,
+            primary_latency,
+            second_opinion_latency: Some(second_opinion_latency),
         })
     }
 

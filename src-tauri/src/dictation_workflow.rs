@@ -1,6 +1,6 @@
 use crate::{
     transcribe_captured_audio, AsrError, AsrRuntime, CapturedAudio, FinalTranscription,
-    InsertionRescue, InsertionRescueError, TextInsertion, TextInsertionError,
+    InsertionRescue, InsertionRescueError, StageTimer, TextInsertion, TextInsertionError,
     TranscriptCleanupMode,
 };
 
@@ -88,10 +88,23 @@ impl<'a> DictationWorkflow<'a> {
         audio: CapturedAudio,
         position: DictationSegmentPosition,
     ) -> Result<DictationSegmentOutcome, DictationWorkflowError> {
-        let transcription = transcribe_captured_audio(self.runtime, audio)
-            .map_err(DictationWorkflowError::Transcription)?;
+        self.complete_timed(audio, position, &mut StageTimer::start("dictation-segment"))
+    }
+
+    /// [`Self::complete`], marking the `transcribe`, `cleanup`, and `insert`
+    /// stages on `timer` as each one ends.
+    pub fn complete_timed(
+        &self,
+        audio: CapturedAudio,
+        position: DictationSegmentPosition,
+        timer: &mut StageTimer,
+    ) -> Result<DictationSegmentOutcome, DictationWorkflowError> {
+        let transcription = transcribe_captured_audio(self.runtime, audio);
+        timer.mark("transcribe");
+        let transcription = transcription.map_err(DictationWorkflowError::Transcription)?;
         let transcription =
             clean_dictation_segment(transcription, position, self.transcript_cleanup);
+        timer.mark("cleanup");
 
         if transcription.text.trim().is_empty() {
             return Ok(DictationSegmentOutcome {
@@ -104,9 +117,13 @@ impl<'a> DictationWorkflow<'a> {
 
         let mut rescued = false;
         let mut insertion_failure = None;
-        if let Err(insertion) = self.text_insertion.insert(&transcription) {
+        let inserted = self.text_insertion.insert(&transcription);
+        timer.mark("insert");
+        if let Err(insertion) = inserted {
             rescued = true;
-            if let Err(rescue) = self.insertion_rescue.rescue(&transcription) {
+            let rescue = self.insertion_rescue.rescue(&transcription);
+            timer.mark("rescue");
+            if let Err(rescue) = rescue {
                 return Err(DictationWorkflowError::InsertionRescue { insertion, rescue });
             }
             insertion_failure = Some(insertion);
@@ -478,5 +495,31 @@ mod tests {
             self.rescued.borrow_mut().push(transcription.text.clone());
             Ok(())
         }
+    }
+
+    #[test]
+    fn a_timed_segment_marks_transcribe_cleanup_and_insert_in_order() {
+        let runtime = FakeAsrRuntime::new("hello");
+        let insertion = FakeTextInsertion::default();
+        let rescue = FakeInsertionRescue::default();
+        let workflow =
+            DictationWorkflow::new(&runtime, &insertion, &rescue, TranscriptCleanupMode::Basic);
+        let mut timer = StageTimer::start("dictation-segment");
+
+        workflow
+            .complete_timed(
+                CapturedAudio::mono_16khz(vec![0.0]),
+                DictationSegmentPosition::First,
+                &mut timer,
+            )
+            .unwrap();
+
+        let stages: Vec<_> = timer
+            .finish()
+            .stages
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(stages, ["transcribe", "cleanup", "insert"]);
     }
 }
