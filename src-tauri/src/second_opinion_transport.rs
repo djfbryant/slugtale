@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn the_gate_opens_again_once_a_worker_ends() {
         let gate = gate();
-        let worker = Arc::new(Worker::new("the answer").slow(Duration::from_millis(120)));
+        let worker = Arc::new(Worker::new("the answer").slow(Duration::from_millis(500)));
 
         assert_eq!(answered_for(&worker, &gate), None);
         wait_for(|| gate.try_acquire(), "the gate to reopen");
