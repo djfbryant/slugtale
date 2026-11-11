@@ -1,10 +1,10 @@
 
 use crate::{
     engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticEvent, DiagnosticSink,
-    EngineAvailability, LocalModelManager, LocalModelRef, LocalWhisperRuntime, ParakeetProvider,
-    PhononProvider, SecondOpinionCoordinator, SecondOpinionMode, SecondOpinionRouter, Settings,
-    SharedDiagnosticLog, TranscriptionEngine, TranscriptionProvider, WhisperRuntimeCache,
-    WhisperTranscriptionProvider,
+    EngineAvailability, ErasedTranscriptionTimingLog, LocalModelManager, LocalModelRef,
+    LocalWhisperRuntime, ParakeetProvider, PhononProvider, SecondOpinionCoordinator,
+    SecondOpinionMode, SecondOpinionRouter, Settings, SharedDiagnosticLog, TranscriptionEngine,
+    TranscriptionProvider, TranscriptionTiming, WhisperRuntimeCache, WhisperTranscriptionProvider,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -249,11 +249,12 @@ impl TranscriptionEngineCatalogue {
         &self,
         settings: &Settings,
         log: SharedDiagnosticLog<S>,
+        timing_log: ErasedTranscriptionTimingLog,
     ) -> Result<DictationStack<S>, AsrError>
     where
         S: DiagnosticSink + Send + Sync + 'static,
     {
-        Ok(DictationStack::new(self.router(settings)?, log))
+        Ok(DictationStack::new(self.router(settings)?, log, timing_log))
     }
 
     pub fn shutdown(&self) {
@@ -317,10 +318,15 @@ impl<S> DictationStack<S>
 where
     S: DiagnosticSink + Send + Sync + 'static,
 {
-    pub(crate) fn new(router: SecondOpinionRouter, log: SharedDiagnosticLog<S>) -> Self {
+    pub(crate) fn new(
+        router: SecondOpinionRouter,
+        log: SharedDiagnosticLog<S>,
+        timing_log: ErasedTranscriptionTimingLog,
+    ) -> Self {
         let routing_log = log.clone();
         let router = router.observing(move |routing| {
-            routing_log.record(DiagnosticEvent::routing_decision(routing))
+            timing_log.record(&TranscriptionTiming::from_routing(&routing));
+            routing_log.record(DiagnosticEvent::routing_decision(routing));
         });
         Self { router, log }
     }
@@ -747,7 +753,7 @@ mod tests {
         let log = SharedDiagnosticLog::new(true, collecting_sink(&lines));
 
         let error = TranscriptionEngineCatalogue::default()
-            .dictation_stack(&Settings::default(), log)
+            .dictation_stack(&Settings::default(), log, no_op_timing_log())
             .err()
             .expect("a catalogue with no runnable engine must not hand out a stack");
 
@@ -831,6 +837,11 @@ mod tests {
         }
     }
 
+    fn no_op_timing_log() -> ErasedTranscriptionTimingLog {
+        crate::SharedTranscriptionTimingLog::new(crate::FileTranscriptionTimingSink::unavailable())
+            .erased()
+    }
+
     #[test]
     fn a_dictation_stack_reports_routing_and_outcomes_to_one_log() {
         let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -839,6 +850,7 @@ mod tests {
             SecondOpinionRouter::single(Arc::new(FakeProvider(TranscriptionEngine::Whisper))
                 as Arc<dyn TranscriptionProvider>),
             log,
+            no_op_timing_log(),
         );
 
         let transcription = stack
@@ -857,6 +869,31 @@ mod tests {
                 .any(|line| line.contains("final transcription completed")),
             "transcription outcome missing from {recorded:?}"
         );
+    }
+
+    #[test]
+    fn a_dictation_stack_records_one_timing_line_per_transcription() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = SharedDiagnosticLog::new(true, collecting_sink(&lines));
+        let timing_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let timing_log = crate::SharedTranscriptionTimingLog::new(collecting_sink(&timing_lines));
+        let stack = DictationStack::new(
+            SecondOpinionRouter::single(Arc::new(FakeProvider(TranscriptionEngine::Whisper))
+                as Arc<dyn TranscriptionProvider>),
+            log,
+            timing_log.erased(),
+        );
+
+        stack
+            .transcribe(crate::CapturedAudio::mono_16khz(vec![0.0; 16_000]))
+            .unwrap();
+
+        let recorded = timing_lines.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "timing lines: {recorded:?}");
+        assert!(recorded[0].contains("\"whisper\""), "got: {}", recorded[0]);
+        assert!(recorded[0].contains("\"test\""), "got: {}", recorded[0]);
+        assert!(recorded[0].contains("\"audio_ms\":1000"), "got: {}", recorded[0]);
+        assert!(recorded[0].contains("\"characters\":0"), "got: {}", recorded[0]);
     }
 
     fn collecting_sink(

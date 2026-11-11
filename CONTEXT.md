@@ -128,6 +128,10 @@ _Avoid_: Stats store, usage database, telemetry file
 A local troubleshooting log for development and support. It must not include captured audio or transcription text.
 _Avoid_: Telemetry, analytics, crash reporting
 
+**Transcription Timing**:
+One local record per Dictation Segment that says which Transcription Engine and model ran, how much audio it heard, and how long it took, with only a character count for the text. It is always on and holds no audio or transcription text, so it can show why a dictation felt slow without becoming Dictation History.
+_Avoid_: Telemetry, performance analytics, dictation history
+
 **Dictation Language**:
 The spoken language Slugtale expects during dictation. The first version is English-only by default.
 _Avoid_: Locale, model language

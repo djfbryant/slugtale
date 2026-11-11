@@ -650,7 +650,7 @@ fn evaluate_routed(
         let Ok(selected) = router.transcribe(audio) else {
             continue;
         };
-        let Some(diagnostics) = *decided
+        let Some(ref diagnostics) = *decided
             .lock()
             .expect("routing decision slot was never locked across threads")
         else {

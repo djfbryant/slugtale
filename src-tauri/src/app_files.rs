@@ -2,7 +2,8 @@
 use crate::{
     apply_and_persist, apply_usage_settings, delete_usage, load_settings, load_usage,
     record_counted_segment, save_settings, save_usage, CountedSegment, DiagnosticEvent,
-    FileDiagnosticSink, LocalDate, LocalModelManager, Settings, SharedDiagnosticLog, UsageFile,
+    ErasedTranscriptionTimingLog, FileDiagnosticSink, FileTranscriptionTimingSink, LocalDate,
+    LocalModelManager, Settings, SharedDiagnosticLog, SharedTranscriptionTimingLog, UsageFile,
 };
 use std::path::PathBuf;
 #[cfg(test)]
@@ -12,6 +13,7 @@ use std::sync::{Arc, Mutex};
 const SETTINGS_FILE: &str = "settings.json";
 const USAGE_FILE: &str = "usage.json";
 const DIAGNOSTIC_LOG_FILE: &str = "diagnostics.log";
+const TRANSCRIPTION_TIMING_FILE: &str = "transcription-timing.jsonl";
 const MODELS_DIR: &str = "models";
 
 type UsageOwner<'a> = std::sync::MutexGuard<'a, ()>;
@@ -40,6 +42,7 @@ pub struct AppFiles {
     settings: Arc<Mutex<Option<Settings>>>,
     usage_owner: Arc<Mutex<()>>,
     diagnostic_log: SharedDiagnosticLog<FileDiagnosticSink>,
+    transcription_timing_log: SharedTranscriptionTimingLog<FileTranscriptionTimingSink>,
     #[cfg(test)]
     disk_reads: Arc<AtomicUsize>,
     #[cfg(test)]
@@ -77,6 +80,10 @@ impl AppFiles {
             .as_ref()
             .map(|dir| FileDiagnosticSink::new(dir.join(DIAGNOSTIC_LOG_FILE)))
             .unwrap_or_else(FileDiagnosticSink::unavailable);
+        let timing_sink = config_dir
+            .as_ref()
+            .map(|dir| FileTranscriptionTimingSink::new(dir.join(TRANSCRIPTION_TIMING_FILE)))
+            .unwrap_or_else(FileTranscriptionTimingSink::unavailable);
 
         Self {
             config_dir,
@@ -84,6 +91,7 @@ impl AppFiles {
             settings: Arc::new(Mutex::new(None)),
             usage_owner: Arc::new(Mutex::new(())),
             diagnostic_log: SharedDiagnosticLog::new(false, sink),
+            transcription_timing_log: SharedTranscriptionTimingLog::new(timing_sink),
             #[cfg(test)]
             disk_reads: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
@@ -101,6 +109,16 @@ impl AppFiles {
 
     pub fn usage_path(&self) -> Option<PathBuf> {
         self.config_dir.as_ref().map(|dir| dir.join(USAGE_FILE))
+    }
+
+    pub fn transcription_timing_path(&self) -> Option<PathBuf> {
+        self.config_dir
+            .as_ref()
+            .map(|dir| dir.join(TRANSCRIPTION_TIMING_FILE))
+    }
+
+    pub fn transcription_timing_log(&self) -> ErasedTranscriptionTimingLog {
+        self.transcription_timing_log.erased()
     }
 
     pub fn model_dir(&self) -> Result<PathBuf, String> {

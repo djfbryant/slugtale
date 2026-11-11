@@ -727,6 +727,10 @@ mod tests {
             Ok(crate::DictationStack::new(
                 router,
                 self.diagnostic_log(settings),
+                crate::SharedTranscriptionTimingLog::new(
+                    crate::FileTranscriptionTimingSink::unavailable(),
+                )
+                .erased(),
             ))
         }
 
