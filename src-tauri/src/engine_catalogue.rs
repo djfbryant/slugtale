@@ -644,6 +644,66 @@ mod tests {
         assert_eq!(selected.unwrap().engine(), TranscriptionEngine::Parakeet);
     }
 
+    #[test]
+    fn the_whisper_fallback_engages_only_when_no_engine_can_run() {
+        let whisper: Arc<dyn TranscriptionProvider> =
+            Arc::new(FakeProvider(TranscriptionEngine::Whisper));
+        let settings = Settings {
+            primary_engine: TranscriptionEngine::Parakeet,
+            ..Settings::default()
+        };
+        let blocked = vec![(
+            TranscriptionEngine::Parakeet,
+            EngineAvailability::Unavailable(crate::EngineUnavailable::RuntimeNotBuilt),
+        )];
+
+        let fallen_back = selected_primary(&settings, &blocked, |_| None, Some(whisper.clone()));
+
+        assert_eq!(fallen_back.unwrap().engine(), TranscriptionEngine::Whisper);
+    }
+
+    #[test]
+    fn a_dictation_stack_falls_back_to_whisper_when_no_engine_can_run() {
+        let root = temp_root("fallback-stack");
+        let files =
+            crate::AppFiles::from_dirs_for_test(Some(root.join("config")), Some(root.clone()));
+        let catalogue = TranscriptionEngineCatalogue::default();
+        catalogue.set_model_manager(files.model_manager().unwrap());
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = SharedDiagnosticLog::new(true, collecting_sink(&lines));
+        let stack = catalogue
+            .dictation_stack(&Settings::default(), log, no_op_timing_log())
+            .expect("the whisper fallback resolves a stack when nothing can run");
+
+        let error = stack
+            .transcribe(crate::CapturedAudio::mono_16khz(vec![0.0; 16_000]))
+            .err()
+            .expect("the fallback provider reports its own failure");
+
+        assert!(
+            matches!(error, AsrError::ModelMissing { .. }),
+            "expected the missing local model, got {error}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_warm_up_is_absent_when_no_engine_can_run() {
+        let root = temp_root("absent-warm-up");
+        let files =
+            crate::AppFiles::from_dirs_for_test(Some(root.join("config")), Some(root.clone()));
+        let catalogue = TranscriptionEngineCatalogue::default();
+        catalogue.set_model_manager(files.model_manager().unwrap());
+
+        assert!(catalogue.begin_primary_warm_up(&Settings::default()).is_none());
+        assert_eq!(*catalogue.resident_engine.lock().unwrap(), None);
+        assert_eq!(
+            catalogue.preferred_engine_unavailable(&Settings::default()),
+            Some("this build was compiled without support for this engine".to_string())
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     struct WarmCountingProvider {
         warm_calls: Arc<std::sync::atomic::AtomicUsize>,
     }

@@ -316,45 +316,63 @@ pub(crate) fn assets_cannot_be_removed(engine: TranscriptionEngine) -> String {
     )
 }
 
-pub fn engine_that_can_run(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EngineChoice {
+    pub engine: Option<TranscriptionEngine>,
+    pub blocked_reason: Option<String>,
+}
+
+pub(crate) fn resolve_engine_choice(
     preferred: TranscriptionEngine,
     availability: &[(TranscriptionEngine, EngineAvailability)],
-) -> Option<TranscriptionEngine> {
+) -> EngineChoice {
     let can_run = |engine: TranscriptionEngine| {
         availability
             .iter()
             .any(|(candidate, state)| *candidate == engine && state.is_available())
     };
 
-    if can_run(preferred) {
-        return Some(preferred);
-    }
+    let engine = if can_run(preferred) {
+        Some(preferred)
+    } else {
+        TranscriptionEngine::ALL
+            .into_iter()
+            .find(|candidate| can_run(*candidate))
+    };
 
-    TranscriptionEngine::ALL
-        .into_iter()
-        .find(|candidate| can_run(*candidate))
+    let blocked_reason = engine.is_none().then(|| {
+        let reason = availability
+            .iter()
+            .find(|(candidate, _)| *candidate == preferred)
+            .and_then(|(_, state)| match state {
+                EngineAvailability::Available => None,
+                EngineAvailability::Unavailable(reason) => Some(reason),
+            });
+
+        match reason {
+            Some(reason) => format!("{} cannot run: {reason}", preferred.display_name()),
+            None => format!("{} cannot run in this build.", preferred.display_name()),
+        }
+    });
+
+    EngineChoice {
+        engine,
+        blocked_reason,
+    }
+}
+
+pub fn engine_that_can_run(
+    preferred: TranscriptionEngine,
+    availability: &[(TranscriptionEngine, EngineAvailability)],
+) -> Option<TranscriptionEngine> {
+    resolve_engine_choice(preferred, availability).engine
 }
 
 pub fn engine_blocked_reason(
     preferred: TranscriptionEngine,
     availability: &[(TranscriptionEngine, EngineAvailability)],
 ) -> Option<String> {
-    if engine_that_can_run(preferred, availability).is_some() {
-        return None;
-    }
-
-    let reason = availability
-        .iter()
-        .find(|(candidate, _)| *candidate == preferred)
-        .and_then(|(_, state)| match state {
-            EngineAvailability::Available => None,
-            EngineAvailability::Unavailable(reason) => Some(reason),
-        });
-
-    Some(match reason {
-        Some(reason) => format!("{} cannot run: {reason}", preferred.display_name()),
-        None => format!("{} cannot run in this build.", preferred.display_name()),
-    })
+    resolve_engine_choice(preferred, availability).blocked_reason
 }
 
 pub fn captured_audio_duration(audio: &CapturedAudio) -> Duration {
@@ -822,6 +840,52 @@ mod tests {
             engine_that_can_run(TranscriptionEngine::AppleSpeech, &[]),
             None
         );
+    }
+
+    #[test]
+    fn the_choice_and_the_blocker_agree_from_one_decision() {
+        let cases: &[(TranscriptionEngine, Vec<(TranscriptionEngine, EngineAvailability)>)] = &[
+            (
+                TranscriptionEngine::Parakeet,
+                vec![
+                    (TranscriptionEngine::Whisper, EngineAvailability::Available),
+                    (TranscriptionEngine::Parakeet, EngineAvailability::Available),
+                ],
+            ),
+            (
+                TranscriptionEngine::Parakeet,
+                vec![
+                    (TranscriptionEngine::Whisper, EngineAvailability::Available),
+                    (
+                        TranscriptionEngine::Parakeet,
+                        EngineAvailability::Unavailable(EngineUnavailable::AssetsMissing {
+                            detail: "Parakeet assets are not installed.".to_string(),
+                        }),
+                    ),
+                ],
+            ),
+            (
+                TranscriptionEngine::Whisper,
+                vec![(
+                    TranscriptionEngine::Whisper,
+                    EngineAvailability::Unavailable(EngineUnavailable::RuntimeNotBuilt),
+                )],
+            ),
+        ];
+
+        for (preferred, availability) in cases {
+            let choice = resolve_engine_choice(*preferred, availability);
+            assert_eq!(choice.engine, engine_that_can_run(*preferred, availability));
+            assert_eq!(
+                choice.blocked_reason,
+                engine_blocked_reason(*preferred, availability)
+            );
+            assert_eq!(
+                choice.engine.is_some(),
+                choice.blocked_reason.is_none(),
+                "engine and blocker must come from the one decision"
+            );
+        }
     }
 
     #[test]
