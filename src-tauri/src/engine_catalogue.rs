@@ -1,9 +1,9 @@
 
 use crate::{
-    engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticEvent, DiagnosticSink,
-    EngineAvailability, ErasedTranscriptionTimingLog, LocalModelManager, LocalModelRef,
-    LocalWhisperRuntime, ParakeetProvider, PhononProvider, SecondOpinionCoordinator,
-    SecondOpinionMode, SecondOpinionRouter, Settings, SharedDiagnosticLog, TranscriptionEngine,
+    engine_that_can_run, AppleSpeechProvider, AsrError, DiagnosticEvent, EngineAvailability,
+    LocalModelManager, LocalModelRef, LocalWhisperRuntime, ParakeetProvider, PhononProvider,
+    SecondOpinionCoordinator, SecondOpinionMode, SecondOpinionRouter, Settings,
+    SharedDiagnosticLog, SharedTranscriptionTimingLog, TranscriptionEngine,
     TranscriptionProvider, TranscriptionTiming, WhisperRuntimeCache, WhisperTranscriptionProvider,
 };
 use std::path::PathBuf;
@@ -259,15 +259,12 @@ impl TranscriptionEngineCatalogue {
         })
     }
 
-    pub fn dictation_stack<S>(
+    pub fn dictation_stack(
         &self,
         settings: &Settings,
-        log: SharedDiagnosticLog<S>,
-        timing_log: ErasedTranscriptionTimingLog,
-    ) -> Result<DictationStack<S>, AsrError>
-    where
-        S: DiagnosticSink + Send + Sync + 'static,
-    {
+        log: SharedDiagnosticLog,
+        timing_log: SharedTranscriptionTimingLog,
+    ) -> Result<DictationStack, AsrError> {
         Ok(DictationStack::new(self.router(settings)?, log, timing_log))
     }
 
@@ -327,19 +324,16 @@ impl EngineWarmUp {
     }
 }
 
-pub struct DictationStack<S> {
+pub struct DictationStack {
     router: SecondOpinionRouter,
-    log: SharedDiagnosticLog<S>,
+    log: SharedDiagnosticLog,
 }
 
-impl<S> DictationStack<S>
-where
-    S: DiagnosticSink + Send + Sync + 'static,
-{
+impl DictationStack {
     pub(crate) fn new(
         router: SecondOpinionRouter,
-        log: SharedDiagnosticLog<S>,
-        timing_log: ErasedTranscriptionTimingLog,
+        log: SharedDiagnosticLog,
+        timing_log: SharedTranscriptionTimingLog,
     ) -> Self {
         let routing_log = log.clone();
         let router = router.observing(move |routing| {
@@ -350,10 +344,7 @@ where
     }
 }
 
-impl<S> crate::AsrRuntime for DictationStack<S>
-where
-    S: DiagnosticSink,
-{
+impl crate::AsrRuntime for DictationStack {
     /// Report how the transcription went, never what it said (ADR-0019), and
     /// hand the result back exactly as the router produced it.
     fn transcribe(
@@ -915,9 +906,8 @@ mod tests {
         }
     }
 
-    fn no_op_timing_log() -> ErasedTranscriptionTimingLog {
+    fn no_op_timing_log() -> crate::SharedTranscriptionTimingLog {
         crate::SharedTranscriptionTimingLog::new(crate::FileTranscriptionTimingSink::unavailable())
-            .erased()
     }
 
     #[test]
@@ -959,7 +949,7 @@ mod tests {
             SecondOpinionRouter::single(Arc::new(FakeProvider(TranscriptionEngine::Whisper))
                 as Arc<dyn TranscriptionProvider>),
             log,
-            timing_log.erased(),
+            timing_log,
         );
 
         stack
