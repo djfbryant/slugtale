@@ -1,6 +1,6 @@
+use crate::transcription_engine::resolve_engine_choice;
 use crate::{
-    engine_blocked_reason, engine_that_can_run, EngineAvailability, LocalModelRef, Settings,
-    TranscriptionEngine,
+    EngineAvailability, LocalModelRef, Settings, TranscriptionEngine,
 };
 use serde::{Deserialize, Serialize};
 
@@ -68,18 +68,11 @@ impl DictationInput {
     }
 }
 
-fn engine_in_play(
+fn engine_in_play_from(
     settings: &Settings,
-    engines: &[(TranscriptionEngine, EngineAvailability)],
+    choice_engine: Option<TranscriptionEngine>,
 ) -> TranscriptionEngine {
-    engine_that_can_run(settings.primary_engine, engines).unwrap_or(settings.primary_engine)
-}
-
-fn whisper_model_is_required(
-    settings: &Settings,
-    engines: &[(TranscriptionEngine, EngineAvailability)],
-) -> bool {
-    engine_in_play(settings, engines) == TranscriptionEngine::Whisper
+    choice_engine.unwrap_or(settings.primary_engine)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,8 +220,10 @@ fn readiness_report(
     engines: &[(TranscriptionEngine, EngineAvailability)],
     input: DictationInput,
 ) -> SettingsReadinessReport {
-    let engine_blocker = engine_blocked_reason(settings.primary_engine, engines);
-    let whisper_model_required = whisper_model_is_required(settings, engines);
+    let choice = resolve_engine_choice(settings.primary_engine, engines);
+    let engine_in_play = engine_in_play_from(settings, choice.engine);
+    let whisper_model_required = engine_in_play == TranscriptionEngine::Whisper;
+    let engine_blocker = choice.blocked_reason;
 
     let terms = vec![
         ReadinessTerm::new(ReadinessItemId::Microphone, true, permissions.microphone),
@@ -248,7 +243,7 @@ fn readiness_report(
         } else {
             Some(format!(
                 "Not needed: {} transcribes without the Whisper model.",
-                engine_in_play(settings, engines).display_name()
+                engine_in_play.display_name()
             ))
         }),
         ReadinessTerm::new(
@@ -405,6 +400,36 @@ mod tests {
             settings: &Settings,
         ) -> Vec<(TranscriptionEngine, EngineAvailability)> {
             *self.engine_probes.borrow_mut() += 1;
+            self.inner.engine_availability(settings)
+        }
+    }
+
+    struct ToggleProbes {
+        inner: FakeProbes,
+        microphone: RefCell<bool>,
+    }
+
+    impl ReadinessProbes for ToggleProbes {
+        fn settings(&self) -> Settings {
+            self.inner.settings()
+        }
+
+        fn microphone_granted(&self) -> bool {
+            *self.microphone.borrow()
+        }
+
+        fn insertion_granted(&self) -> bool {
+            self.inner.insertion_granted()
+        }
+
+        fn local_model(&self, settings: &Settings) -> Option<LocalModelRef> {
+            self.inner.local_model(settings)
+        }
+
+        fn engine_availability(
+            &self,
+            settings: &Settings,
+        ) -> Vec<(TranscriptionEngine, EngineAvailability)> {
             self.inner.engine_availability(settings)
         }
     }
@@ -829,6 +854,147 @@ mod tests {
             .unwrap();
         assert!(!hotkey.required);
         assert!(hotkey.ready);
+    }
+
+    #[test]
+    fn hotkey_start_is_blocked_without_a_hotkey_while_voice_start_is_not() {
+        let probes = FakeProbes {
+            settings: Settings::default(),
+            ..FakeProbes::all_ready()
+        };
+
+        let by_hotkey = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
+        let by_voice = readiness_snapshot(&probes, |_| DictationInput::VoiceActivation);
+
+        assert!(!by_hotkey.dictation_available());
+        let hotkey_item = ReadinessItem::find(&by_hotkey.report, ReadinessItemId::Hotkey).unwrap();
+        assert!(hotkey_item.required);
+        assert!(!hotkey_item.ready);
+        assert!(by_voice.dictation_available());
+        let voice_hotkey =
+            ReadinessItem::find(&by_voice.report, ReadinessItemId::Hotkey).unwrap();
+        assert!(!voice_hotkey.required);
+    }
+
+    #[test]
+    fn the_preferred_engine_runs_even_when_the_fallback_could() {
+        let probes = FakeProbes {
+            settings: parakeet_settings(),
+            model: Some(absent_model()),
+            engines: vec![
+                (TranscriptionEngine::Whisper, EngineAvailability::Available),
+                (TranscriptionEngine::Parakeet, EngineAvailability::Available),
+            ],
+            ..FakeProbes::all_ready()
+        };
+
+        let report = readiness_snapshot(&probes, |_| DictationInput::Hotkey).report;
+        let local_model =
+            ReadinessItem::find(&report, ReadinessItemId::LocalModel).unwrap();
+
+        assert!(report.dictation_available);
+        assert!(!local_model.required);
+        assert_eq!(
+            local_model.detail.as_deref(),
+            Some("Not needed: Parakeet TDT v2 transcribes without the Whisper model.")
+        );
+    }
+
+    #[test]
+    fn a_fallback_to_whisper_unblocks_dictation_when_the_model_is_present() {
+        let probes = FakeProbes {
+            settings: parakeet_settings(),
+            model: Some(present_model()),
+            engines: vec![
+                (TranscriptionEngine::Whisper, EngineAvailability::Available),
+                (
+                    TranscriptionEngine::Parakeet,
+                    EngineAvailability::Unavailable(crate::EngineUnavailable::AssetsMissing {
+                        detail: "Parakeet assets are not installed.".to_string(),
+                    }),
+                ),
+            ],
+            ..FakeProbes::all_ready()
+        };
+
+        let activation = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
+        let engine = ReadinessItem::find(&activation.report, ReadinessItemId::TranscriptionEngine)
+            .unwrap();
+        let local_model =
+            ReadinessItem::find(&activation.report, ReadinessItemId::LocalModel).unwrap();
+
+        assert!(activation.dictation_available());
+        assert!(engine.ready);
+        assert_eq!(engine.detail, None);
+        assert!(local_model.required);
+        assert!(local_model.ready);
+    }
+
+    #[test]
+    fn a_user_with_no_runnable_engine_is_told_which_engine_is_blocked() {
+        let probes = FakeProbes {
+            settings: parakeet_settings(),
+            engines: vec![
+                (
+                    TranscriptionEngine::Whisper,
+                    EngineAvailability::Unavailable(crate::EngineUnavailable::RuntimeNotBuilt),
+                ),
+                (
+                    TranscriptionEngine::Parakeet,
+                    EngineAvailability::Unavailable(crate::EngineUnavailable::RuntimeNotBuilt),
+                ),
+            ],
+            ..FakeProbes::all_ready()
+        };
+
+        let activation = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
+        let engine = ReadinessItem::find(&activation.report, ReadinessItemId::TranscriptionEngine)
+            .unwrap();
+
+        assert!(!activation.dictation_available());
+        assert!(!engine.ready);
+        assert!(engine.required);
+        assert_eq!(
+            engine.detail.as_deref(),
+            Some(
+                "Parakeet TDT v2 cannot run: this build was compiled without support for this engine"
+            )
+        );
+    }
+
+    #[test]
+    fn a_missing_whisper_model_blocks_a_voice_start_too() {
+        let probes = FakeProbes {
+            model: Some(absent_model()),
+            ..FakeProbes::all_ready()
+        };
+
+        let activation = readiness_snapshot(&probes, |_| DictationInput::VoiceActivation);
+        let local_model =
+            ReadinessItem::find(&activation.report, ReadinessItemId::LocalModel).unwrap();
+
+        assert!(!activation.dictation_available());
+        assert!(local_model.required);
+        assert!(!local_model.ready);
+    }
+
+    #[test]
+    fn a_later_activation_sees_a_revoked_microphone_grant() {
+        let probes = ToggleProbes {
+            inner: FakeProbes::all_ready(),
+            microphone: RefCell::new(true),
+        };
+
+        let first = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
+        *probes.microphone.borrow_mut() = false;
+        let second = readiness_snapshot(&probes, |_| DictationInput::Hotkey);
+
+        assert!(first.dictation_available());
+        assert!(!second.dictation_available());
+        let microphone =
+            ReadinessItem::find(&second.report, ReadinessItemId::Microphone).unwrap();
+        assert!(microphone.required);
+        assert!(!microphone.ready);
     }
 
     #[test]
