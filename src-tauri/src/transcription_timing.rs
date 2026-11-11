@@ -95,8 +95,9 @@ impl Serialize for StageTiming {
 }
 
 /// Measures the steps of one task in order. Each [`StageTimer::mark`] closes
-/// the stage that began at the previous mark, so the stages add up to the
-/// total.
+/// the stage that began at the previous mark. The total is the wall-clock time
+/// to [`StageTimer::finish`], so the stages sum to the total minus the
+/// unmarked tail between the last mark and `finish`.
 pub struct StageTimer {
     event: &'static str,
     at: SystemTime,
@@ -147,7 +148,7 @@ impl StageTimer {
                 .duration_since(UNIX_EPOCH)
                 .map(millis)
                 .unwrap_or_default(),
-            total_ms: millis(self.last.saturating_duration_since(self.started)),
+            total_ms: millis(Instant::now().saturating_duration_since(self.started)),
             stages: self.stages,
             notes: self.notes,
         }

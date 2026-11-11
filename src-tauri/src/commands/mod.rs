@@ -65,10 +65,11 @@ pub(crate) fn warm_effective_primary_engine(app: &tauri::AppHandle) {
     };
     timer.mark("choose_engine");
     timer.note("engine", warm_up.engine().id());
+    let (generation, expected) = warm_up.generation();
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let stale = warm_up.is_stale();
         let result = warm_up.run();
+        let stale = generation.load(std::sync::atomic::Ordering::SeqCst) != expected;
         timer.mark("load_model");
         timer.note(
             "result",

@@ -311,6 +311,10 @@ impl EngineWarmUp {
         self.generation.load(std::sync::atomic::Ordering::SeqCst) != self.expected_generation
     }
 
+    pub fn generation(&self) -> (Arc<std::sync::atomic::AtomicU64>, u64) {
+        (Arc::clone(&self.generation), self.expected_generation)
+    }
+
     /// Warm the engine unless a newer request superseded this one. Safe to run
     /// next to shutdown: providers check their own shutdown flags under the
     /// same locks that teardown uses, so a late warm-up cannot resurrect a

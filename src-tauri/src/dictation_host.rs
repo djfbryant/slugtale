@@ -186,9 +186,10 @@ where
                     self.effects.record_stage_timing(&timer.finish());
                     return Err(error);
                 }
-                self.apply_recording_feedback(event, Some(&settings))?;
+                let feedback = self.apply_recording_feedback(event, Some(&settings));
                 timer.mark("show_bar");
                 self.effects.record_stage_timing(&timer.finish());
+                feedback?;
             }
             crate::DictationEvent::Stop => {
                 self.note_stop_pressed();
