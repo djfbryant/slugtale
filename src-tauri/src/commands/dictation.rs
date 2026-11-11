@@ -3,8 +3,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use slugtale_lib::{
-    BoxedDiagnosticSink, DictationEffects, DictationEvent, DictationHost, DictationParts,
-    DictationPhase, WindowLabel,
+    DictationEffects, DictationEvent, DictationHost, DictationParts, DictationPhase, WindowLabel,
 };
 
 use crate::dictation_bar_window::{hide_dictation_bar, show_dictation_bar};
@@ -172,17 +171,15 @@ impl DictationEffects for TauriSurface {
 impl DictationParts for TauriSurface {
     fn diagnostic_log(
         &self,
-        settings: &slugtale_lib::Settings,
-    ) -> slugtale_lib::ErasedDiagnosticLog {
-        app_files(&self.app)
-            .diagnostic_log(settings.diagnostic_logging)
-            .erased()
+        _settings: &slugtale_lib::Settings,
+    ) -> slugtale_lib::SharedDiagnosticLog {
+        app_files(&self.app).diagnostic_log()
     }
 
     fn dictation_stack(
         &self,
         settings: &slugtale_lib::Settings,
-    ) -> Result<slugtale_lib::DictationStack<BoxedDiagnosticSink>, String> {
+    ) -> Result<slugtale_lib::DictationStack, String> {
         let diagnostic_log = self.diagnostic_log(settings);
         let timing_log = app_files(&self.app).transcription_timing_log();
         self.app
@@ -353,20 +350,20 @@ mod tests {
         fn diagnostic_log(
             &self,
             settings: &slugtale_lib::Settings,
-        ) -> slugtale_lib::ErasedDiagnosticLog {
+        ) -> slugtale_lib::SharedDiagnosticLog {
             let lines = Arc::clone(&self.lines);
-            slugtale_lib::ErasedDiagnosticLog::new(
+            slugtale_lib::SharedDiagnosticLog::new(
                 settings.diagnostic_logging,
-                BoxedDiagnosticSink::new(move |line: &str| {
+                move |line: &str| {
                     lines.lock().unwrap().push(line.to_string());
-                }),
+                },
             )
         }
 
         fn dictation_stack(
             &self,
             _settings: &slugtale_lib::Settings,
-        ) -> Result<slugtale_lib::DictationStack<BoxedDiagnosticSink>, String> {
+        ) -> Result<slugtale_lib::DictationStack, String> {
             Err("no transcription engine in adapter test".to_string())
         }
 

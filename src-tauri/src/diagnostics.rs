@@ -162,28 +162,11 @@ where
     }
 }
 
-pub struct BoxedDiagnosticSink {
-    sink: Box<dyn DiagnosticSink + Send + Sync>,
-}
-
-impl BoxedDiagnosticSink {
-    pub fn new<S>(sink: S) -> Self
-    where
-        S: DiagnosticSink + Send + Sync + 'static,
-    {
-        Self {
-            sink: Box::new(sink),
-        }
-    }
-}
-
-impl DiagnosticSink for BoxedDiagnosticSink {
+impl DiagnosticSink for Box<dyn DiagnosticSink + Send + Sync> {
     fn write_line(&mut self, line: &str) {
-        self.sink.write_line(line);
+        (**self).write_line(line);
     }
 }
-
-pub type ErasedDiagnosticLog = SharedDiagnosticLog<BoxedDiagnosticSink>;
 
 /// The Local Diagnostic Log (ADR-0019): development troubleshooting output gated
 /// by the user's `diagnostic_logging` preference (off by default). When disabled
@@ -260,11 +243,15 @@ impl DiagnosticSink for FileDiagnosticSink {
     }
 }
 
-pub struct SharedDiagnosticLog<S> {
-    inner: Arc<Mutex<LocalDiagnosticLog<S>>>,
+/// The shared owner of one Local Diagnostic Log. Every recorder holds a clone
+/// of this handle, so they all append through the one lock and the one enable
+/// flag. The sink is boxed once here, at construction, so callers pass the
+/// plain sink and never box or wrap it again.
+pub struct SharedDiagnosticLog {
+    inner: Arc<Mutex<LocalDiagnosticLog<Box<dyn DiagnosticSink + Send + Sync>>>>,
 }
 
-impl<S> Clone for SharedDiagnosticLog<S> {
+impl Clone for SharedDiagnosticLog {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -272,13 +259,13 @@ impl<S> Clone for SharedDiagnosticLog<S> {
     }
 }
 
-impl<S> SharedDiagnosticLog<S>
-where
-    S: DiagnosticSink,
-{
-    pub fn new(enabled: bool, sink: S) -> Self {
+impl SharedDiagnosticLog {
+    pub fn new<S>(enabled: bool, sink: S) -> Self
+    where
+        S: DiagnosticSink + Send + Sync + 'static,
+    {
         Self {
-            inner: Arc::new(Mutex::new(LocalDiagnosticLog::new(enabled, sink))),
+            inner: Arc::new(Mutex::new(LocalDiagnosticLog::new(enabled, Box::new(sink)))),
         }
     }
 
@@ -290,47 +277,11 @@ where
     }
 
     pub fn record(&self, event: DiagnosticEvent) {
+        let line = render_diagnostic_event(&event);
         match self.inner.lock() {
-            Ok(mut log) => log.record(event),
+            Ok(mut log) => log.write_line(&line),
             Err(_) => eprintln!("diagnostic log mutex poisoned"),
         }
-    }
-
-    pub fn erased(&self) -> ErasedDiagnosticLog
-    where
-        S: DiagnosticSink + Send + Sync + 'static,
-    {
-        ErasedDiagnosticLog::new(
-            self.is_enabled(),
-            BoxedDiagnosticSink::new(LogAsSink { log: self.clone() }),
-        )
-    }
-
-    fn is_enabled(&self) -> bool {
-        match self.inner.lock() {
-            Ok(log) => log.enabled,
-            Err(poisoned) => poisoned.into_inner().enabled,
-        }
-    }
-
-    fn append_line(&self, line: &str) {
-        match self.inner.lock() {
-            Ok(mut log) => log.write_line(line),
-            Err(_) => eprintln!("diagnostic log mutex poisoned"),
-        }
-    }
-}
-
-struct LogAsSink<S> {
-    log: SharedDiagnosticLog<S>,
-}
-
-impl<S> DiagnosticSink for LogAsSink<S>
-where
-    S: DiagnosticSink + Send + Sync + 'static,
-{
-    fn write_line(&mut self, line: &str) {
-        self.log.append_line(line);
     }
 }
 
@@ -591,42 +542,98 @@ mod tests {
         assert!(contents.contains("hotkey"));
         assert!(contents.contains("asr"));
         assert!(!contents.contains(secret));
-        assert_eq!(contents.lines().count(), 2);
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("hotkey"), "got: {contents}");
+        assert!(lines[1].contains("asr"), "got: {contents}");
 
         std::fs::remove_dir_all(&log_dir).ok();
     }
 
     #[test]
-    fn an_erased_handle_writes_through_the_same_sink_as_the_log_it_came_from() {
+    fn a_cloned_handle_writes_through_the_same_sink_as_the_log_it_came_from() {
         let (lines, sink) = collecting_lines();
-        let log = SharedDiagnosticLog::new(true, BoxedDiagnosticSink::new(sink));
+        let log = SharedDiagnosticLog::new(true, sink);
+        let held = log.clone();
 
-        log.erased()
-            .record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
+        held.record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
 
         assert_eq!(lines.lock().unwrap().len(), 1);
         assert!(lines.lock().unwrap()[0].contains("hotkey"));
     }
 
     #[test]
-    fn an_erased_handle_starts_from_the_enable_flag_of_the_log_it_came_from() {
+    fn records_land_in_record_order_across_cloned_handles() {
         let (lines, sink) = collecting_lines();
-        let log = SharedDiagnosticLog::new(false, BoxedDiagnosticSink::new(sink));
-        let erased = log.erased();
+        let log = SharedDiagnosticLog::new(true, sink);
+        let other = log.clone();
 
-        erased.record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
+        log.record(DiagnosticEvent::hotkey_transition(DictationEvent::Start));
+        other.record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
+        log.record(DiagnosticEvent::hotkey_transition(DictationEvent::Cancel));
+
+        let recorded = lines.lock().unwrap();
+        assert_eq!(recorded.len(), 3);
+        assert!(recorded[0].contains("Start"), "got: {}", recorded[0]);
+        assert!(recorded[1].contains("Stop"), "got: {}", recorded[1]);
+        assert!(
+            recorded[2].contains("Cancel"),
+            "got: {}",
+            recorded[2]
+        );
+    }
+
+    #[test]
+    fn a_handle_held_across_a_toggle_follows_the_shared_flag() {
+        let (lines, sink) = collecting_lines();
+        let log = SharedDiagnosticLog::new(false, sink);
+        let held = log.clone();
+
+        held.record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
 
         assert!(
             lines.lock().unwrap().is_empty(),
-            "a disabled log stays disabled through an erased handle: {:?}",
+            "a disabled log drops records from every handle: {:?}",
             lines.lock().unwrap()
         );
 
         log.set_enabled(true);
-        log.erased()
-            .record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
+        held.record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
 
         assert_eq!(lines.lock().unwrap().len(), 1);
+
+        log.set_enabled(false);
+        held.record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
+
+        assert_eq!(
+            lines.lock().unwrap().len(),
+            1,
+            "turning the log off again stops the held handle too: {:?}",
+            lines.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_failed_write_drops_the_line_without_failing_the_record() {
+        let log_dir = unique_test_dir("diagnostic-log-blocked");
+        let blocker = log_dir.join("blocker");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let log_path = blocker.join("diagnostics.log");
+        let log = SharedDiagnosticLog::new(true, FileDiagnosticSink::new(log_path.clone()));
+
+        log.record(DiagnosticEvent::hotkey_transition(DictationEvent::Start));
+
+        assert!(!log_path.exists());
+
+        std::fs::remove_file(&blocker).unwrap();
+        log.record(DiagnosticEvent::hotkey_transition(DictationEvent::Stop));
+
+        let contents = std::fs::read_to_string(&log_path).unwrap();
+        assert!(contents.contains("hotkey"));
+        assert!(contents.contains("Stop"), "got: {contents}");
+
+        std::fs::remove_dir_all(&log_dir).ok();
     }
 
     fn collecting_lines() -> (

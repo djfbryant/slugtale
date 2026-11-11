@@ -2,8 +2,8 @@
 use crate::{
     apply_and_persist, apply_usage_settings, delete_usage, load_settings, load_usage,
     record_counted_segment, save_settings, save_usage, CountedSegment, DiagnosticEvent,
-    ErasedTranscriptionTimingLog, FileDiagnosticSink, FileTranscriptionTimingSink, LocalDate,
-    LocalModelManager, Settings, SharedDiagnosticLog, SharedTranscriptionTimingLog, UsageFile,
+    FileDiagnosticSink, FileTranscriptionTimingSink, LocalDate, LocalModelManager, Settings,
+    SharedDiagnosticLog, SharedTranscriptionTimingLog, UsageFile,
 };
 use std::path::PathBuf;
 #[cfg(test)]
@@ -41,8 +41,8 @@ pub struct AppFiles {
     data_dir: Option<PathBuf>,
     settings: Arc<Mutex<Option<Settings>>>,
     usage_owner: Arc<Mutex<()>>,
-    diagnostic_log: SharedDiagnosticLog<FileDiagnosticSink>,
-    transcription_timing_log: SharedTranscriptionTimingLog<FileTranscriptionTimingSink>,
+    diagnostic_log: SharedDiagnosticLog,
+    transcription_timing_log: SharedTranscriptionTimingLog,
     #[cfg(test)]
     disk_reads: Arc<AtomicUsize>,
     #[cfg(test)]
@@ -85,12 +85,16 @@ impl AppFiles {
             .map(|dir| FileTranscriptionTimingSink::new(dir.join(TRANSCRIPTION_TIMING_FILE)))
             .unwrap_or_else(FileTranscriptionTimingSink::unavailable);
 
+        let starts_enabled = config_dir
+            .as_ref()
+            .map(|dir| load_settings(&dir.join(SETTINGS_FILE)).diagnostic_logging)
+            .unwrap_or(false);
         Self {
             config_dir,
             data_dir,
             settings: Arc::new(Mutex::new(None)),
             usage_owner: Arc::new(Mutex::new(())),
-            diagnostic_log: SharedDiagnosticLog::new(false, sink),
+            diagnostic_log: SharedDiagnosticLog::new(starts_enabled, sink),
             transcription_timing_log: SharedTranscriptionTimingLog::new(timing_sink),
             #[cfg(test)]
             disk_reads: Arc::new(AtomicUsize::new(0)),
@@ -117,8 +121,8 @@ impl AppFiles {
             .map(|dir| dir.join(TRANSCRIPTION_TIMING_FILE))
     }
 
-    pub fn transcription_timing_log(&self) -> ErasedTranscriptionTimingLog {
-        self.transcription_timing_log.erased()
+    pub fn transcription_timing_log(&self) -> SharedTranscriptionTimingLog {
+        self.transcription_timing_log.clone()
     }
 
     pub fn model_dir(&self) -> Result<PathBuf, String> {
@@ -162,6 +166,7 @@ impl AppFiles {
 
         self.write_settings_file(&settings)?;
         *cached = Some(settings.clone());
+        self.diagnostic_log.set_enabled(settings.diagnostic_logging);
         Ok(settings)
     }
 
@@ -186,14 +191,8 @@ impl AppFiles {
             |settings| self.write_settings_file(settings),
         )?;
         *cached = Some(settings.clone());
+        self.diagnostic_log.set_enabled(settings.diagnostic_logging);
         Ok(settings)
-    }
-
-    pub fn save_settings(&self, settings: &Settings) -> Result<(), String> {
-        let mut cached = lock(&self.settings);
-        self.write_settings_file(settings)?;
-        *cached = Some(settings.clone());
-        Ok(())
     }
 
     fn write_settings_file(&self, settings: &Settings) -> Result<(), String> {
@@ -268,14 +267,12 @@ impl AppFiles {
         self.settings().store_usage
     }
 
-    pub fn diagnostic_log(&self, enabled: bool) -> SharedDiagnosticLog<FileDiagnosticSink> {
-        self.diagnostic_log.set_enabled(enabled);
+    pub fn diagnostic_log(&self) -> SharedDiagnosticLog {
         self.diagnostic_log.clone()
     }
 
     pub fn record_diagnostic_event(&self, event: DiagnosticEvent) {
-        self.diagnostic_log(self.settings().diagnostic_logging)
-            .record(event);
+        self.diagnostic_log.record(event);
     }
 
     fn read_settings(&self) -> Settings {
@@ -430,10 +427,12 @@ mod tests {
     #[test]
     fn a_settings_write_is_visible_to_the_next_read_through_every_door() {
         let (files, config_dir, data_dir) = test_store("every-door");
-        let mut settings = Settings::default();
-        settings.hotkey = Some("cmd+shift+d".to_string());
-
-        files.save_settings(&settings).unwrap();
+        files
+            .update_settings(|settings| {
+                settings.hotkey = Some("cmd+shift+d".to_string());
+                Ok(())
+            })
+            .unwrap();
 
         assert_eq!(files.settings().hotkey.as_deref(), Some("cmd+shift+d"));
         assert_eq!(
@@ -456,9 +455,12 @@ mod tests {
     #[test]
     fn a_model_manager_write_is_visible_to_the_next_read_through_every_door() {
         let (files, config_dir, data_dir) = test_store("manager-door");
-        let mut settings = Settings::default();
-        settings.store_usage = false;
-        files.save_settings(&settings).unwrap();
+        files
+            .update_settings(|settings| {
+                settings.store_usage = false;
+                Ok(())
+            })
+            .unwrap();
         let manager = files.model_manager().unwrap();
         let installed = data_dir.join("models").join("ggml-base.en.bin");
 
@@ -505,9 +507,12 @@ mod tests {
     #[test]
     fn a_diagnostic_event_does_not_re_read_the_settings_file() {
         let (files, config_dir, data_dir) = test_store("diagnostic-read");
-        let mut settings = Settings::default();
-        settings.diagnostic_logging = true;
-        files.save_settings(&settings).unwrap();
+        files
+            .update_settings(|settings| {
+                settings.diagnostic_logging = true;
+                Ok(())
+            })
+            .unwrap();
         let reads_after_save = files.settings_file_reads();
 
         for step in ["one", "two", "three"] {
@@ -520,8 +525,8 @@ mod tests {
             );
         }
         assert_eq!(
-            reads_after_save, 0,
-            "the save carried the value, not a read"
+            reads_after_save, 1,
+            "the transactional save reads once to the file, then caches"
         );
 
         let logged = std::fs::read_to_string(config_dir.join("diagnostics.log")).unwrap();
@@ -535,11 +540,14 @@ mod tests {
     fn one_diagnostic_log_is_shared_by_every_recorder() {
         let (files, config_dir, data_dir) = test_store("shared-log");
         let event = DiagnosticEvent::hotkey_transition(crate::DictationEvent::Stop);
-        let held = files.diagnostic_log(false);
+        let held = files.diagnostic_log();
 
-        let mut settings = files.settings();
-        settings.diagnostic_logging = true;
-        files.save_settings(&settings).unwrap();
+        files
+            .update_settings(|settings| {
+                settings.diagnostic_logging = true;
+                Ok(())
+            })
+            .unwrap();
         files.record_diagnostic_event(event.clone());
         held.record(event);
 
@@ -569,11 +577,79 @@ mod tests {
     }
 
     #[test]
+    fn turning_the_preference_off_stops_logging_through_a_held_handle() {
+        let (files, config_dir, data_dir) = test_store("diagnostic-toggle");
+        let held = files.diagnostic_log();
+        let event = DiagnosticEvent::hotkey_transition(crate::DictationEvent::Stop);
+
+        files
+            .update_settings(|settings| {
+                settings.diagnostic_logging = true;
+                Ok(())
+            })
+            .unwrap();
+        files.record_diagnostic_event(event.clone());
+        held.record(event.clone());
+
+        files
+            .update_settings(|settings| {
+                settings.diagnostic_logging = false;
+                Ok(())
+            })
+            .unwrap();
+        files.record_diagnostic_event(event.clone());
+        held.record(event.clone());
+
+        files
+            .update_settings(|settings| {
+                settings.diagnostic_logging = true;
+                Ok(())
+            })
+            .unwrap();
+        files.record_diagnostic_event(event);
+
+        let logged = std::fs::read_to_string(config_dir.join("diagnostics.log")).unwrap();
+        assert_eq!(
+            logged.lines().count(),
+            3,
+            "only the on-period records land, in order: {logged}"
+        );
+
+        std::fs::remove_dir_all(config_dir).ok();
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn an_existing_settings_file_turns_logging_on_without_a_prior_write() {
+        let (files, config_dir, data_dir) = test_store("diagnostic-restart");
+        files
+            .update_settings(|settings| {
+                settings.diagnostic_logging = true;
+                Ok(())
+            })
+            .unwrap();
+
+        let cold = AppFiles::from_dirs(Some(config_dir.clone()), Some(data_dir.clone()));
+        cold.record_diagnostic_event(DiagnosticEvent::hotkey_transition(
+            crate::DictationEvent::Stop,
+        ));
+
+        let logged = std::fs::read_to_string(config_dir.join("diagnostics.log")).unwrap();
+        assert_eq!(logged.lines().count(), 1, "logged: {logged}");
+
+        std::fs::remove_dir_all(config_dir).ok();
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn turning_storing_off_mid_dictation_drops_the_in_flight_segment() {
         let (files, config_dir, data_dir) = test_store("usage-opt-out");
-        let mut settings = Settings::default();
-        settings.store_usage = true;
-        files.save_settings(&settings).unwrap();
+        files
+            .update_settings(|settings| {
+                crate::apply_usage_settings(settings, true);
+                Ok(())
+            })
+            .unwrap();
         let date = LocalDate::new(2026, 8, 17);
 
         assert!(files.record_counted_segment(date, counted()));
@@ -596,9 +672,12 @@ mod tests {
     #[test]
     fn an_opt_out_that_lands_after_an_in_flight_segment_leaves_no_usage_file() {
         let (files, config_dir, data_dir) = test_store("usage-opt-out-after-write");
-        let mut on = Settings::default();
-        on.store_usage = true;
-        files.save_settings(&on).unwrap();
+        files
+            .update_settings(|settings| {
+                crate::apply_usage_settings(settings, true);
+                Ok(())
+            })
+            .unwrap();
 
         let (probe, park) = parkable();
         files.install_usage_probe(probe);
@@ -632,9 +711,12 @@ mod tests {
     #[test]
     fn a_counted_segment_racing_an_opt_out_never_recreates_the_usage_file() {
         let (files, config_dir, data_dir) = test_store("usage-opt-out-before-write");
-        let mut on = Settings::default();
-        on.store_usage = true;
-        files.save_settings(&on).unwrap();
+        files
+            .update_settings(|settings| {
+                crate::apply_usage_settings(settings, true);
+                Ok(())
+            })
+            .unwrap();
 
         let (probe, park) = parkable();
         files.install_opt_out_probe(probe);
@@ -667,9 +749,12 @@ mod tests {
     #[test]
     fn two_segments_recorded_at_once_both_land() {
         let (files, config_dir, data_dir) = test_store("usage-concurrent-counts");
-        let mut on = Settings::default();
-        on.store_usage = true;
-        files.save_settings(&on).unwrap();
+        files
+            .update_settings(|settings| {
+                crate::apply_usage_settings(settings, true);
+                Ok(())
+            })
+            .unwrap();
 
         let (probe, park) = parkable();
         files.install_usage_probe(probe);
@@ -719,9 +804,12 @@ mod tests {
     #[test]
     fn a_model_install_racing_a_settings_choice_cannot_overwrite_the_newer_choice() {
         let (files, config_dir, data_dir) = test_store("stale-model-install");
-        let mut initial = Settings::default();
-        initial.store_usage = false;
-        files.save_settings(&initial).unwrap();
+        files
+            .update_settings(|settings| {
+                crate::apply_usage_settings(settings, false);
+                Ok(())
+            })
+            .unwrap();
 
         let (probe, park) = parkable();
         files.install_settings_probe(probe);
@@ -786,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_a_stale_snapshot_replaces_a_newer_change_because_it_skips_the_settings_transaction() {
+    fn an_update_keeps_a_field_changed_after_a_snapshot_was_taken() {
         let (files, config_dir, data_dir) = test_store("stale-snapshot-save");
         let stale = files.settings();
         files
@@ -796,10 +884,21 @@ mod tests {
             })
             .unwrap();
 
-        files.save_settings(&stale).unwrap();
+        files
+            .update_settings(|settings| {
+                crate::apply_microphone_settings(settings, false);
+                Ok(())
+            })
+            .unwrap();
 
-        assert_eq!(files.settings().hotkey, None);
-        assert_eq!(load_settings(&config_dir.join("settings.json")).hotkey, None);
+        assert_eq!(stale.hotkey, None);
+        let current = files.settings();
+        assert_eq!(current.hotkey.as_deref(), Some("cmd+shift+d"));
+        assert!(!current.prefer_built_in_microphone);
+        assert_eq!(
+            load_settings(&config_dir.join("settings.json")).hotkey.as_deref(),
+            Some("cmd+shift+d")
+        );
 
         std::fs::remove_dir_all(config_dir).ok();
         std::fs::remove_dir_all(data_dir).ok();
@@ -808,9 +907,12 @@ mod tests {
     #[test]
     fn a_refused_change_writes_nothing_and_leaves_the_cache_alone() {
         let (files, config_dir, data_dir) = test_store("refused-change");
-        let mut on = Settings::default();
-        on.store_usage = true;
-        files.save_settings(&on).unwrap();
+        files
+            .update_settings(|settings| {
+                crate::apply_usage_settings(settings, true);
+                Ok(())
+            })
+            .unwrap();
 
         let refused = files.update_settings(|settings| {
             settings.hotkey = Some("cmd+shift+d".to_string());
@@ -832,9 +934,12 @@ mod tests {
     #[test]
     fn a_failed_usage_write_is_a_skip_and_not_a_failure() {
         let (files, config_dir, data_dir) = test_store("usage-unwritable");
-        let mut settings = Settings::default();
-        settings.store_usage = true;
-        files.save_settings(&settings).unwrap();
+        files
+            .update_settings(|settings| {
+                crate::apply_usage_settings(settings, true);
+                Ok(())
+            })
+            .unwrap();
         std::fs::create_dir_all(files.usage_path().unwrap()).unwrap();
 
         let recorded = files.record_counted_segment(LocalDate::new(2026, 8, 17), counted());
@@ -863,6 +968,67 @@ mod tests {
 
         assert_eq!(files.usage().days.len(), 1);
         assert_eq!(files.usage().days[0].words, 12);
+
+        std::fs::remove_dir_all(config_dir).ok();
+        std::fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn a_failed_update_leaves_the_cache_holding_what_the_file_still_says() {
+        let files = AppFiles::from_dirs(None, None);
+
+        let failed = files.update_settings(|settings| {
+            settings.hotkey = Some("cmd+shift+d".to_string());
+            Ok(())
+        });
+
+        assert!(failed.is_err());
+        assert_eq!(files.settings().hotkey, None);
+    }
+
+    #[test]
+    fn a_failed_persist_rolls_the_outside_world_back_onto_the_saved_value() {
+        let files = AppFiles::from_dirs(None, None);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = seen.clone();
+
+        let failed = files.update_settings_and_apply(
+            |settings| crate::apply_usage_settings(settings, true),
+            move |settings| {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push(settings.store_usage);
+                Ok(())
+            },
+        );
+
+        assert!(failed.is_err());
+        assert_eq!(*seen.lock().unwrap(), [true, false]);
+        assert!(!files.settings().store_usage);
+    }
+
+    #[test]
+    fn a_side_effect_failure_writes_nothing_and_leaves_the_cache_alone() {
+        let (files, config_dir, data_dir) = test_store("side-effect-failure");
+        files
+            .update_settings(|settings| {
+                crate::apply_usage_settings(settings, true);
+                Ok(())
+            })
+            .unwrap();
+
+        let refused = files.update_settings_and_apply(
+            |settings| crate::apply_usage_settings(settings, false),
+            |_| Err("device busy".to_string()),
+        );
+
+        assert!(refused.is_err());
+        assert!(files.settings().store_usage);
+        assert!(
+            load_settings(&config_dir.join("settings.json")).store_usage,
+            "a refused side effect must not reach the file either"
+        );
 
         std::fs::remove_dir_all(config_dir).ok();
         std::fs::remove_dir_all(data_dir).ok();

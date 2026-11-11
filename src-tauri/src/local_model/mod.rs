@@ -314,9 +314,9 @@ pub(super) mod tests {
         std::fs::create_dir_all(files.model_dir().unwrap()).unwrap();
         std::fs::write(&installed, b"local model bytes").unwrap();
         files
-            .save_settings(&crate::Settings {
-                model: Some(installed.to_string_lossy().to_string()),
-                ..crate::Settings::default()
+            .update_settings(|settings| {
+                settings.model = Some(installed.to_string_lossy().to_string());
+                Ok(())
             })
             .unwrap();
         let manager = LocalModelManager::new(files.clone()).unwrap();

@@ -1,12 +1,11 @@
-# Loop2 - 2026-11-11 Sol pick Dictation Readiness only, stable interface, defer Settings File, defer Platform Adapter.
-Worktree /Users/darrenbryant/.t3/worktrees/slugtale/loop-2 Branch arch/loop2-20261111-1012
-Tasks: resolve engine choice via one internal decision, one settings snapshot per activation, no model loading, test preferred/fallback/no engine/missing model/hotkey vs voice, keep public types stable.
-Parallel A readiness.rs transcription_engine.rs, B engine_catalogue.rs commands/settings.rs, C tests/settings-readiness.test.mjs LOOPS.md
-Risks: Whisper fallback behavior test first, no cache across activations, local-only, no transcript in logs.
+# Loop3 - 2026-11-11 Sol pick Settings File + Local Log/Timing
+Branch arch/loop3-20261111-1041 Base 5e516d2
+Tasks: Settings: remove AppFiles::save_settings, move to update_settings, lock/saves/rollback inside. Logs: box each sink once inside owner, replace .erased() with cloned handles, keep typed calls, remove extra locks.
+Parallel A settings change + tests, B log handles + callers, C review + npm test.
+Risks: settings rollback/lock order, log enable flag copy rule, local-only, no audio/transcript history, OS adapters visible.
 
-## Baseline evidence (2026-11-11, during A/B work)
-Frontend: 192/192 tests pass (`scripts/run-node-tests.js`). settings-readiness.test.mjs: 10/10 pass.
-Rust (`npm run test:rust`, `cargo test --lib`): COMPILE FAIL — A mid-edit. `src-tauri/src/transcription_engine.rs:847` syntax error (`let cases: &[...]` parsed as assignment; chained comparison). A owns readiness.rs + transcription_engine.rs (both dirty, uncommitted). B files (engine_catalogue.rs, commands/settings.rs) not yet dirty.
-Contract check (settings-readiness.test.mjs vs src): items microphone/local_model/transcription_engine match Rust ReadinessItemId wire names; labels "Microphone" (test sample) vs Rust "Microphone permission" = sample-data drift, "Local model"/"Transcription engine" match; copy "Ready to dictate"/"Not ready to dictate", Linux polling message, and blocked-engine detail passthrough all match readiness-view.js + readiness-actions.js + readiness-copy.js.
-#152: Rust side done (readiness.rs wire-name tests for ids + panes). JS side NOT done — test uses pane "transcription" only as sample data; no check that Settings-window pane names are Rust ReadinessPane wire names (shortcut/transcription/privacy/general). OPEN.
-Final `npm test` (192 frontend + Rust) pending A/B finish. No src edits by evidence slice; no commit.
+## Baseline evidence (2026-11-11, before A/B changes, worktree clean except A starting app_files.rs)
+Frontend (`node scripts/run-node-tests.js` / `npm test` frontend part): 192/192 pass, 0 fail, duration ~4.7s.
+Rust (`npm run test:rust`, `cargo test --lib`): 583 passed, 0 failed, 0 ignored, finished ~5.09s.
+Total `npm test` (frontend + Rust): 775 pass (192+583), 0 fail.
+Privacy/caller baseline review (read-only, pre-A/B): `AppFiles::save_settings` still present (app_files.rs) with callers in app_files tests + local_model/mod.rs:317 — A must migrate all to `update_settings` inside lock. `.erased()` still present at app_files.rs:121, commands/dictation.rs:179, dictation_host.rs:827, engine_catalogue.rs:920,962 — B must replace with cloned typed handles, box sink once inside owner. No src edits by evidence slice; no commit.

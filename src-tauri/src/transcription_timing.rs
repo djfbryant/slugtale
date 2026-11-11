@@ -196,28 +196,11 @@ where
     }
 }
 
-pub struct BoxedTranscriptionTimingSink {
-    sink: Box<dyn TranscriptionTimingSink + Send + Sync>,
-}
-
-impl BoxedTranscriptionTimingSink {
-    pub fn new<S>(sink: S) -> Self
-    where
-        S: TranscriptionTimingSink + Send + Sync + 'static,
-    {
-        Self {
-            sink: Box::new(sink),
-        }
-    }
-}
-
-impl TranscriptionTimingSink for BoxedTranscriptionTimingSink {
+impl TranscriptionTimingSink for Box<dyn TranscriptionTimingSink + Send + Sync> {
     fn write_line(&mut self, line: &str) {
-        self.sink.write_line(line);
+        (**self).write_line(line);
     }
 }
-
-pub type ErasedTranscriptionTimingLog = SharedTranscriptionTimingLog<BoxedTranscriptionTimingSink>;
 
 pub struct FileTranscriptionTimingSink {
     path: Option<PathBuf>,
@@ -264,11 +247,15 @@ impl TranscriptionTimingSink for FileTranscriptionTimingSink {
     }
 }
 
-pub struct SharedTranscriptionTimingLog<S> {
-    inner: Arc<Mutex<S>>,
+/// The shared owner of the always-on Transcription Timing log. Every recorder
+/// holds a clone of this handle, so they all append through the one lock. The
+/// sink is boxed once here, at construction, so callers pass the plain sink
+/// and never box or wrap it again.
+pub struct SharedTranscriptionTimingLog {
+    inner: Arc<Mutex<Box<dyn TranscriptionTimingSink + Send + Sync>>>,
 }
 
-impl<S> Clone for SharedTranscriptionTimingLog<S> {
+impl Clone for SharedTranscriptionTimingLog {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -276,13 +263,13 @@ impl<S> Clone for SharedTranscriptionTimingLog<S> {
     }
 }
 
-impl<S> SharedTranscriptionTimingLog<S>
-where
-    S: TranscriptionTimingSink,
-{
-    pub fn new(sink: S) -> Self {
+impl SharedTranscriptionTimingLog {
+    pub fn new<S>(sink: S) -> Self
+    where
+        S: TranscriptionTimingSink + Send + Sync + 'static,
+    {
         Self {
-            inner: Arc::new(Mutex::new(sink)),
+            inner: Arc::new(Mutex::new(Box::new(sink))),
         }
     }
 
@@ -300,33 +287,11 @@ where
         }
     }
 
-    pub fn erased(&self) -> ErasedTranscriptionTimingLog
-    where
-        S: TranscriptionTimingSink + Send + Sync + 'static,
-    {
-        ErasedTranscriptionTimingLog::new(BoxedTranscriptionTimingSink::new(LogAsSink {
-            log: self.clone(),
-        }))
-    }
-
     fn append_line(&self, line: &str) {
         match self.inner.lock() {
             Ok(mut sink) => sink.write_line(line),
             Err(_) => eprintln!("transcription timing log mutex poisoned"),
         }
-    }
-}
-
-struct LogAsSink<S> {
-    log: SharedTranscriptionTimingLog<S>,
-}
-
-impl<S> TranscriptionTimingSink for LogAsSink<S>
-where
-    S: TranscriptionTimingSink + Send + Sync + 'static,
-{
-    fn write_line(&mut self, line: &str) {
-        self.log.append_line(line);
     }
 }
 
@@ -459,6 +424,70 @@ mod tests {
         let sum: u64 = timing.stages.iter().map(|(_, ms)| ms).sum();
         assert!(timing.total_ms.abs_diff(sum) <= 1, "{timing:?}");
         assert_eq!(timing.note("result"), Some("ok"));
+    }
+
+    #[test]
+    fn timing_lines_land_in_record_order_across_cloned_handles() {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&lines);
+        let log = SharedTranscriptionTimingLog::new(move |line: &str| {
+            captured.lock().unwrap().push(line.to_string())
+        });
+        let other = log.clone();
+        let timing = |engine, latency_ms| TranscriptionTiming {
+            engine,
+            model_id: "test".to_string(),
+            audio_ms: 1000,
+            latency_ms,
+            characters: 0,
+            primary_engine: engine,
+            primary_ms: latency_ms,
+            escalation: None,
+            second_opinion_engine: None,
+            second_opinion_ms: None,
+            selection: crate::SelectionReason::PrimaryAccepted,
+        };
+
+        log.record(&timing(TranscriptionEngine::Whisper, 111));
+        other.record(&timing(TranscriptionEngine::Parakeet, 222));
+        log.record(&timing(TranscriptionEngine::Phonon, 333));
+
+        let recorded = lines.lock().unwrap();
+        assert_eq!(recorded.len(), 3);
+        assert!(recorded[0].contains("\"whisper\""), "got: {}", recorded[0]);
+        assert!(recorded[1].contains("\"parakeet\""), "got: {}", recorded[1]);
+        assert!(recorded[2].contains("\"phonon\""), "got: {}", recorded[2]);
+    }
+
+    #[test]
+    fn a_failed_write_drops_the_line_without_failing_the_record() {
+        let log_dir = std::env::temp_dir().join(format!(
+            "slugtale-timing-blocked-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let blocker = log_dir.join("blocker");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let log_path = blocker.join("transcription-timing.jsonl");
+        let log =
+            SharedTranscriptionTimingLog::new(FileTranscriptionTimingSink::new(log_path.clone()));
+        let timing = StageTimer::start("app-startup").finish();
+
+        log.record_stages(&timing);
+
+        assert!(!log_path.exists());
+
+        std::fs::remove_file(&blocker).unwrap();
+        log.record_stages(&timing);
+
+        let contents = std::fs::read_to_string(&log_path).unwrap();
+        assert!(contents.contains("app-startup"), "got: {contents}");
+
+        std::fs::remove_dir_all(&log_dir).ok();
     }
 
     #[test]

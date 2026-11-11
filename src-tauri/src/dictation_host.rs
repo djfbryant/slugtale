@@ -42,12 +42,12 @@ pub trait DictationEffects: Send + Sync {
 }
 
 pub trait DictationParts: Send + Sync {
-    fn diagnostic_log(&self, settings: &crate::Settings) -> crate::ErasedDiagnosticLog;
+    fn diagnostic_log(&self, settings: &crate::Settings) -> crate::SharedDiagnosticLog;
 
     fn dictation_stack(
         &self,
         settings: &crate::Settings,
-    ) -> Result<crate::DictationStack<crate::BoxedDiagnosticSink>, String>;
+    ) -> Result<crate::DictationStack, String>;
 
     fn prepared_insertion(
         &self,
@@ -603,7 +603,7 @@ where
 mod tests {
     use super::*;
     use crate::{
-        AudioCaptureError, BoxedDiagnosticSink, CapturedAudio, CountedSegment, DictationEvent,
+        AudioCaptureError, CapturedAudio, CountedSegment, DictationEvent,
         DictationRecorder, DictationRuntime, DictationRuntimeHost, DictationSegmentOutcome,
         DictationSegmentPosition, EngineAssetLifecycle, EngineAvailability, EngineConfidence,
         EngineMetadata, EngineTranscriber, EngineTranscription, FinalTranscription,
@@ -798,20 +798,17 @@ mod tests {
     }
 
     impl DictationParts for FakeSurface {
-        fn diagnostic_log(&self, settings: &crate::Settings) -> crate::ErasedDiagnosticLog {
+        fn diagnostic_log(&self, settings: &crate::Settings) -> crate::SharedDiagnosticLog {
             let lines = Arc::clone(&self.log_lines);
-            crate::ErasedDiagnosticLog::new(
-                settings.diagnostic_logging,
-                BoxedDiagnosticSink::new(move |line: &str| {
-                    lines.lock().unwrap().push(line.to_string());
-                }),
-            )
+            crate::SharedDiagnosticLog::new(settings.diagnostic_logging, move |line: &str| {
+                lines.lock().unwrap().push(line.to_string());
+            })
         }
 
         fn dictation_stack(
             &self,
             settings: &crate::Settings,
-        ) -> Result<crate::DictationStack<BoxedDiagnosticSink>, String> {
+        ) -> Result<crate::DictationStack, String> {
             let gate = self.decoding.clone();
             let engine: Arc<dyn TranscriptionProvider> = Arc::new(FakeEngine {
                 text: self.next_transcription(),
@@ -823,8 +820,7 @@ mod tests {
                 self.diagnostic_log(settings),
                 crate::SharedTranscriptionTimingLog::new(
                     crate::FileTranscriptionTimingSink::unavailable(),
-                )
-                .erased(),
+                ),
             ))
         }
 
