@@ -1,11 +1,10 @@
-
 use std::sync::Arc;
 
 use tauri::{Emitter, Manager};
 
 use slugtale_lib::{
-    BoxedDiagnosticSink, DictationEffects, DictationHost, DictationParts, DictationPhase,
-    WindowLabel,
+    BoxedDiagnosticSink, DictationEffects, DictationEvent, DictationHost, DictationParts,
+    DictationPhase, WindowLabel,
 };
 
 use crate::dictation_bar_window::{hide_dictation_bar, show_dictation_bar};
@@ -14,13 +13,21 @@ use crate::hotkey_registration::{request_escape_registration, HotkeyRegistration
 use super::settings::{build_activation_snapshot_for, report_not_ready};
 use super::{app_files, dictation_input_is_inert, load_current_settings, record_diagnostic_event};
 
+pub(crate) fn route_dictation_ui_event(event: &str) -> Result<DictationEvent, String> {
+    slugtale_lib::parse_dictation_ui_event(event)
+}
+
+pub(crate) fn resolve_end_event(
+    control_event: Option<DictationEvent>,
+    fallback: DictationEvent,
+) -> DictationEvent {
+    control_event.unwrap_or(fallback)
+}
+
 #[tauri::command]
 pub(crate) fn dictation_event(app: tauri::AppHandle, event: String) -> Result<(), String> {
     match event.as_str() {
-        "start" => {
-            let event = slugtale_lib::parse_dictation_ui_event("start")?;
-            dictation_host(&app).handle_dictation_event(event)
-        }
+        "start" => dictation_host(&app).handle_dictation_event(DictationEvent::Start),
         "stop" => stop_active_dictation(&app),
         "cancel" => cancel_active_dictation(&app),
         other => Err(slugtale_lib::parse_dictation_ui_event(other).unwrap_err()),
@@ -62,10 +69,7 @@ fn end_active_dictation(
         event
     };
 
-    match event {
-        Some(event) => dictation_host(app).handle_dictation_event(event),
-        None => dictation_host(app).handle_dictation_event(fallback),
-    }
+    dictation_host(app).handle_dictation_event(resolve_end_event(event, fallback))
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -272,4 +276,453 @@ pub(crate) fn dictation_bar_displays(app: tauri::AppHandle) -> Vec<DictationBarD
     }
 
     displays
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[derive(Clone, Default)]
+    struct TestSurface {
+        calls: Arc<std::sync::Mutex<Vec<String>>>,
+        lines: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl TestSurface {
+        fn record(&self, call: &str) {
+            self.calls.lock().unwrap().push(call.to_string());
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl DictationEffects for TestSurface {
+        fn settings(&self) -> slugtale_lib::Settings {
+            slugtale_lib::Settings {
+                segment_pause_secs: 2,
+                ..slugtale_lib::Settings::default()
+            }
+        }
+
+        fn record_diagnostic_event(&self, event: slugtale_lib::DiagnosticEvent) {
+            let tag = match event {
+                slugtale_lib::DiagnosticEvent::HotkeyTransition { .. } => "hotkey_transition",
+                slugtale_lib::DiagnosticEvent::AudioCaptureFailed { .. } => "audio_capture_failed",
+                slugtale_lib::DiagnosticEvent::InsertionFailed { .. } => "insertion_failed",
+                slugtale_lib::DiagnosticEvent::InsertionRescued => "insertion_rescued",
+                _ => "other",
+            };
+            self.record(tag);
+        }
+
+        fn show_dictation_bar(&self, phase: DictationPhase, _settings: &slugtale_lib::Settings) {
+            self.record(&format!("show:{}", phase.as_str()));
+        }
+
+        fn hide_dictation_bar(&self) {
+            self.record("hide");
+        }
+
+        fn emit_dictation_audio_level(&self, level: f32) {
+            if level == 0.0 {
+                self.record("clear_level");
+            }
+        }
+
+        fn notify_capture_failure(&self, _error: &str) {
+            self.record("notify_failure");
+        }
+
+        fn play_dictation_sound(&self, sound: slugtale_lib::DictationSound) {
+            let name = match sound {
+                slugtale_lib::DictationSound::Start => "start",
+                slugtale_lib::DictationSound::Stop => "stop",
+            };
+            self.record(&format!("sound:{name}"));
+        }
+
+        fn record_stage_timing(&self, timing: &slugtale_lib::StageTiming) {
+            self.record(&format!("stage:{}", timing.event));
+        }
+    }
+
+    impl DictationParts for TestSurface {
+        fn diagnostic_log(
+            &self,
+            settings: &slugtale_lib::Settings,
+        ) -> slugtale_lib::ErasedDiagnosticLog {
+            let lines = Arc::clone(&self.lines);
+            slugtale_lib::ErasedDiagnosticLog::new(
+                settings.diagnostic_logging,
+                BoxedDiagnosticSink::new(move |line: &str| {
+                    lines.lock().unwrap().push(line.to_string());
+                }),
+            )
+        }
+
+        fn dictation_stack(
+            &self,
+            _settings: &slugtale_lib::Settings,
+        ) -> Result<slugtale_lib::DictationStack<BoxedDiagnosticSink>, String> {
+            Err("no transcription engine in adapter test".to_string())
+        }
+
+        fn prepared_insertion(
+            &self,
+            _target_pid: Option<i32>,
+        ) -> Result<slugtale_lib::PreparedInsertion, String> {
+            Err("no text insertion in adapter test".to_string())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct TestMicrophone {
+        level: Arc<std::sync::Mutex<Option<slugtale_lib::AudioLevelCallback>>>,
+        watermark: Arc<std::sync::atomic::AtomicU64>,
+        cuts: Arc<std::sync::Mutex<Vec<u64>>>,
+    }
+
+    impl TestMicrophone {
+        fn voice(&self, level: f32) {
+            if slugtale_lib::is_voice_level(level) {
+                self.watermark
+                    .fetch_add(8_000, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(callback) = self.level.lock().unwrap().clone() {
+                callback(level);
+            }
+        }
+    }
+
+    struct TestRecorder {
+        microphone: TestMicrophone,
+    }
+
+    impl TestRecorder {
+        fn captured() -> slugtale_lib::CapturedAudio {
+            slugtale_lib::CapturedAudio {
+                sample_rate_hz: 16_000,
+                samples: vec![0.4; 480],
+            }
+        }
+    }
+
+    impl slugtale_lib::DictationRecorder for TestRecorder {
+        fn prepare(&mut self) -> Result<(), slugtale_lib::AudioCaptureError> {
+            Ok(())
+        }
+
+        fn start(&mut self) -> Result<(), slugtale_lib::AudioCaptureError> {
+            Ok(())
+        }
+
+        fn stop(&mut self) -> Result<slugtale_lib::CapturedAudio, slugtale_lib::AudioCaptureError> {
+            Ok(Self::captured())
+        }
+
+        fn cancel(&mut self) -> Result<(), slugtale_lib::AudioCaptureError> {
+            Ok(())
+        }
+
+        fn cut_segment(
+            &mut self,
+            cut: u64,
+        ) -> Result<slugtale_lib::CapturedAudio, slugtale_lib::AudioCaptureError> {
+            self.microphone.cuts.lock().unwrap().push(cut);
+            Ok(Self::captured())
+        }
+
+        fn voice_watermark_cell(&self) -> Arc<std::sync::atomic::AtomicU64> {
+            Arc::clone(&self.microphone.watermark)
+        }
+
+        fn set_level_callback(&mut self, callback: Option<slugtale_lib::AudioLevelCallback>) {
+            *self.microphone.level.lock().unwrap() = callback;
+        }
+    }
+
+    fn test_host() -> (
+        Arc<DictationHost<TestRecorder>>,
+        Arc<TestSurface>,
+        TestMicrophone,
+    ) {
+        let surface = Arc::new(TestSurface::default());
+        let microphone = TestMicrophone::default();
+        let recorder = TestRecorder {
+            microphone: microphone.clone(),
+        };
+        let effects: Arc<dyn DictationEffects> = surface.clone();
+        let parts: Arc<dyn DictationParts> = surface.clone();
+        let usage = slugtale_lib::UsageQueue::start(Arc::new(
+            |_: slugtale_lib::LocalDate, _: slugtale_lib::CountedSegment| {},
+        ))
+        .expect("usage writer starts");
+        let host = Arc::new(DictationHost::with_recorder_and_focus_target_source(
+            effects,
+            parts,
+            recorder,
+            usage,
+            Arc::new(|| Some(4_242)),
+        ));
+        let runtime_host: Arc<dyn slugtale_lib::DictationRuntimeHost> = host.clone();
+        let watermark_host = Arc::clone(&host);
+        let runtime = slugtale_lib::DictationRuntime::start(runtime_host, move || {
+            watermark_host.voice_watermark()
+        })
+        .expect("runtime starts");
+        host.set_runtime(Arc::new(runtime)).unwrap();
+        (host, surface, microphone)
+    }
+
+    fn start_through_adapter(host: &DictationHost<TestRecorder>, ui: &str) {
+        let event = route_dictation_ui_event(ui).unwrap();
+        assert_eq!(event, DictationEvent::Start);
+        host.handle_dictation_event(event).unwrap();
+    }
+
+    fn wait_for_hide(surface: &TestSurface) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if surface.calls().iter().any(|call| call == "hide") {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "dictation never hid the bar: {:?}",
+                surface.calls()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn ui_names_route_to_exactly_one_host_event_and_unknown_is_rejected() {
+        assert_eq!(route_dictation_ui_event("start"), Ok(DictationEvent::Start));
+        assert_eq!(route_dictation_ui_event("stop"), Ok(DictationEvent::Stop));
+        assert_eq!(
+            route_dictation_ui_event("cancel"),
+            Ok(DictationEvent::Cancel)
+        );
+        let error = route_dictation_ui_event("pause").unwrap_err();
+        assert_eq!(error, "unknown dictation event: pause");
+    }
+
+    #[test]
+    fn a_control_event_wins_over_the_fallback_and_absence_uses_it() {
+        assert_eq!(
+            resolve_end_event(Some(DictationEvent::Stop), DictationEvent::Cancel),
+            DictationEvent::Stop
+        );
+        assert_eq!(
+            resolve_end_event(None, DictationEvent::Cancel),
+            DictationEvent::Cancel
+        );
+        assert_eq!(
+            resolve_end_event(None, DictationEvent::Stop),
+            DictationEvent::Stop
+        );
+    }
+
+    #[test]
+    fn start_through_the_adapter_opens_the_microphone_and_shows_recording() {
+        let (host, surface, _microphone) = test_host();
+
+        start_through_adapter(&host, "start");
+
+        let calls = surface.calls();
+        assert_eq!(calls[0], "hotkey_transition");
+        let cue = calls
+            .iter()
+            .position(|call| call == "sound:start")
+            .expect("start plays its cue");
+        assert_eq!(calls[cue + 1], "show:recording");
+        assert!(!calls.contains(&"show:transcribing".to_string()));
+        assert!(!calls.contains(&"hide".to_string()));
+    }
+
+    #[test]
+    fn stop_through_the_adapter_shows_transcribing_and_settles_hidden() {
+        let (host, surface, _microphone) = test_host();
+        start_through_adapter(&host, "start");
+        surface.calls.lock().unwrap().clear();
+
+        let stop = route_dictation_ui_event("stop").unwrap();
+        assert_eq!(stop, DictationEvent::Stop);
+        host.handle_dictation_event(stop).unwrap();
+
+        assert!(surface
+            .calls()
+            .iter()
+            .any(|call| call == "show:transcribing"));
+        wait_for_hide(&surface);
+    }
+
+    #[test]
+    fn cancel_through_the_adapter_discards_and_leaves_no_queued_text() {
+        let (host, surface, _microphone) = test_host();
+        start_through_adapter(&host, "start");
+
+        let cancel = route_dictation_ui_event("cancel").unwrap();
+        assert_eq!(cancel, DictationEvent::Cancel);
+        host.handle_dictation_event(cancel).unwrap();
+
+        let calls = surface.calls();
+        assert!(calls.contains(&"hide".to_string()));
+        assert!(!calls.contains(&"show:transcribing".to_string()));
+        let stale = host.run_dictation_segment(
+            999_999,
+            slugtale_lib::CapturedAudio::mono_16khz(vec![0.4; 480]),
+            slugtale_lib::DictationSegmentPosition::First,
+        );
+        assert!(stale.is_err());
+    }
+
+    #[test]
+    fn a_segment_pause_flushes_through_host_while_recording_carries_on() {
+        let (host, surface, microphone) = test_host();
+        start_through_adapter(&host, "start");
+
+        microphone.voice(slugtale_lib::VOICE_LEVEL + 0.2);
+        std::thread::sleep(std::time::Duration::from_millis(2_300));
+        microphone.voice(0.0);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if !microphone.cuts.lock().unwrap().is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pause flush never cut the microphone: {:?}",
+                surface.calls()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(microphone.cuts.lock().unwrap().clone(), vec![8_000]);
+    }
+
+    #[test]
+    fn a_stale_segment_for_an_unknown_session_takes_nothing() {
+        let (host, _surface, _microphone) = test_host();
+        start_through_adapter(&host, "start");
+
+        let stale = host.run_dictation_segment(
+            42_000,
+            slugtale_lib::CapturedAudio::mono_16khz(vec![0.4; 480]),
+            slugtale_lib::DictationSegmentPosition::First,
+        );
+        let error = stale.unwrap_err();
+        assert!(
+            error.contains("no longer running"),
+            "stale work must be refused: {error}"
+        );
+    }
+
+    struct FakeRuntime {
+        text: String,
+    }
+
+    impl slugtale_lib::AsrRuntime for FakeRuntime {
+        fn transcribe(
+            &self,
+            _audio: slugtale_lib::CapturedAudio,
+        ) -> Result<slugtale_lib::FinalTranscription, slugtale_lib::AsrError> {
+            Ok(slugtale_lib::FinalTranscription::plain(self.text.clone()))
+        }
+    }
+
+    struct FakeInsertion {
+        inserted: Arc<std::sync::Mutex<Vec<String>>>,
+        fails: bool,
+    }
+
+    impl slugtale_lib::TextInsertion for FakeInsertion {
+        fn insert(
+            &self,
+            transcription: &slugtale_lib::FinalTranscription,
+        ) -> Result<(), slugtale_lib::TextInsertionError> {
+            self.inserted
+                .lock()
+                .unwrap()
+                .push(transcription.text.clone());
+            if self.fails {
+                return Err(slugtale_lib::TextInsertionError::new(
+                    "fake insertion failure",
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    struct FakeRescue {
+        rescued: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl slugtale_lib::InsertionRescue for FakeRescue {
+        fn rescue(
+            &self,
+            transcription: &slugtale_lib::FinalTranscription,
+        ) -> Result<(), slugtale_lib::InsertionRescueError> {
+            self.rescued
+                .lock()
+                .unwrap()
+                .push(transcription.text.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failed_insertion_is_preserved_by_rescue_and_a_clean_insert_is_not() {
+        let audio = slugtale_lib::CapturedAudio::mono_16khz(vec![0.4; 480]);
+
+        let rescued = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let inserted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let runtime = FakeRuntime {
+            text: "rescued words".to_string(),
+        };
+        let insertion = FakeInsertion {
+            inserted: Arc::clone(&inserted),
+            fails: true,
+        };
+        let rescue = FakeRescue {
+            rescued: Arc::clone(&rescued),
+        };
+        let outcome = slugtale_lib::DictationWorkflow::new(
+            &runtime,
+            &insertion,
+            &rescue,
+            slugtale_lib::TranscriptCleanupMode::Basic,
+        )
+        .complete(audio.clone(), slugtale_lib::DictationSegmentPosition::First)
+        .expect("rescue preserves the transcription");
+        assert!(outcome.rescued);
+        assert!(outcome.inserted);
+        assert_eq!(outcome.insertion_failure.is_some(), true);
+        assert_eq!(*rescued.lock().unwrap(), vec!["Rescued words"]);
+
+        let rescued = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let inserted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let insertion = FakeInsertion {
+            inserted: Arc::clone(&inserted),
+            fails: false,
+        };
+        let rescue = FakeRescue {
+            rescued: Arc::clone(&rescued),
+        };
+        let outcome = slugtale_lib::DictationWorkflow::new(
+            &runtime,
+            &insertion,
+            &rescue,
+            slugtale_lib::TranscriptCleanupMode::Basic,
+        )
+        .complete(audio, slugtale_lib::DictationSegmentPosition::First)
+        .expect("clean insertion succeeds");
+        assert!(outcome.inserted);
+        assert!(!outcome.rescued);
+        assert_eq!(*inserted.lock().unwrap(), vec!["Rescued words"]);
+        assert!(rescued.lock().unwrap().is_empty());
+    }
 }
