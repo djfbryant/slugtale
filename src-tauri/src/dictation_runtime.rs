@@ -65,10 +65,13 @@ impl DictationSegmentControl {
         change()
     }
 
+    fn is_live(&self, session: u64) -> bool {
+        self.current() == session && !self.is_cancelled(session)
+    }
+
     fn while_recording<T>(&self, session: u64, effect: impl FnOnce() -> T) -> Option<T> {
         let _effects = self.effects.lock();
-        let recording = self.current() == session && !self.is_cancelled(session);
-        recording.then(effect)
+        self.is_live(session).then(effect)
     }
 
     fn begin(&self) -> u64 {
@@ -109,9 +112,39 @@ pub struct DictationRuntime {
 }
 
 #[derive(Default)]
-struct DictationSegmentWorker {
+struct SegmentPositioning {
     session: u64,
-    inserted_any: bool,
+    wrote_any: bool,
+}
+
+impl SegmentPositioning {
+    fn ensure_session(&mut self, session: u64) {
+        if session != self.session {
+            self.session = session;
+            self.wrote_any = false;
+        }
+    }
+
+    fn next_position(&self) -> DictationSegmentPosition {
+        if self.wrote_any {
+            DictationSegmentPosition::Continuation
+        } else {
+            DictationSegmentPosition::First
+        }
+    }
+
+    fn note_inserted(&mut self, inserted: bool) {
+        self.wrote_any |= inserted;
+    }
+
+    fn starts_dictation(&self) -> bool {
+        !self.wrote_any
+    }
+}
+
+#[derive(Default)]
+struct DictationSegmentWorker {
+    ordering: SegmentPositioning,
 }
 
 impl DictationSegmentWorker {
@@ -123,10 +156,7 @@ impl DictationSegmentWorker {
     ) -> Result<DictationSegmentJobResult, String> {
         let session = job.session();
         let last = job.is_last();
-        if session != self.session {
-            self.session = session;
-            self.inserted_any = false;
-        }
+        self.ordering.ensure_session(session);
 
         let audio = match job {
             DictationSegmentJob::PauseFlush { session, cut } => control
@@ -146,12 +176,8 @@ impl DictationSegmentWorker {
         };
 
         let speaking_seconds = crate::captured_audio_duration(&audio).as_secs_f64();
-        let starts_dictation = !self.inserted_any;
-        let position = if starts_dictation {
-            DictationSegmentPosition::First
-        } else {
-            DictationSegmentPosition::Continuation
-        };
+        let starts_dictation = self.ordering.starts_dictation();
+        let position = self.ordering.next_position();
         let outcome = host.complete(session, audio, position)?;
         if outcome.inserted {
             let counted = CountedSegment {
@@ -161,7 +187,7 @@ impl DictationSegmentWorker {
             };
             control.while_recording(session, || host.record_counted_segment(counted));
         }
-        self.inserted_any |= outcome.inserted;
+        self.ordering.note_inserted(outcome.inserted);
         if outcome.rescued {
             control.while_recording(session, || control.suspend_flushes_for_rescue(session));
         }
@@ -1845,5 +1871,58 @@ mod tests {
 
         runtime.begin(saved_pause);
         assert_eq!(runtime.armed_pause(), saved_pause);
+    }
+
+    #[test]
+    fn a_cancelled_dictation_ends_with_a_skipped_last_and_no_bar_hide() {
+        let control = DictationSegmentControl::default();
+        let cancelled = control.begin();
+        control.abandon();
+        let mut worker = DictationSegmentWorker::default();
+        let host = FakeHost::answering(
+            vec![Some(audio(1, 1))],
+            vec![outcome("too late", true, false)],
+        );
+
+        settle_job(
+            &mut worker,
+            DictationSegmentJob::Last {
+                session: cancelled,
+                audio: audio(1, 1),
+            },
+            &control,
+            &host,
+        );
+
+        assert!(host.positions().is_empty());
+        assert!(host.recorded().is_empty());
+        assert_eq!(host.bars_hidden(), 0);
+    }
+
+    #[test]
+    fn a_stale_pause_flush_is_skipped_once_a_newer_session_begins() {
+        let control = DictationSegmentControl::default();
+        let first = control.begin();
+        let mut worker = DictationSegmentWorker::default();
+        let host = FakeHost::answering(
+            vec![Some(audio(1, 1))],
+            vec![outcome("words", true, false)],
+        );
+
+        let _second = control.begin();
+        let result = worker
+            .process(
+                DictationSegmentJob::PauseFlush {
+                    session: first,
+                    cut: 7_000,
+                },
+                &control,
+                &host,
+            )
+            .unwrap();
+
+        assert_eq!(result, DictationSegmentJobResult::Skipped { last: false });
+        assert!(host.cuts().is_empty());
+        assert!(host.positions().is_empty());
     }
 }

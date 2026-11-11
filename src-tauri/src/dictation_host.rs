@@ -23,6 +23,12 @@ struct DictationSession {
     target_pid: Option<i32>,
 }
 
+#[derive(Default)]
+struct SessionState {
+    pinned: Option<DictationSession>,
+    stopped_at: Option<(u64, std::time::Instant)>,
+}
+
 pub trait DictationEffects: Send + Sync {
     fn settings(&self) -> crate::Settings;
     fn record_diagnostic_event(&self, event: crate::DiagnosticEvent);
@@ -62,11 +68,10 @@ pub struct DictationHost<R = crate::CpalAudioRecorder> {
     feedback: Mutex<crate::RecordingFeedback>,
     focus_target_source: Arc<dyn Fn() -> Option<i32> + Send + Sync>,
     capture: Mutex<crate::AudioCaptureSession<R>>,
-    session: Mutex<Option<DictationSession>>,
+    state: Mutex<SessionState>,
     voice_watermark: LockFreeVoiceWatermark,
     runtime_state: Mutex<Option<Arc<crate::DictationRuntime>>>,
     usage: Arc<crate::UsageQueue>,
-    stop_pressed: Mutex<Option<(u64, std::time::Instant)>>,
 }
 
 impl<R> DictationHost<R>
@@ -113,11 +118,10 @@ where
             feedback: Mutex::new(crate::RecordingFeedback::default()),
             focus_target_source,
             capture: Mutex::new(crate::AudioCaptureSession::new(recorder)),
-            session: Mutex::new(None),
+            state: Mutex::new(SessionState::default()),
             voice_watermark,
             runtime_state: Mutex::new(None),
             usage,
-            stop_pressed: Mutex::new(None),
         }
     }
 
@@ -163,48 +167,56 @@ where
     pub fn handle_dictation_event_with(
         &self,
         event: crate::DictationEvent,
-        mut activation: Option<crate::DictationActivation>,
+        activation: Option<crate::DictationActivation>,
     ) -> Result<(), String> {
         self.effects
             .record_diagnostic_event(crate::DiagnosticEvent::hotkey_transition(event));
 
         match event {
-            crate::DictationEvent::Start => {
-                let mut timer = crate::StageTimer::start("dictation-start");
-                let target_pid = self.frontmost_app();
-                let settings = match activation.take() {
-                    Some(activation) => activation.settings,
-                    None => self.effects.settings(),
-                };
-                timer.mark("read_settings");
-                self.begin_and_pin_dictation(&settings, target_pid);
-                timer.mark("begin_session");
-                let opened = self.open_capture_for_pinned_dictation(event, &settings);
-                timer.mark("open_microphone");
-                if let Err(error) = opened {
-                    timer.note("result", "microphone failed");
-                    self.effects.record_stage_timing(&timer.finish());
-                    return Err(error);
-                }
-                let feedback = self.apply_recording_feedback(event, Some(&settings));
-                timer.mark("show_bar");
-                self.effects.record_stage_timing(&timer.finish());
-                feedback?;
-            }
-            crate::DictationEvent::Stop => {
-                self.note_stop_pressed();
-                self.advance_recording_feedback(event)?;
-                let settings = self.effects.settings();
-                self.handle_audio_capture_event_with_settings(event, Some(&settings))?;
-            }
-            crate::DictationEvent::Cancel => {
-                self.runtime().abandon();
-                self.apply_recording_feedback(event, None)?;
-                self.handle_audio_capture_event(event)?;
-            }
+            crate::DictationEvent::Start => self.handle_start(event, activation),
+            crate::DictationEvent::Stop => self.handle_stop(event),
+            crate::DictationEvent::Cancel => self.handle_cancel(event),
         }
+    }
 
-        Ok(())
+    fn handle_start(
+        &self,
+        event: crate::DictationEvent,
+        mut activation: Option<crate::DictationActivation>,
+    ) -> Result<(), String> {
+        let mut timer = crate::StageTimer::start("dictation-start");
+        let target_pid = self.frontmost_app();
+        let settings = match activation.take() {
+            Some(activation) => activation.settings,
+            None => self.effects.settings(),
+        };
+        timer.mark("read_settings");
+        self.begin_and_pin_dictation(&settings, target_pid);
+        timer.mark("begin_session");
+        let opened = self.open_capture_for_pinned_dictation(event, &settings);
+        timer.mark("open_microphone");
+        if let Err(error) = opened {
+            timer.note("result", "microphone failed");
+            self.effects.record_stage_timing(&timer.finish());
+            return Err(error);
+        }
+        let feedback = self.apply_recording_feedback(event, Some(&settings));
+        timer.mark("show_bar");
+        self.effects.record_stage_timing(&timer.finish());
+        feedback
+    }
+
+    fn handle_stop(&self, event: crate::DictationEvent) -> Result<(), String> {
+        self.note_stop_pressed();
+        self.advance_recording_feedback(event)?;
+        let settings = self.effects.settings();
+        self.handle_audio_capture_event_with_settings(event, Some(&settings))
+    }
+
+    fn handle_cancel(&self, event: crate::DictationEvent) -> Result<(), String> {
+        self.runtime().abandon();
+        self.apply_recording_feedback(event, None)?;
+        self.handle_audio_capture_event(event)
     }
 
     fn begin_and_pin_dictation(&self, settings: &crate::Settings, target_pid: Option<i32>) {
@@ -278,44 +290,38 @@ where
     }
 
     fn note_stop_pressed(&self) {
-        let session = self
-            .session
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|pinned| pinned.session));
-        if let (Some(session), Ok(mut stop_pressed)) = (session, self.stop_pressed.lock()) {
-            *stop_pressed = Some((session, std::time::Instant::now()));
+        if let Ok(mut guard) = self.state.lock() {
+            if let Some(pinned) = guard.pinned.as_ref() {
+                guard.stopped_at = Some((pinned.session, std::time::Instant::now()));
+            }
         }
     }
 
-    /// When the user pressed Stop for this session before this segment began,
-    /// so the segment is the one they are waiting on.
     fn stop_pressed_before(
         &self,
         session: u64,
         began: std::time::Instant,
     ) -> Option<std::time::Instant> {
-        let mut stop_pressed = self.stop_pressed.lock().ok()?;
-        match *stop_pressed {
+        let mut guard = self.state.lock().ok()?;
+        match guard.stopped_at {
             Some((pressed_session, pressed)) if pressed_session == session && pressed <= began => {
-                stop_pressed.take();
-                Some(pressed)
+                guard.stopped_at.take().map(|(_, at)| at)
             }
             _ => None,
         }
     }
 
     fn pin_session(&self, pinned: DictationSession) {
-        if let Ok(mut guard) = self.session.lock() {
-            *guard = Some(pinned);
+        if let Ok(mut guard) = self.state.lock() {
+            guard.pinned = Some(pinned);
         }
     }
 
     fn pinned_session(&self, session: u64) -> Result<DictationSession, String> {
-        self.session
+        self.state
             .lock()
             .ok()
-            .and_then(|guard| guard.clone())
+            .and_then(|guard| guard.pinned.clone())
             .filter(|pinned| pinned.session == session)
             .ok_or_else(|| {
                 format!(
@@ -531,10 +537,10 @@ where
     }
 
     fn owns_capture(&self, _held_capture: &crate::AudioCaptureSession<R>, session: u64) -> bool {
-        self.session
+        self.state
             .lock()
             .ok()
-            .and_then(|guard| guard.as_ref().map(|pinned| pinned.session))
+            .and_then(|guard| guard.pinned.as_ref().map(|pinned| pinned.session))
             == Some(session)
     }
 }
@@ -1253,9 +1259,10 @@ mod tests {
     }
 
     fn running_session(host: &DictationHost<FakeRecorder>) -> u64 {
-        host.session
+        host.state
             .lock()
             .unwrap()
+            .pinned
             .as_ref()
             .expect("a dictation is running")
             .session
@@ -1860,7 +1867,7 @@ mod tests {
                 let seen = Arc::clone(&pinned_when_microphone_opened);
                 Arc::new(move || {
                     let host = host.get().and_then(std::sync::Weak::upgrade).unwrap();
-                    *seen.lock().unwrap() = Some(host.session.lock().unwrap().is_some());
+                    *seen.lock().unwrap() = Some(host.state.lock().unwrap().pinned.is_some());
                 })
             },
             ..FakeRecorder::healthy()
@@ -1925,5 +1932,48 @@ mod tests {
         DictationRuntimeHost::last_job_settled(&host, 7);
 
         assert_eq!(surface.calls(), vec![Call::HideBar]);
+    }
+
+    #[test]
+    fn a_rescue_holds_later_pause_flushes_through_the_host_but_the_stop_still_lands() {
+        let surface = Arc::new(FakeSurface::default())
+            .transcribing_as(&["first rescued words", "final words"]);
+        let surface = surface.with_failing_insertion();
+        let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
+
+        let first = dictating.pause_flush();
+        assert!(first.starts_dictation);
+        assert_eq!(surface.rescued(), ["First rescued words"]);
+
+        dictating.microphone.speak_then_pause();
+        assert!(
+            dictating
+                .counted
+                .recv_timeout(Duration::from_millis(400))
+                .is_err(),
+            "the rescued dictation holds its later pauses"
+        );
+
+        let calls = dictating.stop();
+        assert_eq!(surface.rescued(), ["First rescued words", " final words"]);
+        assert!(calls.contains(&Call::ShowBar("transcribing")));
+    }
+
+    #[test]
+    fn cancel_before_stop_discards_the_pending_segment_and_never_types() {
+        let surface =
+            Arc::new(FakeSurface::default()).transcribing_as(&["first words", "never typed words"]);
+        let dictating = Dictating::recording(&surface, FakeRecorder::healthy());
+
+        let _first = dictating.pause_flush();
+        assert_eq!(surface.inserted(), ["First words"]);
+
+        dictating.cancel();
+        dictating
+            .host
+            .handle_dictation_event(DictationEvent::Stop)
+            .expect("stray stop after cancel is accepted");
+        assert_eq!(surface.inserted(), ["First words"]);
+        assert!(dictating.counted.try_iter().collect::<Vec<_>>().is_empty());
     }
 }

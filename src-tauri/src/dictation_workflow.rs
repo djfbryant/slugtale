@@ -161,7 +161,16 @@ pub fn clean_dictation_segment(
         };
     }
 
-    let text = match position {
+    let text = join_for_position(normalized, position);
+
+    FinalTranscription {
+        text,
+        segments: transcription.segments,
+    }
+}
+
+fn join_for_position(normalized: String, position: DictationSegmentPosition) -> String {
+    match position {
         DictationSegmentPosition::Continuation => format!(" {normalized}"),
         DictationSegmentPosition::First => {
             let mut chars = normalized.chars();
@@ -172,11 +181,6 @@ pub fn clean_dictation_segment(
                 normalized
             }
         }
-    };
-
-    FinalTranscription {
-        text,
-        segments: transcription.segments,
     }
 }
 
@@ -211,8 +215,6 @@ mod tests {
 
     #[test]
     fn a_continuation_segment_appends_after_the_text_already_inserted() {
-        // Whisper punctuates and capitalises each segment as its own utterance,
-        // so the only thing missing when appending is the separating space.
         let runtime = FakeAsrRuntime::new("This is the second paragraph.");
         let insertion = FakeTextInsertion::default();
         let rescue = FakeInsertionRescue::default();
