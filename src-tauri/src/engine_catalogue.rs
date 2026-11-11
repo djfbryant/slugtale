@@ -251,8 +251,8 @@ impl TranscriptionEngineCatalogue {
                             primary.clone(),
                             second,
                             SecondOpinionMode::Automatic,
+                            coordinator,
                         )
-                        .with_coordinator(coordinator)
                     })
                     .unwrap_or_else(|| SecondOpinionRouter::single(primary))
             }
@@ -670,6 +670,35 @@ mod tests {
             .transcribe(crate::CapturedAudio::mono_16khz(vec![0.0; 16_000]))
             .err()
             .expect("the fallback provider reports its own failure");
+
+        assert!(
+            matches!(error, AsrError::ModelMissing { .. }),
+            "expected the missing local model, got {error}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn automatic_second_opinion_still_builds_and_routes_through_the_catalogue() {
+        let root = temp_root("automatic-stack");
+        let files =
+            crate::AppFiles::from_dirs_for_test(Some(root.join("config")), Some(root.clone()));
+        let catalogue = TranscriptionEngineCatalogue::default();
+        catalogue.set_model_manager(files.model_manager().unwrap());
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = SharedDiagnosticLog::new(true, collecting_sink(&lines));
+        let settings = Settings {
+            second_opinion: SecondOpinionMode::Automatic,
+            ..Settings::default()
+        };
+        let stack = catalogue
+            .dictation_stack(&settings, log, no_op_timing_log())
+            .expect("an automatic-mode stack resolves like a single-engine one when nothing can run");
+
+        let error = stack
+            .transcribe(crate::CapturedAudio::mono_16khz(vec![0.0; 16_000]))
+            .err()
+            .expect("the available engine reports its own failure");
 
         assert!(
             matches!(error, AsrError::ModelMissing { .. }),

@@ -235,20 +235,16 @@ impl SecondOpinionRouter {
         primary: Arc<dyn EngineTranscriber>,
         second: Arc<dyn EngineTranscriber>,
         mode: SecondOpinionMode,
+        coordinator: SecondOpinionCoordinator,
     ) -> Self {
         Self {
             primary,
             second: Some(second),
             mode,
             policy: EscalationPolicy::default(),
-            coordinator: SecondOpinionCoordinator::default(),
+            coordinator,
             observer: None,
         }
-    }
-
-    pub fn with_coordinator(mut self, coordinator: SecondOpinionCoordinator) -> Self {
-        self.coordinator = coordinator;
-        self
     }
 
     #[cfg(test)]
@@ -642,8 +638,8 @@ mod tests {
             Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
             Arc::new(slow),
             SecondOpinionMode::Automatic,
+            coordinator.clone(),
         )
-        .with_coordinator(coordinator.clone())
         .with_policy(EscalationPolicy::default().with_budget(Duration::from_millis(50)));
 
         let routed_first = first_segment.route(&speech_of_seconds(3.0)).unwrap();
@@ -658,8 +654,8 @@ mod tests {
             Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
             Arc::new(next_second),
             SecondOpinionMode::Automatic,
-        )
-        .with_coordinator(coordinator);
+            coordinator,
+        );
 
         let routed_next = next_segment.route(&speech_of_seconds(3.0)).unwrap();
 
@@ -672,13 +668,14 @@ mod tests {
     }
 
     #[test]
-    fn routers_given_no_shared_coordinator_do_not_block_each_other() {
+    fn routers_given_separate_coordinators_do_not_block_each_other() {
         let slow = FakeProvider::new(TranscriptionEngine::Parakeet, "too late")
             .slow(Duration::from_millis(600));
         let first_segment = SecondOpinionRouter::new(
             Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
             Arc::new(slow),
             SecondOpinionMode::Automatic,
+            SecondOpinionCoordinator::default(),
         )
         .with_policy(EscalationPolicy::default().with_budget(Duration::from_millis(50)));
         assert_eq!(
@@ -693,6 +690,7 @@ mod tests {
             Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
             Arc::new(FakeProvider::new(TranscriptionEngine::AppleSpeech, "rescued")),
             SecondOpinionMode::Automatic,
+            SecondOpinionCoordinator::default(),
         );
 
         assert_eq!(
@@ -715,8 +713,8 @@ mod tests {
             Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
             Arc::new(slow),
             SecondOpinionMode::Automatic,
+            coordinator.clone(),
         )
-        .with_coordinator(coordinator.clone())
         .with_policy(EscalationPolicy::default().with_budget(Duration::from_millis(30)));
         assert_eq!(
             first_segment
@@ -732,8 +730,8 @@ mod tests {
             Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
             Arc::new(FakeProvider::new(TranscriptionEngine::AppleSpeech, "rescued")),
             SecondOpinionMode::Automatic,
-        )
-        .with_coordinator(coordinator);
+            coordinator,
+        );
 
         let routed = later_segment.route(&speech_of_seconds(3.0)).unwrap();
 
@@ -750,8 +748,8 @@ mod tests {
                 calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }),
             SecondOpinionMode::Automatic,
-        )
-        .with_coordinator(coordinator.clone());
+            coordinator.clone(),
+        );
 
         let routed = router.route(&speech_of_seconds(3.0)).unwrap();
         assert_eq!(
@@ -764,8 +762,8 @@ mod tests {
             Arc::new(FakeProvider::new(TranscriptionEngine::Whisper, "")),
             Arc::new(FakeProvider::new(TranscriptionEngine::AppleSpeech, "rescued")),
             SecondOpinionMode::Automatic,
-        )
-        .with_coordinator(coordinator);
+            coordinator,
+        );
         assert_eq!(
             after.route(&speech_of_seconds(3.0)).unwrap().selection,
             SelectionReason::SecondOpinionSelected
@@ -921,7 +919,12 @@ mod tests {
         second: FakeProvider,
         mode: SecondOpinionMode,
     ) -> SecondOpinionRouter {
-        SecondOpinionRouter::new(Arc::new(primary), Arc::new(second), mode)
+        SecondOpinionRouter::new(
+            Arc::new(primary),
+            Arc::new(second),
+            mode,
+            SecondOpinionCoordinator::default(),
+        )
     }
 
     #[derive(Clone)]

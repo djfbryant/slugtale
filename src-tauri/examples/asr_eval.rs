@@ -7,8 +7,9 @@
 
 use slugtale_lib::{
     AppleSpeechProvider, AsrRuntime, CapturedAudio, EngineAvailability, EscalationReason,
-    LocalModelRef, LocalWhisperRuntime, ParakeetProvider, RoutingDiagnostics, SecondOpinionMode,
-    SecondOpinionRouter, SpeedProfile, TranscriptionProvider, WhisperTranscriptionProvider,
+    LocalModelRef, LocalWhisperRuntime, ParakeetProvider, RoutingDiagnostics,
+    SecondOpinionCoordinator, SecondOpinionMode, SecondOpinionRouter, SpeedProfile,
+    TranscriptionProvider, WhisperTranscriptionProvider,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -622,7 +623,13 @@ fn evaluate_routed(
 ) -> RoutedReport {
     let decided: Arc<Mutex<Option<RoutingDiagnostics>>> = Arc::new(Mutex::new(None));
     let recorder = Arc::clone(&decided);
-    let router = SecondOpinionRouter::new(primary, second, SecondOpinionMode::Automatic).observing(
+    let router = SecondOpinionRouter::new(
+        primary,
+        second,
+        SecondOpinionMode::Automatic,
+        SecondOpinionCoordinator::default(),
+    )
+    .observing(
         move |diagnostics| {
             *recorder
                 .lock()
@@ -1049,5 +1056,85 @@ mod tests {
         let (recalled, present) = term_recall("meet the Slugtale team", "meet the slugtale team", &terms);
         assert_eq!(present, 1);
         assert_eq!(recalled, 1);
+    }
+
+    struct FixedProvider {
+        engine: slugtale_lib::TranscriptionEngine,
+        text: String,
+    }
+
+    impl slugtale_lib::EngineTranscriber for FixedProvider {
+        fn engine(&self) -> slugtale_lib::TranscriptionEngine {
+            self.engine
+        }
+
+        fn metadata(&self) -> slugtale_lib::EngineMetadata {
+            slugtale_lib::EngineMetadata {
+                engine: self.engine,
+                model_id: "test",
+                capability: "test",
+                revision: "test",
+                approximate_bytes: None,
+                source_url: None,
+                license: "test",
+                license_url: "https://example.test",
+                attribution: None,
+                modifications: None,
+                system_managed: false,
+                supported_platforms: "test",
+            }
+        }
+
+        fn availability(&self) -> slugtale_lib::EngineAvailability {
+            slugtale_lib::EngineAvailability::Available
+        }
+
+        fn transcribe(
+            &self,
+            _audio: &slugtale_lib::CapturedAudio,
+        ) -> Result<slugtale_lib::EngineTranscription, slugtale_lib::AsrError> {
+            Ok(slugtale_lib::EngineTranscription {
+                engine: self.engine,
+                transcription: slugtale_lib::FinalTranscription {
+                    text: self.text.clone(),
+                    segments: Vec::new(),
+                },
+                alternatives: Vec::new(),
+                confidence: slugtale_lib::EngineConfidence::unreported(),
+                latency: Duration::ZERO,
+            })
+        }
+    }
+
+    impl slugtale_lib::EngineAssetLifecycle for FixedProvider {
+        fn assets(&self) -> slugtale_lib::EngineAssets {
+            slugtale_lib::EngineAssets {
+                installed_bytes: None,
+                present: Some(true),
+            }
+        }
+    }
+
+    #[test]
+    fn the_eval_harness_router_shape_rescues_an_empty_primary() {
+        let primary = Arc::new(FixedProvider {
+            engine: slugtale_lib::TranscriptionEngine::Whisper,
+            text: String::new(),
+        });
+        let second = Arc::new(FixedProvider {
+            engine: slugtale_lib::TranscriptionEngine::Parakeet,
+            text: "rescued transcript".to_string(),
+        });
+        let router = SecondOpinionRouter::new(
+            primary,
+            second,
+            SecondOpinionMode::Automatic,
+            SecondOpinionCoordinator::default(),
+        );
+        let audio = CapturedAudio::mono_16khz(vec![0.0; 48_000]);
+
+        let selected = router.transcribe(audio).unwrap();
+
+        assert_eq!(selected.text, "rescued transcript");
     }
 }
