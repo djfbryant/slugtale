@@ -67,6 +67,7 @@ fn start_dictation_runtime(
 }
 
 fn main() {
+    let launched = std::time::Instant::now();
     let reauthorize_permissions =
         slugtale_lib::permission_reauthorization_requested(std::env::args());
     let app = tauri::Builder::default()
@@ -80,30 +81,41 @@ fn main() {
         ))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
+            let mut startup = slugtale_lib::StageTimer::started_at("app-startup", launched);
+            startup.mark("launch_to_setup");
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             app.manage(AppFiles::from_app(app.handle()));
             let host = manage_dictation_host(app)?;
+            startup.mark("app_files_and_host");
             slugtale_lib::setup_tray(app)?;
+            startup.mark("tray");
             let runtime_started = start_dictation_runtime(&host)?;
             setup_configured_hotkey(app, runtime_started)?;
+            startup.mark("runtime_and_hotkey");
             let settings = commands::load_current_settings(app.handle());
             let _ =
                 commands::settings::set_launch_at_login_state(app.handle(), settings.launch_at_login);
+            startup.mark("settings_and_launch_at_login");
             if let Ok(model_manager) = commands::app_files(app.handle()).model_manager() {
                 app.state::<slugtale_lib::TranscriptionEngineCatalogue>()
                     .set_model_manager(model_manager);
             }
+            startup.mark("model_manager");
             commands::warm_effective_primary_engine(app.handle());
+            startup.mark("start_engine_warm_up");
             if commands::platform::CurrentPlatform::new().microphone_granted() {
                 commands::dictation::dictation_host(app.handle()).prepare_capture(&settings);
             }
+            startup.mark("prepare_microphone");
             if let Err(error) = voice_activation::sync_worker(
                 app.handle(),
                 commands::load_current_settings(app.handle()).voice_activation_enabled,
             ) {
                 eprintln!("voice activation worker did not start: {error}");
             }
+            startup.mark("voice_activation");
+            commands::record_stage_timing(app.handle(), &startup.finish());
             if reauthorize_permissions {
                 slugtale_lib::show_settings(app.handle().clone());
                 #[cfg(target_os = "macos")]

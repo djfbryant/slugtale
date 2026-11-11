@@ -405,6 +405,9 @@ mod tests {
                 total_latency_ms: 812,
                 audio_ms: 3000,
                 characters: 27,
+                primary_engine: crate::TranscriptionEngine::Whisper,
+                primary_latency_ms: 300,
+                second_opinion_latency_ms: Some(500),
             },
         ));
 
@@ -441,6 +444,9 @@ mod tests {
                 total_latency_ms: 244,
                 audio_ms: 1000,
                 characters: 5,
+                primary_engine: crate::TranscriptionEngine::Whisper,
+                primary_latency_ms: 244,
+                second_opinion_latency_ms: None,
             },
         ));
 

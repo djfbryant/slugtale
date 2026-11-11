@@ -113,6 +113,20 @@ impl TranscriptionEngineCatalogue {
         })
     }
 
+    /// Why the engine the Settings name cannot run, when it cannot and
+    /// dictation will fall back to another engine.
+    pub fn preferred_engine_unavailable(&self, settings: &Settings) -> Option<String> {
+        self.provider(settings, settings.primary_engine)
+            .map(|provider| provider.availability())
+            .map_or(
+                Some("not built into this app".to_string()),
+                |availability| match availability {
+                    EngineAvailability::Available => None,
+                    EngineAvailability::Unavailable(reason) => Some(reason.to_string()),
+                },
+            )
+    }
+
     pub fn begin_primary_warm_up(&self, settings: &Settings) -> Option<EngineWarmUp> {
         let warm_up = self.prepare_primary_warm_up(settings)?;
         self.release_models_except(warm_up.engine());
@@ -295,6 +309,10 @@ impl EngineWarmUp {
 
     pub fn is_stale(&self) -> bool {
         self.generation.load(std::sync::atomic::Ordering::SeqCst) != self.expected_generation
+    }
+
+    pub fn generation(&self) -> (Arc<std::sync::atomic::AtomicU64>, u64) {
+        (Arc::clone(&self.generation), self.expected_generation)
     }
 
     /// Warm the engine unless a newer request superseded this one. Safe to run
