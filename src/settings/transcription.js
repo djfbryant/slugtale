@@ -1,55 +1,48 @@
-    async function saveTranscriptionSettings(speedProfile) {
-      const invoke = tauriInvoke();
-      const previousSettings = { ...currentSettings };
-      const nextSettings = { ...currentSettings, speed_profile: speedProfile };
-      const messageEl = document.getElementById("transcription-message");
-
-      if (!invoke) {
-        renderSettings(setSettings(nextSettings));
-        return;
-      }
-
-      savingProfile = true;
-      renderSettings(setSettings(nextSettings));
-      messageEl.classList.remove("error");
-      messageEl.textContent = "Saving…";
-
-      try {
-        const saved = await invoke("save_transcription_settings", { speedProfile });
-        savingProfile = false;
-        renderSettings(setSettings(saved));
-        messageEl.textContent = "Saved. Applies to your next dictation.";
-      } catch (error) {
-        savingProfile = false;
-        renderSettings(setSettings(previousSettings));
-        messageEl.classList.add("error");
-        messageEl.textContent = String(error);
-      }
+    function saveTranscriptionSettings(speedProfile) {
+      return saveSetting({
+        command: "save_transcription_settings",
+        args: { speedProfile },
+        patch: { speed_profile: speedProfile },
+        messageId: "transcription-message",
+        successText: "Saved. Applies to your next dictation.",
+        setPending: (pending) => { savingProfile = pending; }
+      });
     }
 
-    async function saveSegmentPauseSettings(segmentPauseSecs) {
+    function saveSegmentPauseSettings(segmentPauseSecs) {
+      return saveSetting({
+        command: "save_segment_pause_settings",
+        args: { segmentPauseSecs },
+        patch: { segment_pause_secs: segmentPauseSecs },
+        messageId: "transcription-message",
+        successText: "Saved. Applies to your next dictation.",
+        setPending: (pending) => { savingPause = pending; }
+      });
+    }
+
+    async function saveSetting({ command, args, patch, messageId, successText, setPending }) {
       const invoke = tauriInvoke();
       const previousSettings = { ...currentSettings };
-      const nextSettings = { ...currentSettings, segment_pause_secs: segmentPauseSecs };
-      const messageEl = document.getElementById("transcription-message");
+      const nextSettings = { ...currentSettings, ...patch };
+      const messageEl = document.getElementById(messageId);
 
       if (!invoke) {
         renderSettings(setSettings(nextSettings));
         return;
       }
 
-      savingPause = true;
+      setPending(true);
       renderSettings(setSettings(nextSettings));
       messageEl.classList.remove("error");
       messageEl.textContent = "Saving…";
 
       try {
-        const saved = await invoke("save_segment_pause_settings", { segmentPauseSecs });
-        savingPause = false;
+        const saved = await invoke(command, args);
+        setPending(false);
         renderSettings(setSettings(saved));
-        messageEl.textContent = "Saved. Applies to your next dictation.";
+        messageEl.textContent = successText;
       } catch (error) {
-        savingPause = false;
+        setPending(false);
         renderSettings(setSettings(previousSettings));
         messageEl.classList.add("error");
         messageEl.textContent = String(error);
@@ -57,73 +50,26 @@
     }
 
     async function saveTranscriptCleanupSettings(cleanupMode) {
-      const invoke = tauriInvoke();
-      const previousSettings = { ...currentSettings };
-      const nextSettings = { ...currentSettings, transcript_cleanup: cleanupMode };
-      const messageEl = document.getElementById("cleanup-message");
-
-      if (!invoke) {
-        renderSettings(setSettings(nextSettings));
-        return;
-      }
-
-      savingCleanup = true;
-      renderSettings(setSettings(nextSettings));
-      messageEl.classList.remove("error");
-      messageEl.textContent = "Saving…";
-
-      try {
-        const saved = await invoke("save_transcript_cleanup_settings", { cleanupMode });
-        savingCleanup = false;
-        renderSettings(setSettings(saved));
-        messageEl.textContent = cleanupMode !== "basic"
-          ? "Saved. Applies to your next dictation."
-          : "Saved.";
-      } catch (error) {
-        savingCleanup = false;
-        renderSettings(setSettings(previousSettings));
-        messageEl.classList.add("error");
-        messageEl.textContent = String(error);
-      }
+      await saveSetting({
+        command: "save_transcript_cleanup_settings",
+        args: { cleanupMode },
+        patch: { transcript_cleanup: cleanupMode },
+        messageId: "cleanup-message",
+        successText: cleanupMode !== "basic" ? "Saved. Applies to your next dictation." : "Saved.",
+        setPending: (pending) => { savingCleanup = pending; }
+      });
     }
 
     async function saveDictationBarSettings({ barPosition, accentColor, barDisplay }) {
-      const invoke = tauriInvoke();
-      const previousSettings = { ...currentSettings };
       const nextPosition = barPosition || currentSettings.bar_position;
       const nextAccent = accentColor || currentSettings.accent_color;
       const nextDisplay = barDisplay || currentSettings.bar_display;
-      const nextSettings = {
-        ...currentSettings,
-        bar_position: nextPosition,
-        accent_color: nextAccent,
-        bar_display: nextDisplay
-      };
-      const messageEl = document.getElementById("dictation-bar-message");
-
-      if (!invoke) {
-        renderSettings(setSettings(nextSettings));
-        return;
-      }
-
-      savingDictationBar = true;
-      renderSettings(setSettings(nextSettings));
-      messageEl.classList.remove("error");
-      messageEl.textContent = "Saving…";
-
-      try {
-        const saved = await invoke("save_dictation_bar_settings", {
-          barPosition: nextPosition,
-          accentColor: nextAccent,
-          barDisplay: nextDisplay
-        });
-        savingDictationBar = false;
-        renderSettings(setSettings(saved));
-        messageEl.textContent = "Saved.";
-      } catch (error) {
-        savingDictationBar = false;
-        renderSettings(setSettings(previousSettings));
-        messageEl.classList.add("error");
-        messageEl.textContent = String(error);
-      }
+      await saveSetting({
+        command: "save_dictation_bar_settings",
+        args: { barPosition: nextPosition, accentColor: nextAccent, barDisplay: nextDisplay },
+        patch: { bar_position: nextPosition, accent_color: nextAccent, bar_display: nextDisplay },
+        messageId: "dictation-bar-message",
+        successText: "Saved.",
+        setPending: (pending) => { savingDictationBar = pending; }
+      });
     }

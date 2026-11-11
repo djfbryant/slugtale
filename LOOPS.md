@@ -9,3 +9,11 @@ Frontend (`node scripts/run-node-tests.js` / `npm test` frontend part): 192/192 
 Rust (`npm run test:rust`, `cargo test --lib`): 583 passed, 0 failed, 0 ignored, finished ~5.09s.
 Total `npm test` (frontend + Rust): 775 pass (192+583), 0 fail.
 Privacy/caller baseline review (read-only, pre-A/B): `AppFiles::save_settings` still present (app_files.rs) with callers in app_files tests + local_model/mod.rs:317 — A must migrate all to `update_settings` inside lock. `.erased()` still present at app_files.rs:121, commands/dictation.rs:179, dictation_host.rs:827, engine_catalogue.rs:920,962 — B must replace with cloned typed handles, box sink once inside owner. No src edits by evidence slice; no commit.
+
+---
+
+# Loop4 - Sol pick Frontend settings only, defer Platform Adapter/Second Opinion.
+Branch arch/loop4-20261111-1050 Base 5e516d2
+Task: One private save function for speed, pause, cleanup, Dictation Bar. Owns pending state, save call, saved result, restore on failure. Keep commands/messages.
+Parallel A speed+pause, B cleanup+bar, C page tests.
+Risks: overlapping-save unchanged, avoid large framework, local-only, platform labels visible.
